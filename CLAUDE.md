@@ -3,6 +3,7 @@
 함수나 메소드 가이드도 나중에 할꺼야.
 
 CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역의 개요를 확인해라
+작업 관리는 GitHub Issues로 한다. TODO.md 같은 파일은 만들지 마라.
 
 # modeler 모듈 요약
 
@@ -140,6 +141,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
 - **PredictProcessor**: `fit`, `fit_process`, `process`
+- `fit`/`fit_process`에서 y 데이터를 `squeeze()` 후 전달 (sklearn DataConversionWarning 억제)
 - `data_dict` (Experimenter): `{key: ((train, train_v), valid), ...}` 형태
 - `data_dict` (Trainer): `{key: (train, valid), ...}` 형태 (inner fold 없음)
 
@@ -149,7 +151,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - `result_objs`: `{name: (callable, mergeable_bool)}`
 
 ## 보조 모듈
-- **_data_wrapper.py**: DataWrapper (wrap/unwrap) — pandas/polars/cudf/numpy 통합
+- **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze) — pandas/polars/cudf/numpy 통합
 - **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
 - **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress)
 - **col.py**: 컬럼 선택 유틸리티
