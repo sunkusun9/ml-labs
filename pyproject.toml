@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ml-lab"
+name = "ml-labs"
 version = "0.2.0"
 requires-python = ">=3.10"
 license = "PolyForm-Noncommercial-1.0.0"
