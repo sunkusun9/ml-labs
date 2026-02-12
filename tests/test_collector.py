@@ -331,7 +331,7 @@ class TestStackingCollector:
 
 class TestModelAttrCollector:
     def test_collect_basic(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -339,7 +339,7 @@ class TestModelAttrCollector:
         assert mac.has('dt')
 
     def test_get_attr(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -349,7 +349,7 @@ class TestModelAttrCollector:
         assert len(result) == 2
 
     def test_get_attr_idx(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -358,7 +358,7 @@ class TestModelAttrCollector:
         assert isinstance(result, list)
 
     def test_get_attrs(self, multi_head_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -368,7 +368,7 @@ class TestModelAttrCollector:
         assert 'dt2' in result
 
     def test_get_attrs_agg(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -377,7 +377,7 @@ class TestModelAttrCollector:
         assert isinstance(result, pd.Series)
 
     def test_get_attrs_agg_inner_only(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -386,7 +386,7 @@ class TestModelAttrCollector:
         assert isinstance(result, pd.DataFrame)
 
     def test_get_attrs_agg_invalid(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -395,7 +395,7 @@ class TestModelAttrCollector:
             mac.get_attrs_agg('dt', agg_inner=False, agg_outer=True)
 
     def test_not_mergeable(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('tree', Connector(processor=DecisionTreeClassifier),
                                 result_key='tree',
                                 adapter=DecisionTreeAdapter())
@@ -404,7 +404,7 @@ class TestModelAttrCollector:
             mac.get_attrs_agg('dt')
 
     def test_reset_nodes(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -413,7 +413,7 @@ class TestModelAttrCollector:
         assert not mac.has('dt')
 
     def test_save_load(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mac = ModelAttrCollector('fi', Connector(processor=DecisionTreeClassifier),
                                 result_key='feature_importances',
                                 adapter=DecisionTreeAdapter())
@@ -541,7 +541,7 @@ class TestCollectorWithExperimenter:
         assert not mc.has('dt')
 
     def test_multiple_collectors(self, built_exp):
-        from mllab.adapter import DecisionTreeAdapter
+        from mllabs.adapter import DecisionTreeAdapter
         mc = MetricCollector('acc', Connector(), output_var=None,
                              metric_func=accuracy_metric)
         oc = OutputCollector('out', Connector(), output_var=None)
@@ -558,31 +558,31 @@ class TestCollectorWithExperimenter:
 
 class TestBaseCollector:
     def test_get_nodes_none(self):
-        from mllab.collector._base import Collector
+        from mllabs.collector._base import Collector
         c = Collector('test', Connector())
         result = c._get_nodes(None, ['a', 'b', 'c'])
         assert result == ['a', 'b', 'c']
 
     def test_get_nodes_list(self):
-        from mllab.collector._base import Collector
+        from mllabs.collector._base import Collector
         c = Collector('test', Connector())
         result = c._get_nodes(['a', 'c'], ['a', 'b', 'c'])
         assert result == ['a', 'c']
 
     def test_get_nodes_list_filter(self):
-        from mllab.collector._base import Collector
+        from mllabs.collector._base import Collector
         c = Collector('test', Connector())
         result = c._get_nodes(['a', 'x'], ['a', 'b', 'c'])
         assert result == ['a']
 
     def test_get_nodes_regex(self):
-        from mllab.collector._base import Collector
+        from mllabs.collector._base import Collector
         c = Collector('test', Connector())
         result = c._get_nodes('dt', ['dt1', 'dt2', 'scaler'])
         assert result == ['dt1', 'dt2']
 
     def test_get_nodes_invalid_type(self):
-        from mllab.collector._base import Collector
+        from mllabs.collector._base import Collector
         c = Collector('test', Connector())
         with pytest.raises(ValueError):
             c._get_nodes(123, ['a', 'b'])
