@@ -7,10 +7,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
-from mllab._experimenter import Experimenter, DataCache
-from mllab._expobj import StageObj, HeadObj
-from mllab._pipeline import Pipeline
-from mllab import Connector, MetricCollector
+from mllabs._experimenter import Experimenter, DataCache
+from mllabs._expobj import StageObj, HeadObj
+from mllabs._pipeline import Pipeline
+from mllabs import Connector, MetricCollector
 
 
 class BadProcessor:

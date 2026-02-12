@@ -7,8 +7,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
-from mllab._experimenter import Experimenter
-from mllab import Connector, MetricCollector, StackingCollector, ModelAttrCollector, OutputCollector
+from mllabs._experimenter import Experimenter
+from mllabs import Connector, MetricCollector, StackingCollector, ModelAttrCollector, OutputCollector
 
 
 def accuracy_metric(y, pred):

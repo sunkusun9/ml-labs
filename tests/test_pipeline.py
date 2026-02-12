@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from mllab._pipeline import Pipeline, PipelineGroup, PipelineNode
+from mllabs._pipeline import Pipeline, PipelineGroup, PipelineNode
 
 
 class DummyStage:
