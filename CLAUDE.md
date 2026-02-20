@@ -153,6 +153,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **TransformProcessor**: `fit`, `fit_process`, `process`
 - **PredictProcessor**: `fit`, `fit_process`, `process`
 - `fit`/`fit_process`에서 y 데이터를 `squeeze()` 후 전달 (sklearn DataConversionWarning 억제)
+- `get_feature_names_out` 반환값은 `list()` 로 변환하여 사용 (list/ndarray 호환)
 - `data_dict` (Experimenter): `{key: ((train, train_v), valid), ...}` 형태
 - `data_dict` (Trainer): `{key: (train, valid), ...}` 형태 (inner fold 없음)
 
@@ -170,6 +171,8 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
+- **processor/**: PolarsLoader, ExprProcessor, PandasConverter, CategoricalConverter, CategoricalPairCombiner, CatOOVFilter
+  - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
 
 ## 저장 구조
 ```
