@@ -305,6 +305,27 @@ class Trainer:
         return result
 
     # ------------------------------------------------------------------
+    # to_inferencer
+    # ------------------------------------------------------------------
+
+    def to_inferencer(self, v=None):
+        from ._inferencer import Inferencer
+
+        all_selected = self.selected_stages + self.selected_heads
+        for name in all_selected:
+            obj = self.node_objs.get(name)
+            if obj is None or obj.status != 'built':
+                raise RuntimeError(f"Node '{name}' is not built. Run train() first.")
+
+        pipeline = self.pipeline.copy_nodes(self.selected_heads)
+        node_objs = {
+            name: [obj for obj, _, _ in self.node_objs[name].get_obj()]
+            for name in all_selected
+        }
+        return Inferencer(pipeline, list(self.selected_stages), list(self.selected_heads),
+                          self.get_n_splits(), node_objs, v=v)
+
+    # ------------------------------------------------------------------
     # path helpers
     # ------------------------------------------------------------------
 
