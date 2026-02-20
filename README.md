@@ -5,7 +5,7 @@ A structured machine learning experimentation framework for building, managing, 
 ## Installation
 
 ```bash
-pip install ml-lab
+pip install ml-labs
 ```
 
 With optional dependencies:
