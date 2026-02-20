@@ -184,8 +184,11 @@ class StackingCollector(Collector):
         all_data = np.concatenate(node_data, axis=1)
         all_columns = list(column_names)
 
+        wrapped_data = self._data_cls.from_output(all_data, all_columns, self._index)
         if include_target and self._target is not None:
-            all_data = np.concatenate([all_data, self._target], axis=1)
-            all_columns.extend(self._target_columns)
+            wrapped_data = self._data_cls.concat([
+                wrapped_data, 
+                self._data_cls.from_output(self._target, self._target_columns, self._index)
+            ], axis=1)
 
-        return self._data_cls.from_output(all_data, all_columns, self._index).to_native()
+        return wrapped_data.to_native()
