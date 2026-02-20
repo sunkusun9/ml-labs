@@ -1,16 +1,28 @@
 import pytest
 import numpy as np
 import pandas as pd
-import polars as pl
 from pathlib import Path
 
+try:
+    import polars as pl
+    HAS_POLARS = True
+except ImportError:
+    pl = None
+    HAS_POLARS = False
+
+requires_polars = pytest.mark.skipif(not HAS_POLARS, reason="polars not installed")
+
 from mllabs.processor import (
-    PolarsLoader,
-    ExprProcessor,
-    PandasConverter,
     CategoricalConverter,
     CategoricalPairCombiner,
 )
+
+if HAS_POLARS:
+    from mllabs.processor import (
+        PolarsLoader,
+        ExprProcessor,
+        PandasConverter,
+    )
 
 
 @pytest.fixture
@@ -31,6 +43,8 @@ def sample_csv_list(tmp_path):
 
 @pytest.fixture
 def sample_polars_df():
+    if not HAS_POLARS:
+        pytest.skip("polars not installed")
     return pl.DataFrame({
         "a": [1, 2, 3],
         "b": [2.5, 3.5, 4.5],
@@ -47,6 +61,7 @@ def sample_pandas_df():
     })
 
 
+@requires_polars
 class TestPolarsLoader:
     def test_fit_single_csv(self, sample_csv):
         loader = PolarsLoader()
@@ -96,6 +111,7 @@ class TestPolarsLoader:
         assert result["a"].dtype == pl.Int32
 
 
+@requires_polars
 class TestExprProcessor:
     def test_with_columns_true(self, sample_polars_df):
         proc = ExprProcessor(dict_expr={"d": pl.col("a") * 2}, with_columns=True)
@@ -131,6 +147,7 @@ class TestExprProcessor:
         assert params["with_columns"] is True
 
 
+@requires_polars
 class TestPandasConverter:
     def test_basic_conversion(self, sample_polars_df):
         conv = PandasConverter()
@@ -176,6 +193,7 @@ class TestCategoricalConverter:
         assert result["c"].dtype.name == "category"
         assert result["a"].dtype != "category"
 
+    @requires_polars
     def test_polars_all_columns(self):
         df = pl.DataFrame({"a": ["x", "y", "z"], "b": ["p", "q", "r"]})
         conv = CategoricalConverter()
@@ -184,6 +202,7 @@ class TestCategoricalConverter:
         for col in result.columns:
             assert result[col].dtype == pl.Categorical
 
+    @requires_polars
     def test_polars_specific_columns(self, sample_polars_df):
         conv = CategoricalConverter(columns=["c"])
         conv.fit(sample_polars_df)
@@ -223,6 +242,8 @@ class TestCategoricalPairCombiner:
 
     @pytest.fixture
     def pair_polars_df(self):
+        if not HAS_POLARS:
+            pytest.skip("polars not installed")
         return pl.DataFrame({
             "cat1": ["a", "a", "b", "b", "c"],
             "cat2": ["x", "x", "y", "y", "z"],
@@ -236,6 +257,7 @@ class TestCategoricalPairCombiner:
         assert "cat1__cat2" in result.columns
         assert result["cat1__cat2"].tolist() == ["a__x", "a__x", "b__y", "b__y", "c__z"]
 
+    @requires_polars
     def test_polars_basic(self, pair_polars_df):
         comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
         comb.fit(pair_polars_df)
