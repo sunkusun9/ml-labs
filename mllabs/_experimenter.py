@@ -388,6 +388,22 @@ class Experimenter():
         for v in self.trainers.values():
             v.reset_nodes(nodes)
 
+    def show_error_nodes(self, nodes=None, traceback=False):
+        node_names = self.pipeline.get_node_names(nodes)
+        error_nodes = [
+            n for n in node_names
+            if n in self.node_objs and self.node_objs[n].status == 'error'
+        ]
+        if not error_nodes:
+            self.logger.info("No error nodes found")
+            return
+        for n in error_nodes:
+            err = self.node_objs[n].error
+            if traceback:
+                self.logger.info(f"[{n}] {err['type']}: {err['message']}\n{err['traceback']}")
+            else:
+                self.logger.info(f"[{n}] {err['type']}: {err['message']}")
+
     def build(self, nodes = None, rebuild = False):
         self._check_open()
         node_names = self.pipeline.get_node_names(nodes)
@@ -540,7 +556,6 @@ class Experimenter():
                         'fold': i,
                     }
                     self.logger.info(f"[{node}] Exp error at fold {i}: {type(e).__name__}: {e}")
-                    self.logger.info(traceback.format_exc())
                     for name, collector in self.collectors.items():
                         if node in matched[name]:
                             collector.reset_nodes([node])
