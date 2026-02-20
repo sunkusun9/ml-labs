@@ -123,7 +123,7 @@ class TransformProcessor():
 
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
-            column_names = self.obj.get_feature_names_out().tolist()
+            column_names = list(self.obj.get_feature_names_out())
             column_names = [f"{self.name}__{col}" for col in column_names]
         else:
             column_names = None
@@ -170,7 +170,7 @@ class TransformProcessor():
         train_wrapper_class = type(train_X)
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
-            column_names = self.obj.get_feature_names_out().tolist()
+            column_names = list(self.obj.get_feature_names_out())
             column_names = [f"{self.name}__{col}" for col in column_names]
         else:
             column_names = None
