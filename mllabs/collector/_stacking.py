@@ -7,14 +7,43 @@ from .._data_wrapper import DataWrapper
 
 
 class StackingCollector(Collector):
-    def __init__(self, name, connector, output_var, method='mean', include_target=True):
+    def __init__(self, name, connector, output_var, experimenter, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
         self.method = method
-        self.include_target = include_target
         self.columns = {}
         self._buffer = {}
         self._mem_data = {}
+
+        self._data_cls = type(experimenter.data)
+        self._index = self._build_index(experimenter)
+        self._target, self._target_columns = self._build_target(experimenter)
+
+    def _build_index(self, experimenter):
+        all_valid_idx = np.concatenate([
+            experimenter.valid_idx_list[i]
+            for i in range(experimenter.get_n_splits())
+        ])
+        return experimenter.data.iloc(all_valid_idx).get_index()
+
+    def _build_target(self, experimenter):
+        target_vars = self.connector.edges.get('y') if self.connector.edges else None
+        if target_vars is None:
+            return None, None
+
+        target_list = []
+        target_columns = None
+        temp_edges = {'_target': target_vars}
+        for idx in range(experimenter.get_n_splits()):
+            iterator = experimenter.get_data_valid(idx, temp_edges)
+            aggregated = DataWrapper.simple(
+                data_dict['_target'] for data_dict in iterator
+            )
+            if target_columns is None:
+                target_columns = aggregated.get_columns()
+            target_list.append(aggregated.to_array())
+
+        return np.concatenate(target_list, axis=0), target_columns
 
     def _start(self, node):
         self._buffer[node] = []
@@ -94,7 +123,10 @@ class StackingCollector(Collector):
             'connector': self.connector,
             'output_var': self.output_var,
             'method': self.method,
-            'include_target': self.include_target,
+            '_data_cls': self._data_cls,
+            '_index': self._index,
+            '_target': self._target,
+            '_target_columns': self._target_columns,
         }
         with open(self.path / '__config.pkl', 'wb') as f:
             pickle.dump(config, f)
@@ -103,13 +135,18 @@ class StackingCollector(Collector):
     def load(cls, path):
         with open(path / '__config.pkl', 'rb') as f:
             config = pickle.load(f)
-        obj = cls(
-            name=config['name'],
-            connector=config['connector'],
-            output_var=config['output_var'],
-            method=config['method'],
-            include_target=config['include_target'],
-        )
+        obj = object.__new__(cls)
+        obj.name = config['name']
+        obj.connector = config['connector']
+        obj.output_var = config['output_var']
+        obj.method = config['method']
+        obj._data_cls = config['_data_cls']
+        obj._index = config['_index']
+        obj._target = config['_target']
+        obj._target_columns = config['_target_columns']
+        obj.columns = {}
+        obj._buffer = {}
+        obj._mem_data = {}
         obj.path = path
         return obj
 
@@ -134,34 +171,8 @@ class StackingCollector(Collector):
         else:
             return list(self._mem_data.keys())
 
-    def _build_sort_order(self, experimenter):
-        all_valid_idx = np.concatenate([
-            experimenter.valid_idx_list[i]
-            for i in range(experimenter.get_n_splits())
-        ])
-        return np.argsort(all_valid_idx)
-
-    def _build_target_value(self, experimenter):
-        target_vars = self.connector.edges.get('y') if self.connector.edges else None
-        if target_vars is None:
-            raise ValueError("Connector must define 'y' edges for target")
-
-        target_list = []
-        temp_edges = {'_target': target_vars}
-        for idx in range(experimenter.get_n_splits()):
-            iterator = experimenter.get_data_valid(idx, temp_edges)
-            def extract_target(it):
-                for data_dict in it:
-                    yield data_dict['_target']
-            aggregated = DataWrapper.simple(extract_target(iterator))
-            target_list.append(aggregated)
-
-        wrapper_cls = type(target_list[0])
-        return wrapper_cls.concat(target_list, axis=0)
-
-    def get_dataset(self, experimenter, nodes=None):
+    def get_dataset(self, nodes=None, include_target=True):
         node_names = self._get_nodes(nodes, self._get_saved_nodes())
-        sort_order = self._build_sort_order(experimenter)
 
         node_data = []
         column_names = []
@@ -170,23 +181,11 @@ class StackingCollector(Collector):
             node_data.append(data)
             column_names.extend(columns)
 
-        if self.include_target:
-            target = self._build_target_value(experimenter)
-            wrapper_cls = type(target)
-            return wrapper_cls.concat([
-                wrapper_cls.from_output(
-                    np.concatenate(node_data, axis=1),
-                    column_names, target.get_index()
-                )
-            ] + [target], axis=1).iloc(sort_order).data
-        else:
-            wrapper_cls = type(experimenter.data)
-            all_valid_idx = np.concatenate([
-                experimenter.valid_idx_list[i]
-                for i in range(experimenter.get_n_splits())
-            ])
-            index = experimenter.data.iloc(all_valid_idx).get_index()
-            return wrapper_cls.from_output(
-                np.concatenate(node_data, axis=1),
-                column_names, index
-            ).iloc(sort_order).data
+        all_data = np.concatenate(node_data, axis=1)
+        all_columns = list(column_names)
+
+        if include_target and self._target is not None:
+            all_data = np.concatenate([all_data, self._target], axis=1)
+            all_columns.extend(self._target_columns)
+
+        return self._data_cls.from_output(all_data, all_columns, self._index).to_native()
