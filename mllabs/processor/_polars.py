@@ -56,7 +56,7 @@ class ExprProcessor(TransformerMixin, BaseEstimator):
     def transform(self, X):
         if self.with_columns:
             return X.with_columns(**{
-                k:v for k, v in self.dict_expr.items() if k in X.columns
+                k:v for k, v in self.dict_expr.items()
             })
         else:
             return X.select(**self.dict_expr)
