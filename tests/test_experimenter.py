@@ -326,6 +326,48 @@ class TestResetNodes:
         exp.set_node('scaler', grp='scale', exist='replace')
         assert 'scaler' not in exp.node_objs
 
+    def test_reset_finalizes_built_node(self, exp):
+        _setup_stage(exp)
+        exp.build()
+        node_path = exp.get_node_path('scaler')
+        assert node_path.exists()
+        exp.reset_nodes(['scaler'])
+        assert not node_path.exists()
+
+
+class TestRebuild:
+    def test_build_with_rebuild_true(self, exp):
+        _setup_stage(exp)
+        exp.build()
+        old_processors = [obj for obj, _, _ in exp.node_objs['scaler'].get_objs(0)]
+        exp.build(rebuild=True)
+        new_processors = [obj for obj, _, _ in exp.node_objs['scaler'].get_objs(0)]
+        assert exp.node_objs['scaler'].status == 'built'
+        assert old_processors[0] is not new_processors[0]
+
+    def test_set_node_replace_then_build(self, exp):
+        _setup_stage(exp)
+        exp.build()
+        old_obj = exp.node_objs['scaler']
+        exp.set_node('scaler', grp='scale', exist='replace')
+        exp.build()
+        assert 'scaler' in exp.node_objs
+        new_obj = exp.node_objs['scaler']
+        assert new_obj is not old_obj
+        assert new_obj.status == 'built'
+
+    def test_exp_rebuilds_non_built_node(self, exp):
+        _setup_full(exp)
+        exp.build()
+        exp.exp()
+        old_obj = exp.node_objs['dt']
+        exp.reset_nodes(['dt'])
+        exp.exp()
+        assert 'dt' in exp.node_objs
+        new_obj = exp.node_objs['dt']
+        assert new_obj is not old_obj
+        assert new_obj.status == 'built'
+
 
 class TestStateManagement:
     def test_open_close(self, exp):

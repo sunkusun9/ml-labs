@@ -375,6 +375,9 @@ class Experimenter():
     def reset_nodes(self, nodes):
         for i in nodes:
             if i in self.node_objs:
+                node_obj = self.node_objs[i]
+                if node_obj.status == 'built':
+                    node_obj.finalize()
                 del self.node_objs[i]
 
         self.cache.clear_nodes(nodes)
@@ -392,8 +395,11 @@ class Experimenter():
         for i in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage' and i not in self.node_objs:
-                target_nodes.append(i)
+            if grp.role == 'stage':
+                if i not in self.node_objs:
+                    target_nodes.append(i)
+                elif rebuild or self.node_objs[i].status != 'built':
+                    target_nodes.append(i)
 
         self.logger.info(f"Building {len(target_nodes)} node(s)")
         for node in target_nodes:
@@ -454,8 +460,9 @@ class Experimenter():
         for i in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'head' and i not in self.node_objs and i in node_names:
-                target_nodes.append(i)
+            if grp.role == 'head' and i in node_names:
+                if i not in self.node_objs or self.node_objs[i].status != 'built':
+                    target_nodes.append(i)
 
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
 
