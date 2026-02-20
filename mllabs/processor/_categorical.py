@@ -295,6 +295,78 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
             return out
         return out
 
+class CategoricalConverter(BaseEstimator, TransformerMixin):
+
+    def __init__(self, columns=None):
+        self.columns = columns
+
+    def _detect_kind(self, X):
+        if pd is not None and isinstance(X, pd.DataFrame):
+            return "pandas_df"
+        if pl is not None and isinstance(X, pl.DataFrame):
+            return "polars_df"
+        if isinstance(X, np.ndarray):
+            return "numpy"
+        raise TypeError(f"Unsupported input type: {type(X)}")
+
+    def _resolve_columns(self, X, kind):
+        if self.columns is None:
+            if kind == "numpy":
+                return list(range(X.shape[1]))
+            return list(X.columns)
+        cols = []
+        for c in self.columns:
+            if isinstance(c, int) and kind != "numpy":
+                cols.append(X.columns[c])
+            else:
+                cols.append(c)
+        return cols
+
+    def fit(self, X, y=None):
+        kind = self._detect_kind(X)
+        self.columns_ = self._resolve_columns(X, kind)
+        self.kind_ = kind
+        return self
+
+    def transform(self, X):
+        kind = self._detect_kind(X)
+        if kind == "pandas_df":
+            return self._transform_pandas(X)
+        if kind == "polars_df":
+            return self._transform_polars(X)
+        if kind == "numpy":
+            return self._transform_numpy(X)
+        raise TypeError(f"Unsupported input type: {type(X)}")
+
+    def _transform_pandas(self, X):
+        X_out = X.copy()
+        for col in self.columns_:
+            if col in X_out.columns:
+                X_out[col] = X_out[col].astype('category')
+        return X_out
+
+    def _transform_polars(self, X):
+        exprs = []
+        for col in self.columns_:
+            if col in X.columns:
+                exprs.append(pl.col(col).cast(pl.Categorical))
+        if exprs:
+            return X.with_columns(exprs)
+        return X
+
+    def _transform_numpy(self, X):
+        arr = X.copy()
+        for col_idx in self.columns_:
+            arr[:, col_idx] = arr[:, col_idx].astype(str)
+        return arr.astype(object)
+
+    def get_feature_names_out(self, X=None):
+        return list(self.columns_) if hasattr(self, 'columns_') else None
+
+    def set_output(self, transform=None):
+        pass
+
+
 class CatOOVFilter(TransformerMixin, BaseEstimator):
     def __init__(self):
         pass
