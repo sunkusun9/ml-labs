@@ -4,6 +4,7 @@
 
 CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역의 개요를 확인해라
 작업 관리는 GitHub Issues로 한다. TODO.md 같은 파일은 만들지 마라.
+Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한다.
 
 # modeler 모듈 요약
 
@@ -11,6 +12,8 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - **Pipeline** (`_pipeline.py`): 노드 그래프 자료구조 (ML 관심사 분리)
 - **Experimenter** (`_experimenter.py`): 실험 실행/관리 (Pipeline 사용)
 - **ExpObj** (`_expobj.py`): 노드별 빌드/실험 객체 관리
+- **Trainer** (`_trainer.py`): 학습 실행/관리 (split 기반)
+- **Inferencer** (`_inferencer.py`): 학습된 파이프라인을 새 데이터에 적용
 
 ## 핵심 클래스
 
@@ -70,11 +73,17 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - `cache`: Experimenter에서 전달받은 DataCache 공유 (type key: `"train_all"`)
 - `select_head(nodes)`: head 노드 지정 + upstream stage 자동 수집, `_get_affected_nodes`로 순서 정렬
 - `train()`: 미빌드 노드만 대상, 노드별 전체 split 처리 후 다음 노드로 진행
-- `process(data, v=None)`: generator, split마다 head output을 v로 필터 후 concat하여 yield. 호출측에서 집계
-- `_process_node(obj, data_dicts, edges)`: 단일 노드 process
-- `_get_process_data(data_dicts, edges)`: edges에서 입력 데이터 resolve
+- `process(data, v=None)`: generator, split마다 head output을 v로 필터 후 concat하여 yield
+- `to_inferencer(v=None)`: 학습된 Processor를 추출하여 Inferencer 생성
 - `reset_nodes(nodes)`: 하위 종속 노드 포함 초기화
 - 저장/로드: `save()`, `_load(path, pipeline, data, cache, logger)`
+
+### Inferencer (`_inferencer.py`)
+- 생성자: `(pipeline, selected_stages, selected_heads, n_splits, node_objs, v=None)`
+- `node_objs`: `{name: [processor_split0, processor_split1, ...]}` — Processor 리스트 (Trainer 독립)
+- `process(data, agg='mean')`: split 결과 자동 집계
+  - `agg`: `'mean'`/`'mode'`/callable/`None`(list 반환). 단일 split이면 집계 없이 반환
+- 저장/로드: `save(path)`, `load(cls, path)` — 단일 `__inferencer.pkl`에 node_objs 포함
 
 ### TrainObj (`_trainobj.py`)
 - `_train_build(node_attrs, data_dict, logger)`: Processor 생성 → fit/fit_process → `(obj, result, info)` 반환
@@ -106,9 +115,11 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   - 쿼리: `get_metric(node)`, `get_metrics(nodes)`, `get_metrics_agg(nodes, inner_fold, outer_fold, include_std)`
 
 - **StackingCollector** (`_stacking.py`): 스태킹 데이터 수집
-  - `output_var`, `method`(mean/mode/simple), `include_target`
+  - `__init__(name, connector, output_var, experimenter, method='mean')`
+  - 생성 시 `experimenter`에서 `_index`, `_target`(ndarray), `_target_columns` 구축
+  - `output_var`, `method`(mean/mode/simple)
   - path 있으면 파일 저장, 없으면 `_mem_data`에 메모리 저장
-  - 쿼리: `get_dataset(experimenter, nodes)` — experimenter를 파라미터로 받음
+  - 쿼리: `get_dataset(nodes=None, include_target=True)` — experimenter 불필요
 
 - **ModelAttrCollector** (`_model_attr.py`): 모델 속성 수집 (feature_importances 등)
   - `result_key`, `adapter`(default=None, `get_adapter(connector.processor)`로 자동 설정), `params`
@@ -151,7 +162,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - `result_objs`: `{name: (callable, mergeable_bool)}`
 
 ## 보조 모듈
-- **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze) — pandas/polars/cudf/numpy 통합
+- **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze/mean/mode/simple) — pandas/polars/cudf/numpy 통합
 - **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
 - **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress)
 - **col.py**: 컬럼 선택 유틸리티
@@ -175,4 +186,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   __trainer.pkl                # name, splitter, selected_stages/heads, node_obj_keys, split_indices
   {grp_path}/{node_name}/
     obj{split_idx}.pkl         # 빌드 결과 (TrainStageObj/TrainHeadObj)
+
+{inferencer_path}/
+  __inferencer.pkl             # pipeline, selected_stages/heads, n_splits, node_objs, v (단일 파일)
 ```

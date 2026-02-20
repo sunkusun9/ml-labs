@@ -260,53 +260,55 @@ class TestMetricCollector:
 
 class TestStackingCollector:
     def test_collect_basic(self, built_exp):
-        sc = StackingCollector('stk', Connector(), output_var=None)
+        sc = StackingCollector('stk', Connector(), output_var=None,
+                               experimenter=built_exp)
         built_exp.add_collector(sc)
         assert sc.has_node('dt')
 
     def test_get_dataset(self, built_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None)
+        ), output_var=None, experimenter=built_exp)
         built_exp.add_collector(sc)
-        ds = sc.get_dataset(built_exp)
+        ds = sc.get_dataset()
         assert isinstance(ds, pd.DataFrame)
         assert len(ds) == int(len(built_exp.data.data) * 0.2) * 2 # ShuffleSplit, n_splits = 2, test_size = 0.2
         assert 'target' in ds.columns
 
     def test_get_dataset_no_target(self, built_exp):
         sc = StackingCollector('stk', Connector(), output_var=None,
-                               include_target=False)
+                               experimenter=built_exp)
         built_exp.add_collector(sc)
-        ds = sc.get_dataset(built_exp)
+        ds = sc.get_dataset(include_target=False)
         assert isinstance(ds, pd.DataFrame)
         assert 'target' not in ds.columns
 
     def test_get_dataset_multi_nodes(self, multi_head_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None)
+        ), output_var=None, experimenter=multi_head_exp)
         multi_head_exp.add_collector(sc)
-        ds = sc.get_dataset(multi_head_exp)
+        ds = sc.get_dataset()
         assert ds.shape[1] > 2
 
     def test_get_dataset_node_filter(self, multi_head_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None)
+        ), output_var=None, experimenter=multi_head_exp)
         multi_head_exp.add_collector(sc)
-        ds = sc.get_dataset(multi_head_exp, nodes=['dt1'])
+        ds = sc.get_dataset(nodes=['dt1'])
         assert isinstance(ds, pd.DataFrame)
 
     def test_method_mean(self, built_exp_inner):
         sc = StackingCollector('stk_mean', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, method='mean')
+        ), output_var=None, experimenter=built_exp_inner, method='mean')
         built_exp_inner.add_collector(sc)
         assert sc.has_node('dt')
 
     def test_reset_nodes(self, built_exp):
-        sc = StackingCollector('stk', Connector(), output_var=None)
+        sc = StackingCollector('stk', Connector(), output_var=None,
+                               experimenter=built_exp)
         built_exp.add_collector(sc)
         assert sc.has_node('dt')
         sc.reset_nodes(['dt'])
@@ -315,18 +317,26 @@ class TestStackingCollector:
     def test_save_load(self, built_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None)
+        ), output_var=None, experimenter=built_exp)
         built_exp.add_collector(sc)
         loaded = StackingCollector.load(sc.path)
         assert loaded.has_node('dt')
-        ds_orig = sc.get_dataset(built_exp)
-        ds_loaded = loaded.get_dataset(built_exp)
+        ds_orig = sc.get_dataset()
+        ds_loaded = loaded.get_dataset()
         pd.testing.assert_frame_equal(ds_orig, ds_loaded)
 
-    def test_mem_data_no_path(self, sample_data):
-        sc = StackingCollector('stk', Connector(), output_var=None)
-        assert sc.path is None
-        assert len(sc._get_saved_nodes()) == 0
+    def test_index_preserved(self, built_exp):
+        sc = StackingCollector('stk', Connector(
+            edges={'y': [(None, 'target')]}
+        ), output_var=None, experimenter=built_exp)
+        built_exp.add_collector(sc)
+        ds = sc.get_dataset()
+        all_valid_idx = np.concatenate([
+            built_exp.valid_idx_list[i]
+            for i in range(built_exp.get_n_splits())
+        ])
+        expected_index = built_exp.data.data.index[all_valid_idx]
+        pd.testing.assert_index_equal(ds.index, expected_index)
 
 
 class TestModelAttrCollector:
