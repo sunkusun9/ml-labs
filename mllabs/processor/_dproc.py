@@ -28,8 +28,8 @@ def get_type_df(df):
     ]
     df_type = df.select(
         **{k: pl.struct(v) for k, v in stat}
-    ).melt().unnest('value').rename({'variable': 'stat'})\
-    .melt(id_vars='stat', variable_name='feature')
+    ).unpivot().unnest('value').rename({'variable': 'stat'})\
+    .unpivot(index='stat', variable_name='feature')
     if type(df_type) == pl.LazyFrame:
         df_type = df_type.collect()
     if type(df) == pl.lazyframe.frame.LazyFrame:
@@ -39,7 +39,7 @@ def get_type_df(df):
         dtypes = df.dtypes
         columns = df.columns
     df_type = df_type.pivot(
-        index='feature', columns='stat', values='value'
+        index='feature', on='stat', values='value'
     ).to_pandas().assign(
         feature = lambda x: x['feature'].astype(str)
     ).set_index('feature').join(
