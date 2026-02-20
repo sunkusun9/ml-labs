@@ -51,9 +51,10 @@ def get_type_df(df):
         ('i16', np.iinfo(np.int16).min, np.iinfo(np.int16).max),
         ('i8', np.iinfo(np.int8).min, np.iinfo(np.int8).max)
     ]:
-        df_type[i] = df_type.loc[df_type['dtype'] != 'String'].apply(
+        numeric_mask = df_type['dtype'].str.startswith(('Int', 'Float'))
+        df_type[i] = df_type.loc[numeric_mask].apply(
             lambda x: (x['min'] >= mn) and (x['max'] <= mx), axis=1
-        )
+        ).reindex(df_type.index, fill_value=False)
     return df_type
 
 def get_type_vars(var_list):
