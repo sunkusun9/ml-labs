@@ -269,7 +269,9 @@ class TestCategoricalPairCombiner:
         comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=1)
         comb.fit(pair_pandas_df)
         result = comb.transform(pair_pandas_df)
-        assert result["cat1__cat2"].tolist() == ["a__x", "a__x", "b__y", "b__y", None]
+        values = result["cat1__cat2"].tolist()
+        assert values[:4] == ["a__x", "a__x", "b__y", "b__y"]
+        assert pd.isna(values[4])
 
     def test_drop_original(self, pair_pandas_df):
         comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, drop_original=True)
