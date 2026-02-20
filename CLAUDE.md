@@ -5,6 +5,7 @@
 CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역의 개요를 확인해라
 작업 관리는 GitHub Issues로 한다. TODO.md 같은 파일은 만들지 마라.
 Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한다.
+커밋 메시지에 "Co-Authored-By" 넣지 마라. PR에 "Generated with Claude Code" 같은 광고성 메시지 넣지 마라.
 
 # modeler 모듈 요약
 
@@ -40,8 +41,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `pipeline`: Pipeline 인스턴스
 - `node_objs`: `{node_name: StageObj|HeadObj}`
 - `cache`: DataCache (LRU, 용량 기반)
-- 실행: `build(nodes)` (stage), `exp(nodes)` (head)
+- 실행: `build(nodes, rebuild=False)` (stage), `exp(nodes)` (head)
 - 상태관리: `reset_nodes(nodes)` - node_objs, cache, collectors 초기화
+- 에러 조회: `show_error_nodes(nodes=None, traceback=False)` - error 상태 노드 출력
 - `add_collector(collector)`: Collector 등록 (path 설정, save)
 - `collect(collector, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, progress 포함)
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
@@ -171,7 +173,8 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
-- **processor/**: PolarsLoader, ExprProcessor, PandasConverter, CategoricalConverter, CategoricalPairCombiner, CatOOVFilter
+- **processor/**: CategoricalConverter, CategoricalPairCombiner, CatOOVFilter
+  - polars 설치 시: PolarsLoader, ExprProcessor, PandasConverter 추가
   - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
 
 ## 저장 구조
