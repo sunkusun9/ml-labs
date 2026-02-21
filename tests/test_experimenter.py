@@ -429,6 +429,35 @@ class TestStateManagement:
 
         assert 'dt' not in mc._sub
 
+    def test_close_exp_saves_status(self, exp, sample_data):
+        _setup_full(exp)
+        exp.build()
+        exp.exp()
+        exp.close_exp()
+
+        loaded = Experimenter.load(exp.path, sample_data)
+        assert loaded.status == 'closed'
+
+    def test_reopen_exp_after_save_load(self, exp, sample_data):
+        _setup_full(exp)
+        exp.build()
+        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        exp.add_collector(mc)
+        exp.exp()
+        first_result = mc.get_metrics_agg(None)[0]
+        exp.close_exp()
+
+        loaded = Experimenter.load(exp.path, sample_data)
+        assert loaded.status == 'closed'
+        loaded.reopen_exp()
+        assert loaded.status == 'open'
+        loaded.exp()
+
+        mc2 = list(loaded.collectors.values())[0]
+        assert mc2.has('dt')
+        second_result = mc2.get_metrics_agg(None)[0]
+        assert second_result.shape == first_result.shape
+
 
 class TestSaveLoad:
     def test_save_creates_file(self, exp):
