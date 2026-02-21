@@ -32,12 +32,13 @@ def _build_sub(node_attrs, data_dict, fit_process, logger):
         obj.fit(fit_data)
     elapsed_time = time.time() - start_time
 
-    train_X, train_v_X = fit_data['X']
+    _ref_key = 'X' if 'X' in data_dict else 'y'
+    train_, train_v_ = fit_data[_ref_key]
     info = {
         'build_id': str(uuid.uuid4()),
         'fit_time': elapsed_time,
-        'train_shape': train_X.get_shape() if train_X is not None else None,
-        'train_v_shape': train_v_X.get_shape() if train_v_X is not None else None
+        'train_shape': train_.get_shape() if train_ is not None else None,
+        'train_v_shape': train_v_.get_shape() if train_v_ is not None else None
     }
     return obj, result, info
 
@@ -107,7 +108,10 @@ class StageObj():
             idx += 1
 
         if len(self.objs_) == 0:
-            self.status = 'finalized'
+            if self.error is None:
+                self.status = 'finalized'
+            else:
+                self.status = 'error'
             self.objs_ = None
         else:
             self.status = 'built'
@@ -193,7 +197,10 @@ class HeadObj():
             idx += 1
 
         if idx == 0:
-            self.status = 'finalized'
+            if self.error is None:
+                self.status = 'finalized'
+            else:
+                self.status = 'error'
         else:
             self.status = 'built'
 

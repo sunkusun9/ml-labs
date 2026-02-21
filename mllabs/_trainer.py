@@ -227,15 +227,18 @@ class Trainer:
 
         node_attrs = self.pipeline.get_node_attrs(node)
         cache_data = []
-        for data_dict, (obj, train_, info) in zip(self.get_data(node_attrs['edges']), self.node_objs[node].get_obj()):
-            train_X, valid_X = data_dict['X']
-
-            if train_ is None:
-                train_result = obj.process(train_X)
+        for data_dict, (obj, train_stored, info) in zip(self.get_data(node_attrs['edges']), self.node_objs[node].get_obj()):
+            if 'X' in data_dict:
+                train_, valid_ = data_dict['X']
             else:
-                train_result = train_
+                train_, valid_ = data_dict['y']
 
-            valid_result = obj.process(valid_X) if valid_X is not None else None
+            if train_stored is None:
+                train_result = obj.process(train_)
+            else:
+                train_result = train_stored
+
+            valid_result = obj.process(valid_) if valid_ is not None else None
 
             cache_data.append((train_result, valid_result))
 

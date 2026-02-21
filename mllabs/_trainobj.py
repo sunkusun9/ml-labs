@@ -32,12 +32,12 @@ def _train_build(node_attrs, data_dict, logger):
     elapsed_time = time.time() - start_time
 
     _ref_key = 'X' if 'X' in data_dict else 'y'
-    train_X, train_v_X = data_dict[_ref_key]
+    train_, train_v_ = data_dict[_ref_key]
     info = {
         'build_id': str(uuid.uuid4()),
         'fit_time': elapsed_time,
-        'train_shape': train_X.get_shape() if train_X is not None else None,
-        'train_v_shape': train_v_X.get_shape() if train_v_X is not None else None,
+        'train_shape': train_.get_shape() if train_ is not None else None,
+        'train_v_shape': train_v_.get_shape() if train_v_ is not None else None,
     }
     return obj, result, info
 
