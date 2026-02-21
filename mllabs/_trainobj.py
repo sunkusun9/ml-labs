@@ -31,7 +31,8 @@ def _train_build(node_attrs, data_dict, logger):
         result = None
     elapsed_time = time.time() - start_time
 
-    train_X, train_v_X = data_dict['X']
+    _ref_key = 'X' if 'X' in data_dict else 'y'
+    train_X, train_v_X = data_dict[_ref_key]
     info = {
         'build_id': str(uuid.uuid4()),
         'fit_time': elapsed_time,
