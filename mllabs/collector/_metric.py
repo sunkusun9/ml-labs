@@ -59,6 +59,8 @@ class MetricCollector(Collector):
         for node in nodes:
             if node in self.metrics:
                 del self.metrics[node]
+            if node in self._sub:
+                del self._sub[node]
         self.save()
 
     def save(self):

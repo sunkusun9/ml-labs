@@ -391,6 +391,44 @@ class TestStateManagement:
         exp.reinitialize(['dt'])
         assert 'dt' not in exp.node_objs
 
+    def test_reopen_exp_status(self, exp):
+        _setup_full(exp)
+        exp.build()
+        exp.exp()
+        exp.close_exp()
+        assert exp.status == 'closed'
+        exp.reopen_exp()
+        assert exp.status == 'open'
+
+    def test_reopen_exp_collector_data_valid(self, exp):
+        _setup_full(exp)
+        exp.build()
+        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        exp.add_collector(mc)
+        exp.exp()
+        assert mc.has('dt')
+        first_result = mc.get_metrics_agg(None)[0]
+
+        exp.close_exp()
+        exp.reopen_exp()
+        exp.exp()
+
+        assert mc.has('dt')
+        second_result = mc.get_metrics_agg(None)[0]
+        assert second_result.shape == first_result.shape
+
+    def test_reset_nodes_clears_collector_sub(self, exp):
+        _setup_full(exp)
+        exp.build()
+        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        exp.add_collector(mc)
+        exp.exp()
+
+        mc._sub['dt'] = [{'valid': 0.9}]
+        exp.reset_nodes(['dt'])
+
+        assert 'dt' not in mc._sub
+
 
 class TestSaveLoad:
     def test_save_creates_file(self, exp):

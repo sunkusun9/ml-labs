@@ -81,6 +81,8 @@ class SHAPCollector(Collector):
                     file_path.unlink()
             if node in self._mem_data:
                 del self._mem_data[node]
+            if node in self._buffer:
+                del self._buffer[node]
 
     def save(self):
         if self.path is None:
