@@ -345,11 +345,9 @@ class Experimenter():
         if self.status != "closed":
             raise RuntimeError("")
         for k in list(self.node_objs.keys()):
-            node = self.pipeline.get_node(k)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                self.logger.info(f"Initialize '{k}'")
-                del self.node_objs[k]
+            self.logger.info(f"Initialize '{k}'")
+            del self.node_objs[k]
+        self.status = "open"
         self.build()
 
     def set_node(

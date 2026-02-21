@@ -113,6 +113,8 @@ class StackingCollector(Collector):
                 del self._mem_data[node]
             if node in self.columns:
                 del self.columns[node]
+            if node in self._buffer:
+                del self._buffer[node]
 
     def save(self):
         if self.path is None:
