@@ -16,7 +16,32 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **Trainer** (`_trainer.py`): 학습 실행/관리 (split 기반)
 - **Inferencer** (`_inferencer.py`): 학습된 파이프라인을 새 데이터에 적용
 
+## Node/Experiment 상태 모델
+
+### Node 4-State
+`init → built → finalized` / `init → error → (reset) → init`
+
+| 상태 | Disk | Memory | 설명 |
+|------|------|--------|------|
+| **init** | - | - | Pipeline에 정의만 된 상태 |
+| **built** | O | Stage: O / Head: X | 빌드 완료, 결과 추출 가능 |
+| **finalized** | X | X | 결과 추출 완료, 리소스 해제 (Head 전용) |
+| **error** | - | 에러 정보 | 빌드/실험 중 에러 발생, 내역 보존 |
+
+- Stage는 finalize 불가 (하위 노드에 데이터 지속 공급)
+- 상위 Stage가 error면 하위 노드도 자연스럽게 error (별도 전파 로직 불필요)
+
+### Experiment 2-State
+`open → closed`
+- **open**: Stage/Head 객체 유지, Collector 데이터 유지
+- **closed**: `close_exp` 호출 → Stage 객체까지 일괄 정리, Collector 데이터는 잔존
+
 ## 핵심 클래스
+
+### Node 역할
+- **DataSource** (None): 원본 데이터 제공, Pipeline에 명시적 노드 없음
+- **Stage**: 전처리/변환 (TransformProcessor) — 하위 노드에 데이터 공급
+- **Head**: 모델링/예측 (PredictProcessor) — 최종 결과 생산
 
 ### Pipeline 계층 (`_pipeline.py`)
 - **Pipeline**: 노드 그래프 관리
@@ -42,6 +67,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `node_objs`: `{node_name: StageObj|HeadObj}`
 - `cache`: DataCache (LRU, 용량 기반)
 - 실행: `build(nodes, rebuild=False)` (stage), `exp(nodes)` (head)
+- `close_exp()`: open→closed 전환, Stage 객체 일괄 정리 (Collector 데이터 유지)
 - 상태관리: `reset_nodes(nodes)` - node_objs, cache, collectors 초기화
 - 에러 조회: `show_error_nodes(nodes=None, traceback=False)` - error 상태 노드 출력
 - `add_collector(collector)`: Collector 등록 (path 설정, save)
@@ -196,3 +222,12 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 {inferencer_path}/
   __inferencer.pkl             # pipeline, selected_stages/heads, n_splits, node_objs, v (단일 파일)
 ```
+
+## 패키지 정보
+- PyPI 패키지명: `ml-labs`, Python 패키지: `mllabs/`
+- `pyproject.toml`: setuptools 기반, Python >=3.10
+- optional deps: `xgboost`, `lightgbm`, `catboost`, `shap`, `polars`, `all`, `dev`
+- 릴리즈: `v*` 태그 push → GitHub Actions (`publish.yml`) → 테스트(3.10/3.11/3.12) → build → PyPI 자동 배포 (OIDC)
+
+## 향후 방향
+- Experimenter에서 도출한 Pipeline으로 Train/Inference 파이프라인 구성 → test 데이터 예측
