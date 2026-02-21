@@ -340,7 +340,8 @@ class Experimenter():
                 self.logger.info(f"Finalize '{k}'")
                 node_obj.finalize()
         self.status = "closed"
-    
+        self._save()
+
     def reopen_exp(self):
         if self.status != "closed":
             raise RuntimeError("")
