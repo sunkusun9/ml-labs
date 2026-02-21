@@ -90,16 +90,24 @@ class TransformProcessor():
 
     def fit(self, data_dict):
         # X key로 데이터 가져오기
-        train_X, train_v_X = data_dict['X']
-        self.X_ = train_X.get_columns()
+        if 'X' in data_dict:
+            train_X, train_v_X = data_dict['X']
+            self.X_ = train_X.get_columns()
+            train_X_native = unwrap(train_X)
+        else:
+            train_X, train_v_X = None, None
+            self.X_ = []
+            train_X_native = None
 
         # y key로 데이터 가져오기 (있으면)
         if 'y' in data_dict:
             train_y, train_v_y = data_dict['y']
             self.y_columns = train_y.get_columns()
+            train_y_native = unwrap(train_y.squeeze())
         else:
             train_y, train_v_y = None, None
             self.y_columns = None
+            train_y_native = None
 
         params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
         self.obj = self.transformer(**params)
@@ -112,14 +120,13 @@ class TransformProcessor():
         else:
             fit_params = {}
 
-        # DataWrapper에서 native로 변환
-        train_X_native = unwrap(train_X)
-
-        if train_y is None:
-            self.obj.fit(train_X_native, **fit_params)
-        else:
-            train_y_native = unwrap(train_y.squeeze())
-            self.obj.fit(train_X_native, train_y_native, **fit_params)
+        if train_X_native is not None:
+            if train_y_native is None:
+                self.obj.fit(train_X_native, **fit_params)
+            else:
+                self.obj.fit(train_X_native, train_y_native, **fit_params)
+        elif train_y_native is not None:
+            self.obj.fit(train_y_native, **fit_params)
 
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
@@ -130,21 +137,35 @@ class TransformProcessor():
 
         if column_names is not None:
             self.output_vars = column_names
+        elif train_X_native is None and self.y_columns is not None:
+            self.output_vars = list(self.y_columns)
         return self
 
     def fit_process(self, data_dict):
         # X key로 데이터 가져오기
-        train_X, train_v_X = data_dict['X']
-        self.X_ = train_X.get_columns()
-        train_index = train_X.get_index()
+        if 'X' in data_dict:
+            train_X, train_v_X = data_dict['X']
+            self.X_ = train_X.get_columns()
+            train_index = train_X.get_index()
+            train_wrapper_class = type(train_X)
+            train_X_native = unwrap(train_X)
+        else:
+            train_X, train_v_X = None, None
+            self.X_ = []
+            train_X_native = None
 
         # y key로 데이터 가져오기 (있으면)
         if 'y' in data_dict:
             train_y, train_v_y = data_dict['y']
             self.y_columns = train_y.get_columns()
+            train_y_native = unwrap(train_y.squeeze())
+            if train_X_native is None:
+                train_index = train_y.get_index()
+                train_wrapper_class = type(train_y)
         else:
             train_y, train_v_y = None, None
             self.y_columns = None
+            train_y_native = None
 
         params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
         self.obj = self.transformer(**params)
@@ -157,17 +178,16 @@ class TransformProcessor():
         else:
             fit_params = {}
 
-        # DataWrapper에서 native로 변환
-        train_X_native = unwrap(train_X)
-
-        if train_y is None:
-            result = self.obj.fit_transform(train_X_native, **fit_params)
+        if train_X_native is not None:
+            if train_y_native is None:
+                result = self.obj.fit_transform(train_X_native, **fit_params)
+            else:
+                result = self.obj.fit_transform(train_X_native, train_y_native, **fit_params)
+        elif train_y_native is not None:
+            result = self.obj.fit_transform(train_y_native, **fit_params)
         else:
-            train_y_native = unwrap(train_y.squeeze())
-            result = self.obj.fit_transform(train_X_native, train_y_native, **fit_params)
+            result = self.obj.fit_transform(**fit_params)
 
-        # train의 Wrapper 타입으로 변환
-        train_wrapper_class = type(train_X)
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
             column_names = list(self.obj.get_feature_names_out())
@@ -177,17 +197,20 @@ class TransformProcessor():
 
         if column_names is not None:
             self.output_vars = column_names
+        elif train_X_native is None and self.y_columns is not None:
+            self.output_vars = list(self.y_columns)
         return train_wrapper_class.from_output(result, self.output_vars, train_index)
 
     def process(self, data):
-        # DataWrapper에서 native로 변환
-        data_X = unwrap(data)
         data_index = data.get_index()
-
-        result = self.obj.transform(data_X)
-
-        # data의 Wrapper 타입으로 변환
         data_wrapper_class = type(data)
+
+        if self.X_:
+            data_native = unwrap(data)
+        else:
+            data_native = unwrap(data.squeeze())
+
+        result = self.obj.transform(data_native)
         return data_wrapper_class.from_output(result, self.output_vars, data_index)
 
 class PredictProcessor():
