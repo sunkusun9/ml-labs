@@ -758,24 +758,27 @@ class Experimenter():
         use_cache = self.cache_maxsize > 0
         cache_data = list() if use_cache else None
         
-        for data_dict, (obj, train_, info) in zip(it, sub):
-            # X key로 입력 데이터 가져오기
-            (train_X, train_v_X), valid_X = data_dict['X']
+        for data_dict, (obj, train_stored, info) in zip(it, sub):
+            if 'X' in data_dict:
+                # X key로 입력 데이터 가져오기
+                (train_, train_v_), valid_ = data_dict['X']
+            else:
+                (train_, train_v_), valid_ = data_dict['y']
 
             # train data 처리
-            if train_ is None:
-                train_result = obj.process(train_X)
+            if train_stored is None:
+                train_result = obj.process(train_)
             else:
-                train_result = train_
+                train_result = train_stored
 
             # train_v data 처리
-            if train_v_X is not None:
-                train_v_result = obj.process(train_v_X)
+            if train_v_ is not None:
+                train_v_result = obj.process(train_v_)
             else:
                 train_v_result = None
 
             # valid data 처리 (외부 fold의 valid)
-            valid_result = obj.process(valid_X)
+            valid_result = obj.process(valid_)
             if use_cache:
                 cache_data.append(((train_result, train_v_result), valid_result))
             # 필요하면 컬럼 필터링
@@ -819,11 +822,14 @@ class Experimenter():
         it = self.get_node_data_train(node, idx)
         sub = self.node_objs[node].get_objs(idx)
         cache_data = list()
-        for data_dict, (obj, train_, info) in zip(it, sub):
-            train_X, train_v_X = data_dict['X']
-            train_result = obj.process(train_X) if train_ is None else train_
-            if train_v_X is not None:
-                train_v_result = obj.process(train_v_X)
+        for data_dict, (obj, train_stored, info) in zip(it, sub):
+            if 'X' in data_dict:
+                train_, train_v_ = data_dict['X']
+            else:
+                train_, train_v_ = data_dict['y']
+            train_result = obj.process(train_) if train_stored is None else train_stored
+            if train_v_ is not None:
+                train_v_result = obj.process(train_v_)
             else:
                 train_v_result = None
             cache_data.append((train_result, train_v_result))
@@ -857,11 +863,14 @@ class Experimenter():
         sub = self.node_objs[node].get_objs(idx)
         use_cache = self.cache_maxsize > 0
         cache_data = list() if use_cache else None
-        for data_dict, (obj, train_, info) in zip(it, sub):
+        for data_dict, (obj, train_stored, info) in zip(it, sub):
             # X key로 valid 데이터 가져오기
-            valid_X = data_dict['X']
+            if 'X' in data_dict:
+                valid_ = data_dict['X']
+            else:
+                valid_ = data_dict['y']
             # valid data 처리 (외부 fold의 valid)
-            valid_result = obj.process(valid_X)
+            valid_result = obj.process(valid_)
             if use_cache:
                 cache_data.append(valid_result)
             # 필요하면 컬럼 필터링
