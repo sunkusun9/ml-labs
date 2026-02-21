@@ -8,6 +8,12 @@ import os
 import shutil
 import time
 
+
+def _get_process_inputs(data_dict):
+    key = 'X' if 'X' in data_dict else 'y'
+    (train, train_v), valid = data_dict[key]
+    return train, train_v, valid
+
 def _build_sub(node_attrs, data_dict, fit_process, logger):
     method = node_attrs['method']
     if method in ['transform', 'fit_transform']:
@@ -58,7 +64,7 @@ def _build_iter_output(node_attrs, data_dict_it, logger):
     
     for data_dict in data_dict_it:
         obj, result, info =  _build_sub(node_attrs, data_dict, fit_process, logger)
-        (train_X, train_v_X), valid_X = data_dict['X']
+        train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
         if result is None:
             train_result = obj.process(train_X)
         else:
@@ -113,8 +119,7 @@ class StageObj():
     def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input = True, include_output = True):
         if self.status == "built":
             for data_dict, (obj, train_, spec) in zip(data_dict_it, self.objs_[idx]):
-                # X key로 데이터 가져오기
-                (train_X, train_v_X), valid_X = data_dict['X']
+                train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
                 sub_result = {'spec': spec, 'object': obj}
                 if include_output:
                     if train_ is None:
@@ -206,8 +211,7 @@ class HeadObj():
                     break
                 with open(filename, 'rb') as f:
                     obj, train_, spec = pkl.load(f)
-                # X key로 데이터 가져오기
-                (train_X, train_v_X), valid_X = data_dict['X']
+                train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
                 sub_result = {'spec': spec, 'object': obj}
                 if include_output:
                     if train_ is None:
