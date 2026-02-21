@@ -92,6 +92,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `load()`, `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
 
 - **에러 처리**: build/exp 중 노드별 try/except, error 시 나머지 노드 계속 진행
+- **load() 버그 픽스**: 파일 없이 error 상태인 노드는 'finalized'가 아닌 'error'로 복원
 
 ### Trainer (`_trainer.py`)
 - 생성자: `(name, pipeline, data, path, splitter, splitter_params, cache, logger)`
@@ -184,6 +185,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `get_feature_names_out` 반환값은 `list()` 로 변환하여 사용 (list/ndarray 호환)
 - `data_dict` (Experimenter): `{key: ((train, train_v), valid), ...}` 형태
 - `data_dict` (Trainer): `{key: (train, valid), ...}` 형태 (inner fold 없음)
+- **X-less 지원**: `edges`에 `'X'`가 없고 `'y'`만 있는 경우(e.g. `LabelEncoder`) `'y'`를 primary input으로 사용
+  - `fit`/`fit_process`: `'X'` 없으면 `'y'` 데이터를 squeeze하여 전달, `output_vars`를 `y_columns`로 설정
+  - `process`: `X_`가 비어 있으면 입력 데이터를 squeeze 후 transform
 
 ## Adapter 인터페이스
 - `get_params(params, logger)`: 모델 생성 파라미터
