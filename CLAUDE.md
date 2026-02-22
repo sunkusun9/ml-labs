@@ -46,7 +46,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ### Pipeline 계층 (`_pipeline.py`)
 - **Pipeline**: 노드 그래프 관리
   - `nodes`: `{name: PipelineNode}` (None=DataSource), `grps`: `{name: PipelineGroup}`
-  - `set_grp(exist='skip'|'error'|'replace')`, `set_node(exist=...)`, `rename_grp`, `remove_grp`, `remove_node`
+  - `set_grp(exist='diff'|'skip'|'error'|'replace')`, `set_node(exist=...)`, `rename_grp`, `remove_grp`, `remove_node`
   - `get_node_names(query)`, `get_node_attrs(name)`, `_get_affected_nodes(nodes)`
   - `copy()`, `copy_stage()`, `copy_nodes(node_names)` — 선택적 복사
   - `compare_nodes(nodes)` → `{processor_name: DataFrame}` (params 차이 + edges['X'] stage별 변수 차이)
@@ -55,11 +55,13 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`
   - `children`: 자식 그룹명 리스트, `nodes`: 소속 노드명 리스트
   - `get_attrs(grps)`: 상위 그룹 속성 병합하여 반환
+  - `diff(processor, edges, method, parent, adapter, params)`: 달라진 필드명 리스트 반환
 
 - **PipelineNode**: 개별 노드
   - 속성: `name`, `grp`, `processor`, `edges`, `method`, `adapter`, `params`
   - `output_edges`: 이 노드를 입력으로 사용하는 노드명 리스트
   - `get_attrs(grps)`: 그룹 속성과 노드 속성 병합
+  - `diff(grp, processor, edges, method, adapter, params)`: 달라진 필드명 리스트 반환
 
 ### Experimenter (`_experimenter.py`)
 - 생성자: `(data, path, ..., cache_maxsize=4GB, logger)`
@@ -174,9 +176,13 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - 상위→하위 병합: 같은 key면 extend
 
 ## exist 파라미터 (set_grp, set_node, collect)
-- `'skip'` (default): 이미 존재하면 무시하고 반환
+- `'diff'` (default, set_grp/set_node): 제공된 파라미터가 기존과 다를 때만 업데이트, 동일하면 skip
+- `'skip'` (collect default): 이미 존재하면 무시하고 반환
 - `'error'`: 이미 존재하면 ValueError
-- `'replace'`: 기존 객체를 업데이트
+- `'replace'`: 기존 객체를 무조건 업데이트
+
+### set_grp replace 동작
+- `edges`, `params` 모두 `None→{}` 변환 후 모든 필드 직접 대입 (기존 값 유지 없음)
 
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
