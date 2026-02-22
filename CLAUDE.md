@@ -44,6 +44,11 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **Head**: 모델링/예측 (PredictProcessor) — 최종 결과 생산
 
 ### Pipeline 계층 (`_pipeline.py`)
+- **`_params_equal(a, b)`**: params dict 안전 비교 헬퍼
+  - dict → key별 재귀 비교
+  - `__dict__` 있는 객체 → `__dict__` 재귀 비교 (lgb_early_stopping 등 콜백 처리)
+  - `__dict__` 없는 객체(primitive, C-ext) → `==` fallback (try/except)
+  - 같은 타입이어야 equal 가능, 다른 타입 → False
 - **Pipeline**: 노드 그래프 관리
   - `nodes`: `{name: PipelineNode}` (None=DataSource), `grps`: `{name: PipelineGroup}`
   - `set_grp(exist='diff'|'skip'|'error'|'replace')`, `set_node(exist=...)`, `rename_grp`, `remove_grp`, `remove_node`
@@ -157,10 +162,13 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `_is_mergeable()`: self.adapter에서 직접 판단
   - 쿼리: `get_attr(node, idx)`, `get_attrs(nodes)`, `get_attrs_agg(node, agg_inner, agg_outer)`
 
-- **SHAPCollector** (`_shap.py`): SHAP value 수집 (train/valid 비교 분석용)
+- **SHAPCollector** (`_shap.py`): SHAP value 수집 및 분석
   - `explainer_cls`(default=shap.TreeExplainer), `data_filter`(DataFilter 인스턴스)
   - train/valid 각각 필터 적용 → SHAP 계산 → raw output 저장
   - 결과: `results[node][(idx, inner_idx)] = {'train', 'valid', 'train_index', 'valid_index', 'columns'}`
+  - 분석: `get_feature_importance(node, idx)` → inner fold별 `pd.Series` 리스트
+  - 분석: `get_feature_importance_agg(node, agg_inner='mean', agg_outer='mean')` → agg_inner=None이면 MultiIndex, agg_outer=None이면 DataFrame, 둘 다 설정이면 Series
+  - SHAP 3D array(multiclass) 지원: `(n_samples, n_features, n_classes)` → class축 평균 후 처리
 
 - **OutputCollector** (`_output.py`): output_train/output_valid 원본 저장
   - `output_var`, `include_target`
@@ -199,6 +207,8 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `get_params(params, logger)`: 모델 생성 파라미터
 - `get_fit_params(data_dict, X, y, params, logger)`: fit 파라미터
 - `result_objs`: `{name: (callable, mergeable_bool)}`
+- `__eq__`: `type(self) is type(other) and self.__dict__ == other.__dict__` — diff 모드에서 adapter 비교에 사용
+- `__hash__`: `id(self)` — set/dict 키로 사용 가능
 
 ## 보조 모듈
 - **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze/mean/mode/simple) — pandas/polars/cudf/numpy 통합
