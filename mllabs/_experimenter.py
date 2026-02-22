@@ -245,7 +245,7 @@ class Experimenter():
         grp_path = self.get_grp_path(node.grp)
         return grp_path / node.name
 
-    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist = 'skip'):
+    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist = 'diff'):
         self._check_open()
         result_obj = self.pipeline.set_grp(
             name, role, processor, edges, method, parent, adapter, params, exist
@@ -354,7 +354,7 @@ class Experimenter():
 
     def set_node(
         self, name, grp, processor = None, edges = None,
-        method = None, adapter = None, params = None, exist = 'skip'
+        method = None, adapter = None, params = None, exist = 'diff'
     ):
         self._check_open()
         result_obj = self.pipeline.set_node(

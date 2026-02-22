@@ -64,6 +64,22 @@ class PipelineGroup:
     def update_attrs(self):
         self.attrs = None
 
+    def diff(self, processor=None, edges=None, method=None, parent=None, adapter=None, params=None):
+        changed = []
+        if processor != self.processor:
+            changed.append('processor')
+        if edges != self.edges:
+            changed.append('edges')
+        if method != self.method:
+            changed.append('method')
+        if parent != self.parent:
+            changed.append('parent')
+        if adapter != self.adapter:
+            changed.append('adapter')
+        if params != self.params:
+            changed.append('params')
+        return changed
+
     def copy(self):
         ret = PipelineGroup(
             self.name, self.role, self.processor, self.edges.copy(),
@@ -131,6 +147,22 @@ class PipelineNode:
 
     def update_attrs(self):
         self.attrs = None
+
+    def diff(self, grp, processor=None, edges=None, method=None, adapter=None, params=None):
+        changed = []
+        if grp != self.grp:
+            changed.append('grp')
+        if processor != self.processor:
+            changed.append('processor')
+        if edges != self.edges:
+            changed.append('edges')
+        if method != self.method:
+            changed.append('method')
+        if adapter != self.adapter:
+            changed.append('adapter')
+        if params != self.params:
+            changed.append('params')
+        return changed
 
 
 class Pipeline:
@@ -312,13 +344,15 @@ class Pipeline:
         return [i[0] for i in sorted_nodes if i[0] is not None]
 
     def set_grp(
-            self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist='skip'
+            self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist='diff'
         ):
         self._validate_name(name)
         if name in self.nodes:
             raise ValueError(f"Name '{name}' already exists as a node")
         if edges is None:
             edges = {}
+        if params is None:
+            params = {}
 
         if parent is not None:
             if parent not in self.grps:
@@ -346,6 +380,10 @@ class Pipeline:
             return {"result": "skip", "grp": grp, "affected_nodes": list()}
         elif exist == 'error':
             raise ValueError(f"Group '{name}' already exists.")
+        elif exist == 'diff':
+            old_grp = self.grps[name]
+            if not old_grp.diff(processor, edges, method, parent, adapter, params):
+                return {"result": "skip", "grp": old_grp, "affected_nodes": list()}
 
         old_grp = self.grps[name]
         if old_grp.role != role:
@@ -363,16 +401,11 @@ class Pipeline:
             if parent is not None:
                 self.grps[parent].children.append(name)
 
-        if processor is not None:
-            grp.processor = processor
-        if edges is not None and len(edges) > 0:
-            grp.edges = edges
-        if method is not None:
-            grp.method = method
-        if adapter is not None:
-            grp.adapter = adapter
-        if params is not None:
-            grp.params.update(params)
+        grp.processor = processor
+        grp.edges = edges
+        grp.method = method
+        grp.adapter = adapter
+        grp.params = params
 
         grp.update_attrs()
         attrs = grp.get_attrs(self.grps)
@@ -523,7 +556,7 @@ class Pipeline:
                             parent_node.output_edges.append(node_name)
 
     def set_node(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, exist='skip'
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, exist='diff'
     ):
         self._validate_name(name)
 
@@ -546,6 +579,10 @@ class Pipeline:
                 return {'result': 'skip', 'affected_nodes': [], 'old_obj': self.nodes[name], 'obj': self.nodes[name]}
             elif exist == 'error':
                 raise ValueError(f"Node '{name}' already exists.")
+            elif exist == 'diff':
+                old_node = self.nodes[name]
+                if not old_node.diff(grp, processor, edges, method, adapter, params):
+                    return {'result': 'skip', 'affected_nodes': [], 'old_obj': old_node, 'obj': old_node}
 
         old_edges = None
         old_output_edges = None

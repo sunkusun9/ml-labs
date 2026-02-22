@@ -108,11 +108,6 @@ class TestSetGrp:
         assert 'child' not in p.grps['p1'].children
         assert 'child' in p.grps['p2'].children
 
-    def test_replace_params_merge(self, p):
-        p.set_grp('g1', role='stage', params={'a': 1})
-        p.set_grp('g1', role='stage', params={'b': 2}, exist='replace')
-        assert p.grps['g1'].params == {'a': 1, 'b': 2}
-
     def test_replace_affected_nodes_with_group_edges(self, p):
         # Control: group has edges → affected_nodes should include group nodes (works before fix)
         p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
