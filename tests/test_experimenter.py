@@ -539,15 +539,6 @@ class TestExpObj:
         with pytest.raises(RuntimeError):
             list(obj.exp_idx(0, {}, iter([]), None))
 
-    def test_stage_obj_end_exp(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        obj.start_build()
-        obj.end_build()
-        obj.start_exp()
-        obj.end_exp()
-        assert obj.status == 'built'
-
     def test_stage_obj_finalize(self, tmp_path):
         path = tmp_path / 'stage_node'
         obj = StageObj(path)

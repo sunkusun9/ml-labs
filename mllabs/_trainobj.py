@@ -47,7 +47,6 @@ class TrainStageObj:
     def __init__(self, path):
         self.path = path
         self.status = None
-        self.error = None
         self.objs_ = None
 
     def load(self):
@@ -90,7 +89,6 @@ class TrainHeadObj:
     def __init__(self, path):
         self.path = path
         self.status = None
-        self.error = None
 
     def load(self):
         if not os.path.isdir(self.path):

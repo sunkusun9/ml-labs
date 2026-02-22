@@ -130,10 +130,6 @@ class StageObj():
         else:
             self.status = 'built'
 
-    def start_exp(self, finalize = False):
-        if finalize:
-            raise ValueError("StageObj cannot be finalized after Experiment")
-
     def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input = True, include_output = True):
         if self.status == "built":
             for data_dict, (obj, train_, spec) in zip(data_dict_it, self.objs_[idx]):
@@ -159,9 +155,7 @@ class StageObj():
         else:
             raise RuntimeError(f"StageObj cannot be experimented unless built")
     
-    def end_exp(self):
-        pass
-    
+   
     def start_build(self):
         self.objs_ = list()
         if not os.path.isdir(self.path):
@@ -237,6 +231,7 @@ class HeadObj():
         self.finalize_after_exp = finalize
         if not os.path.isdir(self.path):
             os.makedirs(self.path, exist_ok = True)
+        self.status = None
 
     def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input = True, include_output = True):
         if self.status == "built":
