@@ -566,6 +566,82 @@ class TestCollectorWithExperimenter:
         assert mac.has('dt')
 
 
+class TestSHAPCollector:
+    @pytest.fixture(autouse=True)
+    def skip_if_no_shap(self):
+        pytest.importorskip('shap')
+
+    def _make_sc(self, exp):
+        from mllabs import SHAPCollector
+        sc = SHAPCollector('shap', Connector(processor=DecisionTreeClassifier))
+        exp.add_collector(sc)
+        return sc
+
+    def test_collect_basic(self, built_exp):
+        sc = self._make_sc(built_exp)
+        assert sc.has_node('dt')
+
+    def test_get_feature_importance_returns_list(self, built_exp):
+        sc = self._make_sc(built_exp)
+        result = sc.get_feature_importance('dt', 0)
+        assert isinstance(result, list)
+        assert len(result) == 1  # no inner split → 1 inner fold
+
+    def test_get_feature_importance_series_structure(self, built_exp):
+        sc = self._make_sc(built_exp)
+        result = sc.get_feature_importance('dt', 0)
+        s = result[0]
+        assert isinstance(s, pd.Series)
+        assert len(s.index) == 3
+        assert (s >= 0).all()
+
+    def test_get_feature_importance_inner_order(self, built_exp_inner):
+        sc = self._make_sc(built_exp_inner)
+        result = sc.get_feature_importance('dt', 0)
+        assert len(result) == 3  # KFold n_splits=3
+        assert [s.name for s in result] == [0, 1, 2]
+
+    def test_get_feature_importance_agg_default_returns_series(self, built_exp):
+        sc = self._make_sc(built_exp)
+        result = sc.get_feature_importance_agg('dt')
+        assert isinstance(result, pd.Series)
+        assert len(result.index) == 3
+        assert (result >= 0).all()
+
+    def test_get_feature_importance_agg_outer_none_returns_dataframe(self, built_exp):
+        sc = self._make_sc(built_exp)
+        result = sc.get_feature_importance_agg('dt', agg_outer=None)
+        assert isinstance(result, pd.DataFrame)
+        assert result.shape == (3, 2)  # 3 features x 2 outer folds
+
+    def test_get_feature_importance_agg_inner_none_multiindex(self, built_exp_inner):
+        sc = self._make_sc(built_exp_inner)
+        result = sc.get_feature_importance_agg('dt', agg_inner=None)
+        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result.columns, pd.MultiIndex)
+        assert result.shape == (3, 6)  # 3 features x (2 outer * 3 inner)
+
+    def test_get_feature_importance_agg_callable(self, built_exp):
+        sc = self._make_sc(built_exp)
+        result = sc.get_feature_importance_agg('dt', agg_inner=np.mean, agg_outer=np.mean)
+        assert isinstance(result, pd.Series)
+
+    def test_reset_nodes(self, built_exp):
+        sc = self._make_sc(built_exp)
+        assert sc.has_node('dt')
+        sc.reset_nodes(['dt'])
+        assert not sc.has_node('dt')
+
+    def test_save_load(self, built_exp):
+        sc = self._make_sc(built_exp)
+        from mllabs import SHAPCollector
+        loaded = SHAPCollector.load(sc.path)
+        assert loaded.has_node('dt')
+        orig = sc.get_feature_importance_agg('dt')
+        loaded_result = loaded.get_feature_importance_agg('dt')
+        pd.testing.assert_series_equal(orig, loaded_result)
+
+
 class TestBaseCollector:
     def test_get_nodes_none(self):
         from mllabs.collector._base import Collector
