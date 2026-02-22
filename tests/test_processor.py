@@ -15,6 +15,7 @@ requires_polars = pytest.mark.skipif(not HAS_POLARS, reason="polars not installe
 from mllabs.processor import (
     CategoricalConverter,
     CategoricalPairCombiner,
+    FrequencyEncoder,
 )
 
 if HAS_POLARS:
@@ -326,3 +327,109 @@ class TestCategoricalPairCombiner:
         comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
         with pytest.raises(RuntimeError):
             comb.transform(pair_pandas_df)
+
+
+class TestFrequencyEncoder:
+    @pytest.fixture
+    def freq_pandas_df(self):
+        return pd.DataFrame({'ST depression': [0.0, 0.0, 0.0, 1.2, 1.2, 3.5]})
+
+    @pytest.fixture
+    def freq_polars_df(self):
+        if not HAS_POLARS:
+            pytest.skip("polars not installed")
+        return pl.DataFrame({'ST depression': [0.0, 0.0, 0.0, 1.2, 1.2, 3.5]})
+
+    def test_pandas_output_columns(self, freq_pandas_df):
+        fe = FrequencyEncoder()
+        fe.fit(freq_pandas_df)
+        result = fe.transform(freq_pandas_df)
+        assert list(result.columns) == ['ST depression_freq']
+
+    def test_pandas_normalize(self, freq_pandas_df):
+        fe = FrequencyEncoder(normalize=True)
+        fe.fit(freq_pandas_df)
+        result = fe.transform(freq_pandas_df)
+        assert abs(result['ST depression_freq'].iloc[0] - 3/6) < 1e-6
+        assert abs(result['ST depression_freq'].iloc[3] - 2/6) < 1e-6
+        assert abs(result['ST depression_freq'].iloc[5] - 1/6) < 1e-6
+
+    def test_pandas_count(self, freq_pandas_df):
+        fe = FrequencyEncoder(normalize=False)
+        fe.fit(freq_pandas_df)
+        result = fe.transform(freq_pandas_df)
+        assert result['ST depression_freq'].iloc[0] == 3
+        assert result['ST depression_freq'].iloc[3] == 2
+        assert result['ST depression_freq'].iloc[5] == 1
+
+    def test_pandas_unseen_value(self, freq_pandas_df):
+        fe = FrequencyEncoder()
+        fe.fit(freq_pandas_df)
+        unseen = pd.DataFrame({'ST depression': [99.9]})
+        result = fe.transform(unseen)
+        assert result['ST depression_freq'].iloc[0] == 0.0
+
+    def test_pandas_multiple_columns(self):
+        df = pd.DataFrame({'a': [1, 1, 2], 'b': [3, 3, 3]})
+        fe = FrequencyEncoder()
+        fe.fit(df)
+        result = fe.transform(df)
+        assert list(result.columns) == ['a_freq', 'b_freq']
+
+    def test_get_feature_names_out(self, freq_pandas_df):
+        fe = FrequencyEncoder()
+        fe.fit(freq_pandas_df)
+        names = fe.get_feature_names_out()
+        assert names == ['ST depression_freq']
+
+    def test_get_feature_names_out_with_input(self, freq_pandas_df):
+        fe = FrequencyEncoder()
+        fe.fit(freq_pandas_df)
+        names = fe.get_feature_names_out(['ST depression'])
+        assert names == ['ST depression_freq']
+
+    @requires_polars
+    def test_polars_output_columns(self, freq_polars_df):
+        fe = FrequencyEncoder()
+        fe.fit(freq_polars_df)
+        result = fe.transform(freq_polars_df)
+        assert result.columns == ['ST depression_freq']
+
+    @requires_polars
+    def test_polars_normalize(self, freq_polars_df):
+        fe = FrequencyEncoder(normalize=True)
+        fe.fit(freq_polars_df)
+        result = fe.transform(freq_polars_df)
+        assert abs(result['ST depression_freq'][0] - 3/6) < 1e-6
+        assert abs(result['ST depression_freq'][3] - 2/6) < 1e-6
+
+    @requires_polars
+    def test_polars_unseen_value(self, freq_polars_df):
+        fe = FrequencyEncoder()
+        fe.fit(freq_polars_df)
+        unseen = pl.DataFrame({'ST depression': [99.9]})
+        result = fe.transform(unseen)
+        assert result['ST depression_freq'][0] == 0.0
+
+    def test_numpy_output_shape(self):
+        arr = np.array([[0.0], [0.0], [0.0], [1.2], [1.2], [3.5]])
+        fe = FrequencyEncoder()
+        fe.fit(arr)
+        result = fe.transform(arr)
+        assert result.shape == (6, 1)
+
+    def test_numpy_normalize(self):
+        arr = np.array([[0.0], [0.0], [0.0], [1.2], [1.2], [3.5]])
+        fe = FrequencyEncoder(normalize=True)
+        fe.fit(arr)
+        result = fe.transform(arr)
+        assert abs(result[0, 0] - 3/6) < 1e-6
+        assert abs(result[3, 0] - 2/6) < 1e-6
+
+    def test_numpy_unseen_value(self):
+        arr = np.array([[0.0], [1.0], [2.0]])
+        fe = FrequencyEncoder()
+        fe.fit(arr)
+        unseen = np.array([[99.0]])
+        result = fe.transform(unseen)
+        assert result[0, 0] == 0.0

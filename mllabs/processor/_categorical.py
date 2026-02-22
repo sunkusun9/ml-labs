@@ -11,12 +11,81 @@ try:
 except Exception:
     pl = None
 
+from ._util import detect_kind, is_nan
 
-def _is_nan(x):
-    try:
-        return isinstance(x, float) and np.isnan(x)
-    except Exception:
-        return False
+
+class FrequencyEncoder(BaseEstimator, TransformerMixin):
+
+    def __init__(self, normalize=True):
+        self.normalize = normalize
+
+    def fit(self, X, y=None):
+        kind = detect_kind(X)
+        self.freq_ = {}
+
+        if kind == "pandas_df":
+            self.columns_ = list(X.columns)
+            for col in self.columns_:
+                self.freq_[col] = X[col].value_counts(normalize=self.normalize).to_dict()
+        elif kind == "polars_df":
+            self.columns_ = list(X.columns)
+            for col in self.columns_:
+                vc = X.get_column(col).value_counts(normalize=self.normalize)
+                prop_col = "proportion" if self.normalize else "count"
+                self.freq_[col] = dict(zip(vc.get_column(col).to_list(), vc.get_column(prop_col).to_list()))
+        elif kind == "numpy":
+            arr = X if X.ndim > 1 else X.reshape(-1, 1)
+            self.columns_ = list(range(arr.shape[1]))
+            for i in self.columns_:
+                unique, counts = np.unique(arr[:, i], return_counts=True)
+                vals = (counts / counts.sum()).tolist() if self.normalize else counts.tolist()
+                self.freq_[i] = dict(zip(unique.tolist(), vals))
+
+        return self
+
+    def transform(self, X):
+        kind = detect_kind(X)
+        if kind == "pandas_df":
+            return self._transform_pandas(X)
+        if kind == "polars_df":
+            return self._transform_polars(X)
+        if kind == "numpy":
+            return self._transform_numpy(X)
+        raise TypeError(f"Unsupported input type: {type(X)}")
+
+    def _transform_pandas(self, X):
+        return pd.DataFrame(
+            {str(col) + '_freq': X[col].map(self.freq_[col]).fillna(0) for col in self.columns_},
+            index=X.index
+        )
+
+    def _transform_polars(self, X):
+        exprs = []
+        for col in self.columns_:
+            freq_map = self.freq_[col]
+            exprs.append(
+                pl.col(col).map_elements(
+                    lambda x, fm=freq_map: fm.get(x, 0.0),
+                    return_dtype=pl.Float64
+                ).alias(str(col) + '_freq')
+            )
+        return X.select(exprs)
+
+    def _transform_numpy(self, X):
+        arr = X if X.ndim > 1 else X.reshape(-1, 1)
+        result = np.zeros((arr.shape[0], len(self.columns_)), dtype=float)
+        for j in range(len(self.columns_)):
+            freq_map = self.freq_[self.columns_[j]]
+            for i in range(arr.shape[0]):
+                result[i, j] = freq_map.get(arr[i, j], 0.0)
+        return result
+
+    def get_feature_names_out(self, input_features=None):
+        cols = list(input_features) if input_features is not None else [str(c) for c in self.columns_]
+        return [col + '_freq' for col in cols]
+
+    def set_output(self, transform=None):
+        pass
 
 
 class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
@@ -62,7 +131,7 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
     def _is_missing(self, v):
         if v is None:
             return True
-        if _is_nan(v):
+        if is_nan(v):
             return True
         if self.treat_empty_string_as_missing and isinstance(v, str) and v == "":
             return True
@@ -75,17 +144,6 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
 
     def _default_new_name(self, a, b):
         return f"{a}{self.sep}{b}"
-
-    def _detect_kind(self, X):
-        if pd is not None:
-            if isinstance(X, pd.DataFrame):
-                return "pandas_df"
-        if pl is not None:
-            if isinstance(X, pl.DataFrame):
-                return "polars_df"
-        if isinstance(X, np.ndarray):
-            return "numpy"
-        raise TypeError(f"Unsupported input type: {type(X)}")
 
     def _resolve_pair(self, X, p):
         a, b = p
@@ -122,7 +180,7 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
     # ----------------- sklearn API -----------------
 
     def fit(self, X, y=None):
-        kind = self._detect_kind(X)
+        kind = detect_kind(X)
         self._allowed_.clear()
         self._resolved_pairs_.clear()
 
@@ -181,7 +239,7 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
         if not hasattr(self, "_allowed_") or not self._allowed_:
             raise RuntimeError("This transformer is not fitted yet. Call fit() first.")
 
-        kind = self._detect_kind(X)
+        kind = detect_kind(X)
 
         if kind == "pandas_df":
             return self._transform_pandas(X)
@@ -291,23 +349,14 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
             out = np.concatenate([out[:, keep]] + new_cols, axis=1)
 
         if orig_ndim == 1:
-            # 1D 입력은 기본적으로 2D로 늘리지만, 원하면 그대로 반환하도록 여기서는 그대로 2D 유지가 안전
             return out
         return out
+
 
 class CategoricalConverter(BaseEstimator, TransformerMixin):
 
     def __init__(self, columns=None):
         self.columns = columns
-
-    def _detect_kind(self, X):
-        if pd is not None and isinstance(X, pd.DataFrame):
-            return "pandas_df"
-        if pl is not None and isinstance(X, pl.DataFrame):
-            return "polars_df"
-        if isinstance(X, np.ndarray):
-            return "numpy"
-        raise TypeError(f"Unsupported input type: {type(X)}")
 
     def _resolve_columns(self, X, kind):
         if self.columns is None:
@@ -323,13 +372,13 @@ class CategoricalConverter(BaseEstimator, TransformerMixin):
         return cols
 
     def fit(self, X, y=None):
-        kind = self._detect_kind(X)
+        kind = detect_kind(X)
         self.columns_ = self._resolve_columns(X, kind)
         self.kind_ = kind
         return self
 
     def transform(self, X):
-        kind = self._detect_kind(X)
+        kind = detect_kind(X)
         if kind == "pandas_df":
             return self._transform_pandas(X)
         if kind == "polars_df":
@@ -375,7 +424,7 @@ class CatOOVFilter(TransformerMixin, BaseEstimator):
         self.s_mode_ = X.apply(lambda x: x.mode()[0])
         self.fitted_ = True
         return self
-    
+
     def transform(self, X):
         return pd.concat([
             dproc.rearrange_cat(X[k], v, lambda d, c: 0 if c not in d else c, use_set = True).rename(k)
