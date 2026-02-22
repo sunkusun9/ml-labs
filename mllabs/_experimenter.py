@@ -447,13 +447,12 @@ class Experimenter():
                         for w in caught:
                             self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
                 except Exception as e:
-                    node_obj.status = 'error'
-                    node_obj.error = {
+                    node_obj.set_error({
                         'type': type(e).__name__,
                         'message': str(e),
                         'traceback': traceback.format_exc(),
                         'fold': i,
-                    }
+                    })
                     self.logger.info(f"[{node}] Build error at fold {i}: {type(e).__name__}: {e}")
                     self.logger.info(traceback.format_exc())
             self.logger.end_progress(len(target_nodes))
@@ -548,13 +547,12 @@ class Experimenter():
                         if node in matched[name]:
                             collector._end_idx(node, i)
                 except Exception as e:
-                    node_obj.status = 'error'
-                    node_obj.error = {
+                    node_obj.set_error({
                         'type': type(e).__name__,
                         'message': str(e),
                         'traceback': traceback.format_exc(),
                         'fold': i,
-                    }
+                    })
                     self.logger.info(f"[{node}] Exp error at fold {i}: {type(e).__name__}: {e}")
                     for name, collector in self.collectors.items():
                         if node in matched[name]:
