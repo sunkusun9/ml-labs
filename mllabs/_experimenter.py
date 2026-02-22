@@ -350,6 +350,7 @@ class Experimenter():
             del self.node_objs[k]
         self.status = "open"
         self.build()
+        self._save()
 
     def set_node(
         self, name, grp, processor = None, edges = None,

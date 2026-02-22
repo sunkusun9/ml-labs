@@ -113,6 +113,30 @@ class TestSetGrp:
         p.set_grp('g1', role='stage', params={'b': 2}, exist='replace')
         assert p.grps['g1'].params == {'a': 1, 'b': 2}
 
+    def test_replace_affected_nodes_with_group_edges(self, p):
+        # Control: group has edges → affected_nodes should include group nodes (works before fix)
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        r = p.set_grp('g1', role='stage', processor=AnotherProcessor, exist='replace')
+        assert 'n1' in r['affected_nodes']
+
+    def test_replace_affected_nodes_without_group_edges(self, p):
+        # Bug: group has no edges, node has own edges → affected_nodes incorrectly empty
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform')
+        p.set_node('n1', grp='g1', edges={'X': [(None, None)]})
+        r = p.set_grp('g1', role='stage', processor=AnotherProcessor, exist='replace')
+        assert 'n1' in r['affected_nodes']
+
+    def test_replace_affected_nodes_child_grp_when_parent_has_no_edges(self, p):
+        # Bug: parent group has no edges, child group has nodes → parent update misses child nodes
+        p.set_grp('parent', role='stage')
+        p.set_grp('child', role='stage', parent='parent', processor=DummyStage,
+                  method='transform', edges={'X': [(None, None)]})
+        p.set_node('n1', grp='child')
+        r = p.set_grp('parent', role='stage', params={'a': 1}, exist='replace')
+        assert 'n1' in r['affected_nodes']
+
     def test_with_all_attrs(self, p):
         p.set_grp('g1', role='stage', processor=DummyStage,
                   edges={'X': [(None, None)]}, method='transform',
