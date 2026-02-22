@@ -2,6 +2,24 @@ import re
 import pandas as pd
 from ._describer import desc_pipeline, desc_node
 from .adapter  import get_adapter
+
+
+def _params_equal(a, b):
+    if a is b:
+        return True
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        if set(a.keys()) != set(b.keys()):
+            return False
+        return all(_params_equal(a[k], b[k]) for k in a)
+    if type(a).__eq__ is object.__eq__:
+        return True
+    try:
+        result = a == b
+        return bool(result)
+    except Exception:
+        return True
 class PipelineGroup:
     def __init__(
         self, name, role, processor=None, edges=None, method=None, parent=None, adapter=None, params=None
@@ -76,7 +94,7 @@ class PipelineGroup:
             changed.append('parent')
         if adapter != self.adapter:
             changed.append('adapter')
-        if params != self.params:
+        if not _params_equal(params if params is not None else {}, self.params):
             changed.append('params')
         return changed
 
@@ -160,7 +178,7 @@ class PipelineNode:
             changed.append('method')
         if adapter != self.adapter:
             changed.append('adapter')
-        if params != self.params:
+        if not _params_equal(params if params is not None else {}, self.params):
             changed.append('params')
         return changed
 
