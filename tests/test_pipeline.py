@@ -1,4 +1,3 @@
-import sys
 import pytest
 import pandas as pd
 from mllabs._pipeline import Pipeline, PipelineGroup, PipelineNode
@@ -719,26 +718,28 @@ class TestCompareNodes:
 
 
 class TestAdapterEq:
-    @pytest.mark.skipif(sys.version_info < (3, 11), reason="Local class __eq__ via __dict__ unreliable in Python 3.10")
     def test_same_type_same_attrs(self):
         from mllabs.adapter._base import ModelAdapter
+        from mllabs._pipeline import _params_equal
         class DummyAdapter(ModelAdapter):
             pass
-        assert DummyAdapter() == DummyAdapter()
+        assert _params_equal(DummyAdapter(), DummyAdapter())
 
     def test_same_type_different_attrs(self):
         from mllabs.adapter._base import ModelAdapter
+        from mllabs._pipeline import _params_equal
         class DummyAdapter(ModelAdapter):
             pass
-        assert DummyAdapter(eval_mode='none') != DummyAdapter(eval_mode='both')
+        assert not _params_equal(DummyAdapter(eval_mode='none'), DummyAdapter(eval_mode='both'))
 
     def test_different_types(self):
         from mllabs.adapter._base import ModelAdapter
+        from mllabs._pipeline import _params_equal
         class AdapterA(ModelAdapter):
             pass
         class AdapterB(ModelAdapter):
             pass
-        assert AdapterA() != AdapterB()
+        assert not _params_equal(AdapterA(), AdapterB())
 
     def test_set_grp_diff_skips_on_same_adapter_instance(self, p):
         p.set_grp('g1', role='stage', processor=DummyStage, method='transform',

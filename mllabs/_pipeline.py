@@ -13,13 +13,16 @@ def _params_equal(a, b):
         if set(a.keys()) != set(b.keys()):
             return False
         return all(_params_equal(a[k], b[k]) for k in a)
-    if type(a).__eq__ is object.__eq__:
-        return True
-    try:
-        result = a == b
-        return bool(result)
-    except Exception:
-        return True
+    a_dict = getattr(a, '__dict__', None)
+    b_dict = getattr(b, '__dict__', None)
+    if a_dict is None and b_dict is None:
+        try:
+            return bool(a == b)
+        except Exception:
+            return True
+    elif a_dict is None or b_dict is None:
+        return False
+    return _params_equal(a_dict, b_dict)
 class PipelineGroup:
     def __init__(
         self, name, role, processor=None, edges=None, method=None, parent=None, adapter=None, params=None
