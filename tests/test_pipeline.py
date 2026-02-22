@@ -717,6 +717,67 @@ class TestCompareNodes:
         assert len(df.columns) == 0
 
 
+class TestAdapterEq:
+    def test_same_type_same_attrs(self):
+        from mllabs.adapter._base import ModelAdapter
+        from mllabs._pipeline import _params_equal
+        class DummyAdapter(ModelAdapter):
+            pass
+        assert _params_equal(DummyAdapter(), DummyAdapter())
+
+    def test_same_type_different_attrs(self):
+        from mllabs.adapter._base import ModelAdapter
+        from mllabs._pipeline import _params_equal
+        class DummyAdapter(ModelAdapter):
+            pass
+        assert not _params_equal(DummyAdapter(eval_mode='none'), DummyAdapter(eval_mode='both'))
+
+    def test_different_types(self):
+        from mllabs.adapter._base import ModelAdapter
+        from mllabs._pipeline import _params_equal
+        class AdapterA(ModelAdapter):
+            pass
+        class AdapterB(ModelAdapter):
+            pass
+        assert not _params_equal(AdapterA(), AdapterB())
+
+    def test_set_grp_diff_skips_on_same_adapter_instance(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        from mllabs.adapter._base import ModelAdapter
+        class DummyAdapter(ModelAdapter):
+            pass
+        p.set_grp('g1', role='stage', adapter=DummyAdapter(), exist='replace')
+        r = p.set_grp('g1', role='stage', adapter=DummyAdapter(), exist='diff')
+        assert r['result'] == 'skip'
+
+    def test_set_node_diff_skips_on_same_adapter_instance(self, p):
+        from mllabs.adapter._base import ModelAdapter
+        class DummyAdapter(ModelAdapter):
+            pass
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', adapter=DummyAdapter())
+        r = p.set_node('n1', grp='g1', adapter=DummyAdapter(), exist='diff')
+        assert r['result'] == 'skip'
+
+    def test_set_grp_diff_skips_on_non_eq_params(self, p):
+        class NoEqObj:
+            pass
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]}, params={'cb': NoEqObj()})
+        r = p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                      edges={'X': [(None, None)]}, params={'cb': NoEqObj()}, exist='diff')
+        assert r['result'] == 'skip'
+
+    def test_set_grp_diff_detects_different_params(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]}, params={'n': 50})
+        r = p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                      edges={'X': [(None, None)]}, params={'n': 100}, exist='diff')
+        assert r['result'] == 'update'
+
+
 class TestGetParents:
     def test_node_parents(self, p):
         p.set_grp('gp', role='stage')

@@ -57,3 +57,9 @@ class ModelAdapter(ABC):
             dict: 조정된 파라미터
         """
         return params
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self.__dict__ == other.__dict__
+
+    def __hash__(self):
+        return id(self)
