@@ -123,6 +123,7 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
         self.new_col_names = list(new_col_names) if new_col_names is not None else None
 
         self._allowed_ = {}
+        self._categories_ = {}
         self._resolved_pairs_ = []
         self._new_names_ = []
 
@@ -233,6 +234,14 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
             allowed = {k for k, c in freq.items() if c > self.min_frequency}
             self._allowed_[new_name] = allowed
 
+            # CategoricalDtype용 categories 구성
+            categories = sorted(allowed)
+            if self.missing_value is not None and not is_nan(self.missing_value):
+                mv = str(self.missing_value)
+                if mv not in categories:
+                    categories.insert(0, mv)
+            self._categories_[new_name] = categories
+
         return self
 
     def transform(self, X):
@@ -259,18 +268,19 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
 
         for (a_name, b_name, _, _), new_name in zip(self._resolved_pairs_, self._new_names_):
             allowed = self._allowed_.get(new_name, set())
+            categories = self._categories_.get(new_name)
+            dtype = pd.CategoricalDtype(categories=categories) if categories is not None else None
 
-            def _map_row(va, vb):
+            def _map_row(va, vb, _allowed=allowed):
                 comb = self._combine(va, vb)
                 if comb is None:
                     return self.missing_value
-                if comb in allowed:
+                if comb in _allowed:
                     return comb
                 return self.missing_value
 
-            X_out[new_name] = [
-                _map_row(va, vb) for va, vb in zip(X_out[a_name].tolist(), X_out[b_name].tolist())
-            ]
+            values = [_map_row(va, vb) for va, vb in zip(X_out[a_name].tolist(), X_out[b_name].tolist())]
+            X_out[new_name] = pd.Categorical(values, categories=dtype.categories if dtype else None)
 
             if self.drop_original:
                 X_out = X_out.drop(columns=[a_name, b_name], errors="ignore")
@@ -299,7 +309,10 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
                 return self.missing_value
 
             exprs.append(
-                pl.struct([pl.col(a_name), pl.col(b_name)]).map_elements(_map_struct, return_dtype=pl.Utf8).alias(new_name)
+                pl.struct([pl.col(a_name), pl.col(b_name)])
+                .map_elements(_map_struct, return_dtype=pl.Utf8)
+                .cast(pl.Categorical)
+                .alias(new_name)
             )
 
             if self.drop_original:

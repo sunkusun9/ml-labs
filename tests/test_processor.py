@@ -328,6 +328,24 @@ class TestCategoricalPairCombiner:
         with pytest.raises(RuntimeError):
             comb.transform(pair_pandas_df)
 
+    def test_pandas_output_dtype_categorical(self, pair_pandas_df):
+        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb.fit(pair_pandas_df)
+        result = comb.transform(pair_pandas_df)
+        assert result["cat1__cat2"].dtype.name == "category"
+
+    def test_pandas_missing_value_in_categories(self, pair_pandas_df):
+        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, missing_value="MISSING")
+        comb.fit(pair_pandas_df)
+        assert "MISSING" in comb._categories_["cat1__cat2"]
+
+    @requires_polars
+    def test_polars_output_dtype_categorical(self, pair_polars_df):
+        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb.fit(pair_polars_df)
+        result = comb.transform(pair_polars_df)
+        assert result["cat1__cat2"].dtype == pl.Categorical
+
 
 class TestFrequencyEncoder:
     @pytest.fixture
