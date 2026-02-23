@@ -2,6 +2,8 @@ import pytest
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from mllabs import ColSelector
+from mllabs._data_wrapper import PandasWrapper, NumpyWrapper
 
 try:
     import polars as pl
@@ -13,8 +15,9 @@ except ImportError:
 requires_polars = pytest.mark.skipif(not HAS_POLARS, reason="polars not installed")
 
 from mllabs.processor import (
-    CategoricalConverter,
-    CategoricalPairCombiner,
+    CatConverter,
+    CatPairCombiner,
+    CatOOVFilter,
     FrequencyEncoder,
 )
 
@@ -179,16 +182,16 @@ class TestPandasConverter:
         assert params["index_col"] == "id"
 
 
-class TestCategoricalConverter:
+class TestCatConverter:
     def test_pandas_all_columns(self, sample_pandas_df):
-        conv = CategoricalConverter()
+        conv = CatConverter()
         conv.fit(sample_pandas_df)
         result = conv.transform(sample_pandas_df)
         for col in result.columns:
             assert result[col].dtype.name == "category"
 
     def test_pandas_specific_columns(self, sample_pandas_df):
-        conv = CategoricalConverter(columns=["c"])
+        conv = CatConverter(columns=["c"])
         conv.fit(sample_pandas_df)
         result = conv.transform(sample_pandas_df)
         assert result["c"].dtype.name == "category"
@@ -197,7 +200,7 @@ class TestCategoricalConverter:
     @requires_polars
     def test_polars_all_columns(self):
         df = pl.DataFrame({"a": ["x", "y", "z"], "b": ["p", "q", "r"]})
-        conv = CategoricalConverter()
+        conv = CatConverter()
         conv.fit(df)
         result = conv.transform(df)
         for col in result.columns:
@@ -205,7 +208,7 @@ class TestCategoricalConverter:
 
     @requires_polars
     def test_polars_specific_columns(self, sample_polars_df):
-        conv = CategoricalConverter(columns=["c"])
+        conv = CatConverter(columns=["c"])
         conv.fit(sample_polars_df)
         result = conv.transform(sample_polars_df)
         assert result["c"].dtype == pl.Categorical
@@ -213,26 +216,26 @@ class TestCategoricalConverter:
 
     def test_numpy(self):
         arr = np.array([[1, "a"], [2, "b"], [3, "c"]], dtype=object)
-        conv = CategoricalConverter(columns=[1])
+        conv = CatConverter(columns=[1])
         conv.fit(arr)
         result = conv.transform(arr)
         assert result.dtype == object
 
     def test_get_feature_names_out(self, sample_pandas_df):
-        conv = CategoricalConverter(columns=["a", "c"])
+        conv = CatConverter(columns=["a", "c"])
         conv.fit(sample_pandas_df)
         names = conv.get_feature_names_out()
         assert "a" in names
         assert "c" in names
 
     def test_column_index(self, sample_pandas_df):
-        conv = CategoricalConverter(columns=[2])
+        conv = CatConverter(columns=[2])
         conv.fit(sample_pandas_df)
         result = conv.transform(sample_pandas_df)
         assert result["c"].dtype.name == "category"
 
 
-class TestCategoricalPairCombiner:
+class TestCatPairCombiner:
     @pytest.fixture
     def pair_pandas_df(self):
         return pd.DataFrame({
@@ -252,99 +255,260 @@ class TestCategoricalPairCombiner:
         })
 
     def test_pandas_basic(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
         comb.fit(pair_pandas_df)
         result = comb.transform(pair_pandas_df)
-        assert "cat1__cat2" in result.columns
+        assert list(result.columns) == ["cat1__cat2"]
         assert result["cat1__cat2"].tolist() == ["a__x", "a__x", "b__y", "b__y", "c__z"]
 
     @requires_polars
     def test_polars_basic(self, pair_polars_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
         comb.fit(pair_polars_df)
         result = comb.transform(pair_polars_df)
-        assert "cat1__cat2" in result.columns
+        assert result.columns == ["cat1__cat2"]
         assert result["cat1__cat2"].to_list() == ["a__x", "a__x", "b__y", "b__y", "c__z"]
 
-    def test_min_frequency_filter(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=1)
-        comb.fit(pair_pandas_df)
-        result = comb.transform(pair_pandas_df)
-        values = result["cat1__cat2"].tolist()
-        assert values[:4] == ["a__x", "a__x", "b__y", "b__y"]
-        assert pd.isna(values[4])
-
-    def test_drop_original(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, drop_original=True)
-        comb.fit(pair_pandas_df)
-        result = comb.transform(pair_pandas_df)
-        assert "cat1" not in result.columns
-        assert "cat2" not in result.columns
-        assert "cat1__cat2" in result.columns
-        assert "val" in result.columns
-
     def test_custom_sep(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, sep="-")
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")], sep="-")
         comb.fit(pair_pandas_df)
         result = comb.transform(pair_pandas_df)
-        assert "cat1-cat2" in result.columns
+        assert list(result.columns) == ["cat1-cat2"]
         assert result["cat1-cat2"].tolist()[0] == "a-x"
 
     def test_custom_new_col_names(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, new_col_names=["combined"])
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")], new_col_names=["combined"])
         comb.fit(pair_pandas_df)
         result = comb.transform(pair_pandas_df)
-        assert "combined" in result.columns
+        assert list(result.columns) == ["combined"]
 
-    def test_missing_value_handling(self):
+    def test_missing_none_passthrough(self):
         df = pd.DataFrame({
             "cat1": ["a", None, "b"],
             "cat2": ["x", "y", None],
         })
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, missing_value="MISSING")
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
         comb.fit(df)
         result = comb.transform(df)
-        assert result["cat1__cat2"].tolist() == ["a__x", "MISSING", "MISSING"]
+        values = result["cat1__cat2"].tolist()
+        assert values[0] == "a__x"
+        assert pd.isna(values[1])
+        assert pd.isna(values[2])
 
     def test_numpy_basic(self):
         arr = np.array([["a", "x"], ["a", "x"], ["b", "y"]], dtype=object)
-        comb = CategoricalPairCombiner(pairs=[(0, 1)], min_frequency=0)
+        comb = CatPairCombiner(pairs=[(0, 1)])
         comb.fit(arr)
         result = comb.transform(arr)
-        assert result.shape[1] == 3
-        assert result[0, 2] == "a__x"
+        assert result.shape == (3, 1)
+        assert result[0, 0] == "a__x"
 
     def test_multiple_pairs(self, pair_pandas_df):
         df = pair_pandas_df.copy()
         df["cat3"] = ["p", "q", "p", "q", "p"]
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2"), ("cat1", "cat3")], min_frequency=0)
+        comb = CatPairCombiner(pairs=[("cat1", "cat2"), ("cat1", "cat3")])
         comb.fit(df)
         result = comb.transform(df)
-        assert "cat1__cat2" in result.columns
-        assert "cat1__cat3" in result.columns
+        assert list(result.columns) == ["cat1__cat2", "cat1__cat3"]
 
     def test_not_fitted_error(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
         with pytest.raises(RuntimeError):
             comb.transform(pair_pandas_df)
 
     def test_pandas_output_dtype_categorical(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
         comb.fit(pair_pandas_df)
         result = comb.transform(pair_pandas_df)
         assert result["cat1__cat2"].dtype.name == "category"
 
-    def test_pandas_missing_value_in_categories(self, pair_pandas_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0, missing_value="MISSING")
-        comb.fit(pair_pandas_df)
-        assert "MISSING" in comb._categories_["cat1__cat2"]
-
     @requires_polars
     def test_polars_output_dtype_categorical(self, pair_polars_df):
-        comb = CategoricalPairCombiner(pairs=[("cat1", "cat2")], min_frequency=0)
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
         comb.fit(pair_polars_df)
         result = comb.transform(pair_polars_df)
         assert result["cat1__cat2"].dtype == pl.Categorical
+
+    def test_get_feature_names_out(self, pair_pandas_df):
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
+        comb.fit(pair_pandas_df)
+        assert comb.get_feature_names_out() == ["cat1__cat2"]
+
+    def test_get_feature_names_out_multiple_pairs(self, pair_pandas_df):
+        df = pair_pandas_df.copy()
+        df["cat3"] = ["p", "q", "p", "q", "p"]
+        comb = CatPairCombiner(pairs=[("cat1", "cat2"), ("cat1", "cat3")])
+        comb.fit(df)
+        assert comb.get_feature_names_out() == ["cat1__cat2", "cat1__cat3"]
+
+    def test_get_feature_names_out_custom_names(self, pair_pandas_df):
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")], new_col_names=["combined"])
+        comb.fit(pair_pandas_df)
+        assert comb.get_feature_names_out() == ["combined"]
+
+    def test_get_feature_names_out_numpy(self):
+        arr = np.array([["a", "x"], ["b", "y"]], dtype=object)
+        comb = CatPairCombiner(pairs=[(0, 1)])
+        comb.fit(arr)
+        assert comb.get_feature_names_out() == ["0__1"]
+
+
+class TestCatOOVFilter:
+    @pytest.fixture
+    def oov_pandas_df(self):
+        return pd.DataFrame({
+            "cat1": ["a", "a", "b", "b", "c"],
+            "cat2": ["x", "x", "y", "y", "z"],
+        })
+
+    @pytest.fixture
+    def oov_polars_df(self):
+        if not HAS_POLARS:
+            pytest.skip("polars not installed")
+        return pl.DataFrame({
+            "cat1": ["a", "a", "b", "b", "c"],
+            "cat2": ["x", "x", "y", "y", "z"],
+        })
+
+    def test_pandas_basic(self, oov_pandas_df):
+        filt = CatOOVFilter()
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        assert result["cat1"].tolist() == ["a", "a", "b", "b", "c"]
+
+    def test_pandas_output_dtype_categorical(self, oov_pandas_df):
+        filt = CatOOVFilter()
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        assert result["cat1"].dtype.name == "category"
+        assert result["cat2"].dtype.name == "category"
+
+    def test_pandas_min_frequency(self, oov_pandas_df):
+        # "c", "z" 각각 1회 등장 → min_frequency=1이면 >1이어야 살아남으므로 OOV
+        filt = CatOOVFilter(min_frequency=1)
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        values = result["cat1"].tolist()
+        assert values[:4] == ["a", "a", "b", "b"]
+        assert pd.isna(values[4])
+
+    def test_pandas_missing_value(self, oov_pandas_df):
+        filt = CatOOVFilter(min_frequency=1, missing_value="OOV")
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        assert result["cat1"].tolist()[-1] == "OOV"
+
+    def test_pandas_fixed_categories(self, oov_pandas_df):
+        filt = CatOOVFilter(min_frequency=1, missing_value="OOV")
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        cats = result["cat1"].cat.categories.tolist()
+        assert "OOV" in cats
+        assert "a" in cats
+        assert "b" in cats
+        assert "c" not in cats
+
+    def test_pandas_missing_value_in_categories(self, oov_pandas_df):
+        filt = CatOOVFilter(missing_value="OOV")
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        cats = result["cat1"].cat.categories.tolist()
+        assert "OOV" in cats
+
+    def test_pandas_unseen_in_transform(self, oov_pandas_df):
+        filt = CatOOVFilter(missing_value="OOV")
+        filt.fit(oov_pandas_df)
+        test_df = pd.DataFrame({"cat1": ["a", "UNSEEN"], "cat2": ["x", "UNSEEN"]})
+        result = filt.transform(test_df)
+        assert result["cat1"].tolist() == ["a", "OOV"]
+
+    def test_pandas_none_input(self, oov_pandas_df):
+        filt = CatOOVFilter(missing_value="OOV")
+        filt.fit(oov_pandas_df)
+        test_df = pd.DataFrame({"cat1": [None, "a"], "cat2": ["x", None]})
+        result = filt.transform(test_df)
+        assert result["cat1"].tolist()[0] == "OOV"
+        assert result["cat2"].tolist()[1] == "OOV"
+
+    def test_pandas_empty_string_as_missing(self, oov_pandas_df):
+        filt = CatOOVFilter(missing_value="OOV", treat_empty_string_as_missing=True)
+        filt.fit(oov_pandas_df)
+        test_df = pd.DataFrame({"cat1": ["", "a"], "cat2": ["x", ""]})
+        result = filt.transform(test_df)
+        assert result["cat1"].tolist()[0] == "OOV"
+        assert result["cat2"].tolist()[1] == "OOV"
+
+    def test_pandas_specific_columns(self, oov_pandas_df):
+        filt = CatOOVFilter(columns=["cat1"])
+        filt.fit(oov_pandas_df)
+        result = filt.transform(oov_pandas_df)
+        assert result["cat1"].dtype.name == "category"
+        assert result["cat2"].dtype.name != "category"
+
+    @requires_polars
+    def test_polars_basic(self, oov_polars_df):
+        filt = CatOOVFilter()
+        filt.fit(oov_polars_df)
+        result = filt.transform(oov_polars_df)
+        assert result["cat1"].to_list() == ["a", "a", "b", "b", "c"]
+
+    @requires_polars
+    def test_polars_output_dtype_categorical(self, oov_polars_df):
+        filt = CatOOVFilter()
+        filt.fit(oov_polars_df)
+        result = filt.transform(oov_polars_df)
+        assert result["cat1"].dtype == pl.Categorical
+        assert result["cat2"].dtype == pl.Categorical
+
+    @requires_polars
+    def test_polars_oov_filter(self, oov_polars_df):
+        filt = CatOOVFilter(min_frequency=1, missing_value="OOV")
+        filt.fit(oov_polars_df)
+        result = filt.transform(oov_polars_df)
+        assert result["cat1"].to_list()[4] == "OOV"
+
+    def test_numpy_basic(self):
+        arr = np.array([["a", "x"], ["a", "x"], ["b", "y"]], dtype=object)
+        filt = CatOOVFilter(columns=[0, 1])
+        filt.fit(arr)
+        result = filt.transform(arr)
+        assert result[0, 0] == "a"
+        assert result[0, 1] == "x"
+
+    def test_numpy_oov_filter(self):
+        arr = np.array([["a", "x"], ["a", "x"], ["b", "y"]], dtype=object)
+        # "b" 1번 등장, min_frequency=1 → >1이어야 살아남으므로 OOV
+        filt = CatOOVFilter(columns=[0], min_frequency=1, missing_value="OOV")
+        filt.fit(arr)
+        result = filt.transform(arr)
+        assert result[0, 0] == "a"
+        assert result[2, 0] == "OOV"
+
+    def test_get_feature_names_out(self, oov_pandas_df):
+        filt = CatOOVFilter(columns=["cat1"])
+        filt.fit(oov_pandas_df)
+        assert filt.get_feature_names_out() == ["cat1"]
+
+    def test_not_fitted_error(self, oov_pandas_df):
+        filt = CatOOVFilter()
+        with pytest.raises(RuntimeError):
+            filt.transform(oov_pandas_df)
+
+    def test_pipeline_with_pair_combiner(self):
+        df = pd.DataFrame({
+            "cat1": ["a", "a", "b", "b", "c"],
+            "cat2": ["x", "x", "y", "y", "z"],
+        })
+        comb = CatPairCombiner(pairs=[("cat1", "cat2")])
+        comb.fit(df)
+        combined = comb.transform(df)
+        filt = CatOOVFilter(columns=["cat1__cat2"], min_frequency=1, missing_value="OOV")
+        filt.fit(combined)
+        result = filt.transform(combined)
+        values = result["cat1__cat2"].tolist()
+        assert values[0] == "a__x"
+        assert values[4] == "OOV"
+        assert result["cat1__cat2"].dtype.name == "category"
 
 
 class TestFrequencyEncoder:
@@ -451,3 +615,198 @@ class TestFrequencyEncoder:
         unseen = np.array([[99.0]])
         result = fe.transform(unseen)
         assert result[0, 0] == 0.0
+
+
+class TestColSelector:
+    @pytest.fixture
+    def pandas_df(self):
+        return pd.DataFrame({
+            'cat_col': pd.Categorical(['a', 'b', 'a']),
+            'int_col': pd.array([1, 2, 3], dtype='int32'),
+            'float_col': [1.0, 2.0, 3.0],
+            'str_col': ['x', 'y', 'z'],
+            'cat_col2': pd.Categorical(['p', 'q', 'p']),
+        })
+
+    @pytest.fixture
+    def numpy_int(self):
+        return NumpyWrapper(np.array([[1, 2], [3, 4]], dtype=np.int32))
+
+    @pytest.fixture
+    def numpy_float(self):
+        return NumpyWrapper(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
+
+    @pytest.fixture
+    def numpy_object(self):
+        return NumpyWrapper(np.array([['a', 'b'], ['c', 'd']], dtype=object))
+
+    # --- ColSelector 기본 ---
+
+    def test_col_selector_init(self):
+        cs = ColSelector(col_type='category', pattern='cat.*')
+        assert cs.col_type == 'category'
+        assert cs.pattern == 'cat.*'
+
+    def test_col_selector_defaults(self):
+        cs = ColSelector()
+        assert cs.col_type is None
+        assert cs.pattern is None
+
+    # --- PandasWrapper.get_column_list ---
+
+    def test_pandas_no_filter(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        cs = ColSelector()
+        assert w.get_column_list(cs) == list(pandas_df.columns)
+
+    def test_pandas_category(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(col_type='category'))
+        assert set(result) == {'cat_col', 'cat_col2'}
+
+    def test_pandas_int(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(col_type='int'))
+        assert 'int_col' in result
+        assert 'float_col' not in result
+
+    def test_pandas_float(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(col_type='float'))
+        assert 'float_col' in result
+        assert 'int_col' not in result
+
+    def test_pandas_numeric(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(col_type='numeric'))
+        assert 'int_col' in result
+        assert 'float_col' in result
+        assert 'str_col' not in result
+        assert 'cat_col' not in result
+
+    def test_pandas_str(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(col_type='str'))
+        assert 'str_col' in result
+        assert 'int_col' not in result
+
+    def test_pandas_pattern(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(pattern='cat.*'))
+        assert set(result) == {'cat_col', 'cat_col2'}
+
+    def test_pandas_col_type_and_pattern(self, pandas_df):
+        w = PandasWrapper(pandas_df)
+        result = w.get_column_list(ColSelector(col_type='category', pattern='.*2$'))
+        assert result == ['cat_col2']
+
+    # --- PolarsWrapper.get_column_list ---
+
+    @requires_polars
+    def test_polars_category(self):
+        from mllabs._data_wrapper import PolarsWrapper
+        df = pl.DataFrame({
+            'cat_col': pl.Series(['a', 'b', 'a'], dtype=pl.Categorical),
+            'int_col': pl.Series([1, 2, 3], dtype=pl.Int32),
+            'float_col': pl.Series([1.0, 2.0, 3.0], dtype=pl.Float64),
+            'str_col': pl.Series(['x', 'y', 'z'], dtype=pl.Utf8),
+        })
+        w = PolarsWrapper(df)
+        result = w.get_column_list(ColSelector(col_type='category'))
+        assert result == ['cat_col']
+
+    @requires_polars
+    def test_polars_int(self):
+        from mllabs._data_wrapper import PolarsWrapper
+        df = pl.DataFrame({
+            'int_col': pl.Series([1, 2, 3], dtype=pl.Int32),
+            'float_col': pl.Series([1.0, 2.0, 3.0], dtype=pl.Float64),
+            'str_col': pl.Series(['x', 'y', 'z'], dtype=pl.Utf8),
+        })
+        w = PolarsWrapper(df)
+        result = w.get_column_list(ColSelector(col_type='int'))
+        assert result == ['int_col']
+
+    @requires_polars
+    def test_polars_float(self):
+        from mllabs._data_wrapper import PolarsWrapper
+        df = pl.DataFrame({
+            'int_col': pl.Series([1, 2, 3], dtype=pl.Int32),
+            'float_col': pl.Series([1.0, 2.0, 3.0], dtype=pl.Float64),
+        })
+        w = PolarsWrapper(df)
+        result = w.get_column_list(ColSelector(col_type='float'))
+        assert result == ['float_col']
+
+    @requires_polars
+    def test_polars_numeric(self):
+        from mllabs._data_wrapper import PolarsWrapper
+        df = pl.DataFrame({
+            'int_col': pl.Series([1, 2, 3], dtype=pl.Int32),
+            'float_col': pl.Series([1.0, 2.0, 3.0], dtype=pl.Float64),
+            'str_col': pl.Series(['x', 'y', 'z'], dtype=pl.Utf8),
+        })
+        w = PolarsWrapper(df)
+        result = w.get_column_list(ColSelector(col_type='numeric'))
+        assert set(result) == {'int_col', 'float_col'}
+
+    @requires_polars
+    def test_polars_str(self):
+        from mllabs._data_wrapper import PolarsWrapper
+        df = pl.DataFrame({
+            'int_col': pl.Series([1, 2, 3], dtype=pl.Int32),
+            'str_col': pl.Series(['x', 'y', 'z'], dtype=pl.Utf8),
+        })
+        w = PolarsWrapper(df)
+        result = w.get_column_list(ColSelector(col_type='str'))
+        assert result == ['str_col']
+
+    @requires_polars
+    def test_polars_pattern(self):
+        from mllabs._data_wrapper import PolarsWrapper
+        df = pl.DataFrame({
+            'cat_a': pl.Series(['a', 'b'], dtype=pl.Categorical),
+            'cat_b': pl.Series(['p', 'q'], dtype=pl.Categorical),
+            'int_col': pl.Series([1, 2], dtype=pl.Int32),
+        })
+        w = PolarsWrapper(df)
+        result = w.get_column_list(ColSelector(col_type='category', pattern='cat_a'))
+        assert result == ['cat_a']
+
+    # --- NumpyWrapper.get_column_list ---
+
+    def test_numpy_int(self, numpy_int):
+        result = numpy_int.get_column_list(ColSelector(col_type='int'))
+        assert result == [0, 1]
+
+    def test_numpy_int_no_match_float(self, numpy_float):
+        result = numpy_float.get_column_list(ColSelector(col_type='int'))
+        assert result == []
+
+    def test_numpy_float(self, numpy_float):
+        result = numpy_float.get_column_list(ColSelector(col_type='float'))
+        assert result == [0, 1]
+
+    def test_numpy_numeric_int(self, numpy_int):
+        result = numpy_int.get_column_list(ColSelector(col_type='numeric'))
+        assert result == [0, 1]
+
+    def test_numpy_numeric_float(self, numpy_float):
+        result = numpy_float.get_column_list(ColSelector(col_type='numeric'))
+        assert result == [0, 1]
+
+    def test_numpy_str(self, numpy_object):
+        result = numpy_object.get_column_list(ColSelector(col_type='str'))
+        assert result == [0, 1]
+
+    def test_numpy_category_empty(self, numpy_object):
+        result = numpy_object.get_column_list(ColSelector(col_type='category'))
+        assert result == []
+
+    def test_numpy_no_filter(self, numpy_int):
+        result = numpy_int.get_column_list(ColSelector())
+        assert result == [0, 1]
+
+    def test_numpy_pattern(self, numpy_int):
+        result = numpy_int.get_column_list(ColSelector(pattern='^0$'))
+        assert result == [0]

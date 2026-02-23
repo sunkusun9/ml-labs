@@ -219,7 +219,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
-- **processor/**: CategoricalConverter, CategoricalPairCombiner, CatOOVFilter
+- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter
   - polars 설치 시: PolarsLoader, ExprProcessor, PandasConverter 추가
   - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
 

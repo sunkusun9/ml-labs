@@ -88,42 +88,21 @@ class FrequencyEncoder(BaseEstimator, TransformerMixin):
         pass
 
 
-class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
-    """
-    두 범주형 변수를 결합해서 하나의 범주형 변수를 만드는 처리기.
-
-    - pairs: [(col_a, col_b), ...]
-      * pandas/polars: str(컬럼명) 또는 int(컬럼 위치) 가능
-      * numpy: int(컬럼 위치)만 권장
-    - min_frequency:
-      * fit에서 결합값 빈도를 세고, 빈도가 min_frequency 이하(<=)인 결합값은 transform 시 결측으로 처리
-
-    반환:
-      * pandas/polars: 원본 DF에 결합 컬럼을 추가해서 반환
-      * numpy: 원본 배열에 결합 컬럼(들)을 뒤에 추가해서 반환 (dtype=object)
-    """
+class CatPairCombiner(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
         pairs,
-        min_frequency,
         *,
         sep="__",
-        drop_original=False,
         treat_empty_string_as_missing=True,
-        missing_value=None,
         new_col_names=None,
     ):
         self.pairs = list(pairs)
-        self.min_frequency = int(min_frequency)
         self.sep = sep
-        self.drop_original = drop_original
         self.treat_empty_string_as_missing = treat_empty_string_as_missing
-        self.missing_value = missing_value
         self.new_col_names = list(new_col_names) if new_col_names is not None else None
 
-        self._allowed_ = {}
-        self._categories_ = {}
         self._resolved_pairs_ = []
         self._new_names_ = []
 
@@ -181,71 +160,14 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
     # ----------------- sklearn API -----------------
 
     def fit(self, X, y=None):
-        kind = detect_kind(X)
-        self._allowed_.clear()
-        self._resolved_pairs_.clear()
-
-        # resolve pairs to concrete column selectors/names
-        if kind == "numpy":
-            for p in self.pairs:
-                a_idx, b_idx, a_label, b_label = self._resolve_pair(X, p)
-                self._resolved_pairs_.append((a_idx, b_idx, a_label, b_label))
-        else:
-            for p in self.pairs:
-                a_name, b_name, a_label, b_label = self._resolve_pair(X, p)
-                self._resolved_pairs_.append((a_name, b_name, a_label, b_label))
-
+        self._resolved_pairs_ = []
+        for p in self.pairs:
+            self._resolved_pairs_.append(self._resolve_pair(X, p))
         self._new_names_ = self._make_new_names()
-
-        # count frequencies
-        for (a_sel, b_sel, a_label, b_label), new_name in zip(self._resolved_pairs_, self._new_names_):
-            freq = {}
-            if kind == "numpy":
-                arr = np.asarray(X)
-                if arr.ndim == 1:
-                    arr = arr.reshape(-1, 1)
-                col_a = arr[:, a_sel].tolist()
-                col_b = arr[:, b_sel].tolist()
-                for va, vb in zip(col_a, col_b):
-                    comb = self._combine(va, vb)
-                    if comb is None:
-                        continue
-                    freq[comb] = freq.get(comb, 0) + 1
-            elif kind == "pandas_df":
-                col_a = X[a_sel].tolist()
-                col_b = X[b_sel].tolist()
-                for va, vb in zip(col_a, col_b):
-                    comb = self._combine(va, vb)
-                    if comb is None:
-                        continue
-                    freq[comb] = freq.get(comb, 0) + 1
-            elif kind == "polars_df":
-                col_a = X.get_column(a_sel).to_list()
-                col_b = X.get_column(b_sel).to_list()
-                for va, vb in zip(col_a, col_b):
-                    comb = self._combine(va, vb)
-                    if comb is None:
-                        continue
-                    freq[comb] = freq.get(comb, 0) + 1
-            else:
-                raise RuntimeError("Unexpected kind")
-
-            # allowed: 빈도 > min_frequency (<=는 결측 처리)
-            allowed = {k for k, c in freq.items() if c > self.min_frequency}
-            self._allowed_[new_name] = allowed
-
-            # CategoricalDtype용 categories 구성
-            categories = sorted(allowed)
-            if self.missing_value is not None and not is_nan(self.missing_value):
-                mv = str(self.missing_value)
-                if mv not in categories:
-                    categories.insert(0, mv)
-            self._categories_[new_name] = categories
-
         return self
 
     def transform(self, X):
-        if not hasattr(self, "_allowed_") or not self._allowed_:
+        if not self._resolved_pairs_:
             raise RuntimeError("This transformer is not fitted yet. Call fit() first.")
 
         kind = detect_kind(X)
@@ -262,111 +184,59 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
     # ----------------- transforms -----------------
 
     def _transform_pandas(self, X):
-        if pd is None:
-            raise RuntimeError("pandas is not installed.")
-        X_out = X.copy()
-
+        new_cols = {}
         for (a_name, b_name, _, _), new_name in zip(self._resolved_pairs_, self._new_names_):
-            allowed = self._allowed_.get(new_name, set())
-            categories = self._categories_.get(new_name)
-            dtype = pd.CategoricalDtype(categories=categories) if categories is not None else None
-
-            def _map_row(va, vb, _allowed=allowed):
-                comb = self._combine(va, vb)
-                if comb is None:
-                    return self.missing_value
-                if comb in _allowed:
-                    return comb
-                return self.missing_value
-
-            values = [_map_row(va, vb) for va, vb in zip(X_out[a_name].tolist(), X_out[b_name].tolist())]
-            X_out[new_name] = pd.Categorical(values, categories=dtype.categories if dtype else None)
-
-            if self.drop_original:
-                X_out = X_out.drop(columns=[a_name, b_name], errors="ignore")
-
-        return X_out
+            a_col = X[a_name]
+            b_col = X[b_name]
+            if self.treat_empty_string_as_missing:
+                a_missing = a_col.isna() | (a_col.astype(str) == '')
+                b_missing = b_col.isna() | (b_col.astype(str) == '')
+            else:
+                a_missing = a_col.isna()
+                b_missing = b_col.isna()
+            combined = a_col.astype(str) + self.sep + b_col.astype(str)
+            new_cols[new_name] = pd.Categorical(combined.where(~(a_missing | b_missing)))
+        return pd.DataFrame(new_cols, index=X.index)
 
     def _transform_polars(self, X):
-        if pl is None:
-            raise RuntimeError("polars is not installed.")
-        df = X
-
         exprs = []
-        cols_to_drop = []
-
         for (a_name, b_name, _, _), new_name in zip(self._resolved_pairs_, self._new_names_):
-            allowed = self._allowed_.get(new_name, set())
-
-            def _map_struct(s):
-                va = s[a_name]
-                vb = s[b_name]
-                comb = self._combine(va, vb)
-                if comb is None:
-                    return self.missing_value
-                if comb in allowed:
-                    return comb
-                return self.missing_value
-
+            a_utf8 = pl.col(a_name).cast(pl.Utf8)
+            b_utf8 = pl.col(b_name).cast(pl.Utf8)
+            if self.treat_empty_string_as_missing:
+                a_missing = pl.col(a_name).is_null() | (a_utf8 == "")
+                b_missing = pl.col(b_name).is_null() | (b_utf8 == "")
+            else:
+                a_missing = pl.col(a_name).is_null()
+                b_missing = pl.col(b_name).is_null()
             exprs.append(
-                pl.struct([pl.col(a_name), pl.col(b_name)])
-                .map_elements(_map_struct, return_dtype=pl.Utf8)
+                pl.when(a_missing | b_missing)
+                .then(pl.lit(None, dtype=pl.Utf8))
+                .otherwise(a_utf8 + pl.lit(self.sep) + b_utf8)
                 .cast(pl.Categorical)
                 .alias(new_name)
             )
+        return X.select(exprs)
 
-            if self.drop_original:
-                cols_to_drop.extend([a_name, b_name])
+    def get_feature_names_out(self, input_features=None):
+        return list(self._new_names_)
 
-        if exprs:
-            df = df.with_columns(exprs)
-        if self.drop_original and cols_to_drop:
-            # 중복 제거
-            cols_to_drop = list(dict.fromkeys(cols_to_drop))
-            df = df.drop(cols_to_drop)
-
-        return df
+    def set_output(self, transform=None):
+        pass
 
     def _transform_numpy(self, X):
         arr = np.asarray(X)
-        orig_ndim = arr.ndim
         if arr.ndim == 1:
             arr = arr.reshape(-1, 1)
-
-        out = arr.astype(object, copy=True)
-        new_cols = []
-
-        for (a_idx, b_idx, _, _), new_name in zip(self._resolved_pairs_, self._new_names_):
-            allowed = self._allowed_.get(new_name, set())
-            col = np.empty((out.shape[0],), dtype=object)
-
-            for i in range(out.shape[0]):
-                comb = self._combine(out[i, a_idx], out[i, b_idx])
-                if comb is None:
-                    col[i] = self.missing_value
-                elif comb in allowed:
-                    col[i] = comb
-                else:
-                    col[i] = self.missing_value
-
-            new_cols.append(col.reshape(-1, 1))
-
-        if new_cols:
-            out = np.concatenate([out] + new_cols, axis=1)
-
-        if self.drop_original:
-            # 원본 컬럼 제거(쌍에서 나온 컬럼들)
-            drop_idxs = sorted({a for (a, _, _, _) in self._resolved_pairs_} | {b for (_, b, _, _) in self._resolved_pairs_})
-            keep = [j for j in range(out.shape[1] - len(new_cols)) if j not in drop_idxs]
-            # keep 원본 + 새 컬럼들
-            out = np.concatenate([out[:, keep]] + new_cols, axis=1)
-
-        if orig_ndim == 1:
-            return out
-        return out
+        vcombine = np.vectorize(self._combine, otypes=[object])
+        new_cols = [
+            vcombine(arr[:, a_idx], arr[:, b_idx]).reshape(-1, 1)
+            for (a_idx, b_idx, _, _), _ in zip(self._resolved_pairs_, self._new_names_)
+        ]
+        return np.concatenate(new_cols, axis=1)
 
 
-class CategoricalConverter(BaseEstimator, TransformerMixin):
+class CatConverter(BaseEstimator, TransformerMixin):
 
     def __init__(self, columns=None):
         self.columns = columns
@@ -429,26 +299,167 @@ class CategoricalConverter(BaseEstimator, TransformerMixin):
         pass
 
 
-class CatOOVFilter(TransformerMixin, BaseEstimator):
-    def __init__(self):
-        pass
-    def fit(self, X, y = None):
-        self.s_dtype_ = {i: X[i].dtype for i in X.columns}
-        self.s_mode_ = X.apply(lambda x: x.mode()[0])
-        self.fitted_ = True
+class CatOOVFilter(BaseEstimator, TransformerMixin):
+
+    def __init__(
+        self,
+        columns=None,
+        min_frequency=0,
+        missing_value=None,
+        treat_empty_string_as_missing=True,
+    ):
+        self.columns = columns
+        self.min_frequency = min_frequency
+        self.missing_value = missing_value
+        self.treat_empty_string_as_missing = treat_empty_string_as_missing
+
+    def _is_missing(self, v):
+        if v is None:
+            return True
+        if is_nan(v):
+            return True
+        if self.treat_empty_string_as_missing and isinstance(v, str) and v == "":
+            return True
+        return False
+
+    def _resolve_columns(self, X, kind):
+        if self.columns is None:
+            if kind == "numpy":
+                return list(range(X.shape[1]))
+            return list(X.columns)
+        cols = []
+        for c in self.columns:
+            if isinstance(c, int) and kind != "numpy":
+                cols.append(X.columns[c])
+            else:
+                cols.append(c)
+        return cols
+
+    def fit(self, X, y=None):
+        kind = detect_kind(X)
+        self.columns_ = self._resolve_columns(X, kind)
+        self.categories_ = {}
+        if kind == "numpy":
+            arr = np.asarray(X)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+        for col in self.columns_:
+            if kind == "pandas_df":
+                col_series = X[col]
+                if self.treat_empty_string_as_missing:
+                    valid = ~(col_series.isna() | (col_series.astype(str) == ''))
+                else:
+                    valid = ~col_series.isna()
+                vc = col_series[valid].astype(str).value_counts()
+                self.categories_[col] = sorted(k for k, c in vc.items() if c > self.min_frequency)
+            elif kind == "polars_df":
+                col_series = X.get_column(col)
+                col_utf8 = col_series.cast(pl.Utf8)
+                if self.treat_empty_string_as_missing:
+                    valid = col_series.is_not_null() & (col_utf8 != "")
+                else:
+                    valid = col_series.is_not_null()
+                vc = col_utf8.filter(valid).value_counts()
+                self.categories_[col] = sorted(
+                    k for k, c in zip(vc.get_column(col).to_list(), vc.get_column("count").to_list())
+                    if c > self.min_frequency
+                )
+            elif kind == "numpy":
+                col_data = arr[:, col]
+                valid = np.array([not self._is_missing(v) for v in col_data])
+                unique, counts = np.unique(col_data[valid].astype(str), return_counts=True)
+                self.categories_[col] = sorted(k for k, c in zip(unique.tolist(), counts.tolist()) if c > self.min_frequency)
+            else:
+                col_data = X[col].tolist()
+                freq = {}
+                for v in col_data:
+                    if self._is_missing(v):
+                        continue
+                    v_str = str(v)
+                    freq[v_str] = freq.get(v_str, 0) + 1
+                self.categories_[col] = sorted(k for k, c in freq.items() if c > self.min_frequency)
         return self
 
+    def _map_value(self, v, allowed_set):
+        if self._is_missing(v):
+            return self.missing_value
+        v_str = str(v)
+        if v_str in allowed_set:
+            return v_str
+        return self.missing_value
+
+    def _get_dtype_categories(self, col):
+        cats = list(self.categories_[col])
+        mv = self.missing_value
+        if mv is not None and not is_nan(mv):
+            mv_str = str(mv)
+            if mv_str not in cats:
+                cats = [mv_str] + cats
+        return cats
+
     def transform(self, X):
-        return pd.concat([
-            dproc.rearrange_cat(X[k], v, lambda d, c: 0 if c not in d else c, use_set = True).rename(k)
-            for k, v in self.s_dtype_.items()
-        ], axis=1)
-    def get_params(self, deep=True):
-        return {
-        }
+        if not hasattr(self, "categories_"):
+            raise RuntimeError("This transformer is not fitted yet. Call fit() first.")
+        kind = detect_kind(X)
+        if kind == "pandas_df":
+            return self._transform_pandas(X)
+        if kind == "polars_df":
+            return self._transform_polars(X)
+        if kind == "numpy":
+            return self._transform_numpy(X)
+        raise TypeError(f"Unsupported input type: {type(X)}")
 
-    def set_output(self, transform='pandas'):
+    def _transform_pandas(self, X):
+        X_out = X.copy()
+        for col in self.columns_:
+            allowed = set(self.categories_[col])
+            cats = self._get_dtype_categories(col)
+            values = [self._map_value(v, allowed) for v in X_out[col].tolist()]
+            X_out[col] = pd.Categorical(values, categories=cats)
+        return X_out
+
+    def _transform_polars(self, X):
+        exprs = []
+        for col in self.columns_:
+            allowed = set(self.categories_[col])
+            mv = self.missing_value
+            tes = self.treat_empty_string_as_missing
+
+            def _map(v, _allowed=allowed, _mv=mv, _tes=tes):
+                if v is None:
+                    return _mv
+                if _tes and isinstance(v, str) and v == "":
+                    return _mv
+                v_str = str(v)
+                if v_str in _allowed:
+                    return v_str
+                return _mv
+
+            exprs.append(
+                pl.col(col)
+                .map_elements(_map, return_dtype=pl.Utf8)
+                .cast(pl.Categorical)
+                .alias(col)
+            )
+        return X.with_columns(exprs)
+
+    def _transform_numpy(self, X):
+        arr = np.asarray(X)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        out = arr.astype(object, copy=True)
+        for col in self.columns_:
+            allowed = set(self.categories_[col])
+            for i in range(out.shape[0]):
+                out[i, col] = self._map_value(out[i, col], allowed)
+        return out
+
+    def get_feature_names_out(self, input_features=None):
+        if hasattr(self, "columns_"):
+            return [str(c) for c in self.columns_]
+        if input_features is not None:
+            return list(input_features)
+        return None
+
+    def set_output(self, transform=None):
         pass
-
-    def get_feature_names_out(self, X = None):
-        return list(self.s_dtype_.keys())

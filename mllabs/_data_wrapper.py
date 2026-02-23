@@ -94,6 +94,18 @@ class DataWrapper(ABC):
         pass
 
     @abstractmethod
+    def get_column_list(self, col_selector):
+        """ColSelector 기준으로 컬럼명(또는 numpy offset) 리스트 반환
+
+        Args:
+            col_selector: ColSelector 인스턴스 (col_type, pattern)
+
+        Returns:
+            list: 매칭되는 컬럼명 또는 정수 offset 리스트
+        """
+        pass
+
+    @abstractmethod
     def squeeze(self):
         pass
 
@@ -268,6 +280,30 @@ class PandasWrapper(DataWrapper):
         else:
             raise TypeError(f"Cannot convert {type(output)} to pandas DataFrame")
     
+    def get_column_list(self, col_selector):
+        import re
+        data = self.data
+        if isinstance(data, pd.Series):
+            all_cols = [data.name] if data.name is not None else [0]
+        else:
+            all_cols = data.columns.tolist()
+        result = list(all_cols)
+        if col_selector.col_type is not None:
+            ct = col_selector.col_type
+            if ct == 'category':
+                result = [c for c in result if hasattr(data[c].dtype, 'categories') or str(data[c].dtype) == 'category']
+            elif ct == 'numeric':
+                result = [c for c in result if pd.api.types.is_numeric_dtype(data[c])]
+            elif ct == 'int':
+                result = [c for c in result if pd.api.types.is_integer_dtype(data[c])]
+            elif ct == 'float':
+                result = [c for c in result if pd.api.types.is_float_dtype(data[c])]
+            elif ct == 'str':
+                result = [c for c in result if data[c].dtype == object or isinstance(data[c].dtype, pd.StringDtype)]
+        if col_selector.pattern is not None:
+            result = [c for c in result if re.search(col_selector.pattern, str(c))]
+        return result
+
     def squeeze(self):
         return PandasWrapper(self.data.squeeze())
 
@@ -392,6 +428,39 @@ class PolarsWrapper(DataWrapper):
             cnt += 1
         return wrap(ret / cnt)
 
+    def get_column_list(self, col_selector):
+        import re
+        data = self.data
+        if isinstance(data, pl.Series):
+            all_cols = [data.name]
+            schema = {data.name: data.dtype}
+        else:
+            all_cols = data.columns
+            schema = dict(zip(data.columns, data.dtypes))
+        result = list(all_cols)
+        if col_selector.col_type is not None:
+            ct = col_selector.col_type
+            _INT = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+            _FLOAT = {pl.Float32, pl.Float64}
+            _STR = {pl.Utf8, pl.String} if hasattr(pl, 'String') else {pl.Utf8}
+            if ct == 'category':
+                def _is_cat(dtype):
+                    if dtype == pl.Categorical:
+                        return True
+                    return hasattr(pl, 'Enum') and isinstance(dtype, pl.Enum)
+                result = [c for c in result if _is_cat(schema[c])]
+            elif ct == 'numeric':
+                result = [c for c in result if schema[c] in _INT or schema[c] in _FLOAT]
+            elif ct == 'int':
+                result = [c for c in result if schema[c] in _INT]
+            elif ct == 'float':
+                result = [c for c in result if schema[c] in _FLOAT]
+            elif ct == 'str':
+                result = [c for c in result if schema[c] in _STR]
+        if col_selector.pattern is not None:
+            result = [c for c in result if re.search(col_selector.pattern, str(c))]
+        return result
+
     def squeeze(self):
         if isinstance(self.data, pl.DataFrame) and self.data.shape[1] == 1:
             return PolarsWrapper(self.data.to_series())
@@ -506,6 +575,27 @@ class CudfWrapper(DataWrapper):
         # 변환 불가능한 경우 에러 발생
         else:
             raise TypeError(f"Cannot convert {type(output)} to cudf DataFrame")
+
+    def get_column_list(self, col_selector):
+        import re
+        data = self.data
+        all_cols = data.columns.tolist() if hasattr(data, 'columns') else ([data.name] if data.name is not None else [0])
+        result = list(all_cols)
+        if col_selector.col_type is not None:
+            ct = col_selector.col_type
+            if ct == 'category':
+                result = [c for c in result if hasattr(data[c].dtype, 'categories') or str(data[c].dtype) == 'category']
+            elif ct == 'numeric':
+                result = [c for c in result if pd.api.types.is_numeric_dtype(data[c].dtype)]
+            elif ct == 'int':
+                result = [c for c in result if pd.api.types.is_integer_dtype(data[c].dtype)]
+            elif ct == 'float':
+                result = [c for c in result if pd.api.types.is_float_dtype(data[c].dtype)]
+            elif ct == 'str':
+                result = [c for c in result if str(data[c].dtype) in ('object', 'string')]
+        if col_selector.pattern is not None:
+            result = [c for c in result if re.search(col_selector.pattern, str(c))]
+        return result
 
     def squeeze(self):
         return CudfWrapper(self.data.squeeze())
@@ -650,6 +740,26 @@ class NumpyWrapper(DataWrapper):
         else:
             raise TypeError(f"Cannot convert {type(output)} to numpy array")
         
+    def get_column_list(self, col_selector):
+        import re
+        result = list(self.columns)
+        if col_selector.col_type is not None:
+            ct = col_selector.col_type
+            kind = self.data.dtype.kind
+            if ct == 'category':
+                result = []
+            elif ct == 'numeric':
+                result = result if kind in ('i', 'u', 'f') else []
+            elif ct == 'int':
+                result = result if kind in ('i', 'u') else []
+            elif ct == 'float':
+                result = result if kind == 'f' else []
+            elif ct == 'str':
+                result = result if kind in ('U', 'O', 'S') else []
+        if col_selector.pattern is not None:
+            result = [c for c in result if re.search(col_selector.pattern, str(c))]
+        return result
+
     def squeeze(self):
         return NumpyWrapper(np.squeeze(self.data))
 
