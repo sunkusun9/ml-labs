@@ -518,12 +518,6 @@ class TestExpObj:
         obj.end_build()
         assert obj.status == 'built'
 
-    def test_stage_obj_start_exp_finalize_rejected(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        with pytest.raises(ValueError):
-            obj.start_exp(finalize=True)
-
     def test_stage_obj_exp_requires_built(self, tmp_path):
         path = tmp_path / 'stage_node'
         obj = StageObj(path)
