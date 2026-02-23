@@ -14,7 +14,7 @@ class CatBoostAdapter(ModelAdapter):
     CatBoost도 eval_set을 지원합니다.
     """
 
-    def get_fit_params(self, data_dict, X, y=None, params=None, logger=None):
+    def get_fit_params(self, data_dict, params=None, logger=None):
         """CatBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 

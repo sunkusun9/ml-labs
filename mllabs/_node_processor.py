@@ -1,6 +1,17 @@
 import re
 from ._data_wrapper import unwrap
 
+
+def _resolve_col_selectors(params, data):
+    if not params or data is None:
+        return params
+    from ._pipeline import ColSelector
+    resolved = {}
+    for k, v in params.items():
+        resolved[k] = data.get_column_list(v) if isinstance(v, ColSelector) else v
+    return resolved
+
+
 def resolve_columns(data, X, y=None, processor=None):
     """X와 y를 실제 컬럼 리스트로 변환"""
     columns = data.get_columns()
@@ -109,13 +120,15 @@ class TransformProcessor():
             self.y_columns = None
             train_y_native = None
 
-        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
+        _ref_data = train_X if train_X is not None else train_y
+        resolved_params = _resolve_col_selectors(self.params, _ref_data)
+        params = self.adapter.get_params(resolved_params, logger=self.logger) if self.adapter is not None else resolved_params
         self.obj = self.transformer(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params,logger=self.logger
+                data_dict=data_dict, params=resolved_params, logger=self.logger
             )
         else:
             fit_params = {}
@@ -167,13 +180,15 @@ class TransformProcessor():
             self.y_columns = None
             train_y_native = None
 
-        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
+        _ref_data = train_X if train_X is not None else train_y
+        resolved_params = _resolve_col_selectors(self.params, _ref_data)
+        params = self.adapter.get_params(resolved_params, logger=self.logger) if self.adapter is not None else resolved_params
         self.obj = self.transformer(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params, logger=self.logger
+                data_dict=data_dict, params=resolved_params, logger=self.logger
             )
         else:
             fit_params = {}
@@ -195,6 +210,9 @@ class TransformProcessor():
         else:
             column_names = None
 
+        if column_names is None and hasattr(result, 'columns'):
+            column_names = [f"{self.name}__{col}" for col in result.columns]
+
         if column_names is not None:
             self.output_vars = column_names
         elif train_X_native is None and self.y_columns is not None:
@@ -211,7 +229,10 @@ class TransformProcessor():
             data_native = unwrap(data.squeeze())
 
         result = self.obj.transform(data_native)
-        return data_wrapper_class.from_output(result, self.output_vars, data_index)
+        output_vars = self.output_vars
+        if output_vars is None and hasattr(result, 'columns'):
+            output_vars = [f"{self.name}__{col}" for col in result.columns]
+        return data_wrapper_class.from_output(result, output_vars, data_index)
 
 class PredictProcessor():
     def __init__(self, name, estimator, method='predict', adapter = None, params = {}, logger = None):
@@ -238,13 +259,14 @@ class PredictProcessor():
             self.y_columns = None
 
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
+        resolved_params = _resolve_col_selectors(self.params, train_X)
+        params = self.adapter.get_params(resolved_params, logger=self.logger) if self.adapter is not None else resolved_params
         self.obj = self.estimator(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params, logger=self.logger
+                data_dict=data_dict, params=resolved_params, logger=self.logger
             )
         else:
             fit_params = {}
@@ -295,14 +317,14 @@ class PredictProcessor():
             self.y_columns = None
 
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
+        resolved_params = _resolve_col_selectors(self.params, train_X)
+        params = self.adapter.get_params(resolved_params, logger=self.logger) if self.adapter is not None else resolved_params
         self.obj = self.estimator(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params,
-                logger=self.logger
+                data_dict=data_dict, params=resolved_params, logger=self.logger
             )
         else:
             fit_params = {}

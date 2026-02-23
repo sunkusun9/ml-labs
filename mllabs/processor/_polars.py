@@ -22,11 +22,12 @@ class PolarsLoader(TransformerMixin, BaseEstimator):
 
     def transform(self, X):
         if type(X) is list:
-            return pl.concat([
-                getattr(pl, self.read_method)(i, schema_overrides = self.pl_type_) for i in X
-            ])
+            with pl.StringCache():
+                return pl.concat([
+                    getattr(pl, self.read_method)(i, schema_overrides=self.pl_type_) for i in X
+                ])
         else:
-            return getattr(pl, self.read_method)(X, schema_overrides = self.pl_type_)
+            return getattr(pl, self.read_method)(X, schema_overrides=self.pl_type_)
 
     def get_params(self, deep = True):
         return {

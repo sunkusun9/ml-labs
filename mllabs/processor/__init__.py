@@ -1,8 +1,9 @@
-from ._categorical import CategoricalConverter, CategoricalPairCombiner, FrequencyEncoder
+from ._categorical import CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder
 
 __all__ = [
-    "CategoricalConverter",
-    "CategoricalPairCombiner",
+    "CatConverter",
+    "CatPairCombiner",
+    "CatOOVFilter",
     "FrequencyEncoder",
 ]
 

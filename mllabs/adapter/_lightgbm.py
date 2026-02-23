@@ -44,7 +44,7 @@ class LightGBMAdapter(ModelAdapter):
         """
         return {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric']}
 
-    def get_fit_params(self, data_dict, X, y=None, params=None, logger=None):
+    def get_fit_params(self, data_dict, params=None, logger=None):
         """LightGBM의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 

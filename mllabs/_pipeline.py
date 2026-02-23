@@ -4,6 +4,12 @@ from ._describer import desc_pipeline, desc_node
 from .adapter  import get_adapter
 
 
+class ColSelector:
+    def __init__(self, col_type=None, pattern=None):
+        self.col_type = col_type
+        self.pattern = pattern
+
+
 def _params_equal(a, b):
     if a is b:
         return True

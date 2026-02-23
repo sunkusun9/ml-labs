@@ -11,16 +11,16 @@ class KerasAdapter(ModelAdapter):
     Keras는 validation_data 파라미터로 (X, y) 튜플을 받습니다.
     """
 
-    def get_fit_params(self, data_dict, X, y=None, params=None, logger=None):
+    def get_fit_params(self, data_dict, params=None, logger=None):
         """Keras의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
         fit_params = {}
 
         # data_dict에서 데이터 추출
-        train_X, train_v_X = data_dict[X]
-        if y is not None and y in data_dict:
-            train_y, train_v_y = data_dict[y]
+        train_X, train_v_X = data_dict['X']
+        if 'y' in data_dict:
+            train_y, train_v_y = data_dict['y']
         else:
             train_y, train_v_y = None, None
 

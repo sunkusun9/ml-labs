@@ -1,4 +1,5 @@
 import uuid
+import json
 import pickle as pkl
 from .adapter import get_adapter
 from ._node_processor import TransformProcessor, PredictProcessor, resolve_columns
@@ -84,9 +85,25 @@ class StageObj():
         self.status = None
         self.error = None
 
+    def set_error(self, error_info):
+        self.error = error_info
+        self.status = 'error'
+        if not os.path.isdir(self.path):
+            os.makedirs(self.path, exist_ok=True)
+        with open(self.path / 'error.txt', 'w') as f:
+            json.dump(error_info, f, ensure_ascii=False, indent=2)
+
     def load(self):
         if not os.path.isdir(self.path):
             self.status = 'finalized'
+            self.objs_ = None
+            return
+
+        error_path = self.path / 'error.txt'
+        if error_path.exists():
+            with open(error_path, 'r') as f:
+                self.error = json.load(f)
+            self.status = 'error'
             self.objs_ = None
             return
 
@@ -108,17 +125,10 @@ class StageObj():
             idx += 1
 
         if len(self.objs_) == 0:
-            if self.error is None:
-                self.status = 'finalized'
-            else:
-                self.status = 'error'
+            self.status = 'finalized'
             self.objs_ = None
         else:
             self.status = 'built'
-
-    def start_exp(self, finalize = False):
-        if finalize:
-            raise ValueError("StageObj cannot be finalized after Experiment")
 
     def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input = True, include_output = True):
         if self.status == "built":
@@ -145,9 +155,7 @@ class StageObj():
         else:
             raise RuntimeError(f"StageObj cannot be experimented unless built")
     
-    def end_exp(self):
-        pass
-    
+   
     def start_build(self):
         self.objs_ = list()
         if not os.path.isdir(self.path):
@@ -166,7 +174,10 @@ class StageObj():
 
     def end_build(self):
         self.status = 'built'
-    
+        error_path = self.path / 'error.txt'
+        if error_path.exists():
+            error_path.unlink()
+
     def get_objs(self, idx):
         for obj, train_, spec in self.objs_[idx]:
             yield obj, train_, spec
@@ -184,9 +195,24 @@ class HeadObj():
         self.status = None
         self.error = None
 
+    def set_error(self, error_info):
+        self.error = error_info
+        self.status = 'error'
+        if not os.path.isdir(self.path):
+            os.makedirs(self.path, exist_ok=True)
+        with open(self.path / 'error.txt', 'w') as f:
+            json.dump(error_info, f, ensure_ascii=False, indent=2)
+
     def load(self):
         if not os.path.isdir(self.path):
             self.status = 'finalized'
+            return
+
+        error_path = self.path / 'error.txt'
+        if error_path.exists():
+            with open(error_path, 'r') as f:
+                self.error = json.load(f)
+            self.status = 'error'
             return
 
         idx = 0
@@ -197,10 +223,7 @@ class HeadObj():
             idx += 1
 
         if idx == 0:
-            if self.error is None:
-                self.status = 'finalized'
-            else:
-                self.status = 'error'
+            self.status = 'finalized'
         else:
             self.status = 'built'
 
@@ -208,6 +231,7 @@ class HeadObj():
         self.finalize_after_exp = finalize
         if not os.path.isdir(self.path):
             os.makedirs(self.path, exist_ok = True)
+        self.status = None
 
     def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input = True, include_output = True):
         if self.status == "built":
@@ -272,6 +296,9 @@ class HeadObj():
             self.status = "finalized"
         else:
             self.status = "built"
+        error_path = self.path / 'error.txt'
+        if error_path.exists():
+            error_path.unlink()
 
     def get_objs(self, idx):
         if self.status != 'built':
