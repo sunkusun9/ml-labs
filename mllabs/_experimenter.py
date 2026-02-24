@@ -427,6 +427,7 @@ class Experimenter():
             node_obj.start_build()
         
         n_splits = self.get_n_splits()
+        self.logger.clear_progress()
         self.logger.start_progress("Build", n_splits)
         for i in range(n_splits):
             self.logger.update_progress(i)
@@ -476,7 +477,7 @@ class Experimenter():
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'head' and i in node_names:
-                if i not in self.node_objs or self.node_objs[i].status != 'built':
+                if i not in self.node_objs or self.node_objs[i].status not in ['built', 'finalized']:
                     target_nodes.append(i)
 
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
@@ -507,6 +508,7 @@ class Experimenter():
 
         # experiment loop
         n_splits = self.get_n_splits()
+        self.logger.clear_progress()
         self.logger.start_progress("Exp", n_splits)
         for i in range(n_splits):
             self.logger.update_progress(i)

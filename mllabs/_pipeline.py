@@ -438,7 +438,7 @@ class Pipeline:
         attrs = grp.get_attrs(self.grps)
         new_edges = attrs['edges']
         affected_nodes = self._get_all_nodes_in_grp(grp)
-
+        self.grps[name] = grp
         if len(new_edges) > 0 or len(affected_nodes) > 0:
             for node_name in affected_nodes:
                 if node_name not in self.nodes:
@@ -459,9 +459,9 @@ class Pipeline:
                 has_cycle, cycle_edges = self._check_cycle(node_name, final_edges)
                 if has_cycle:
                     cycle_info = ", ".join([f"'{e}'" for e in cycle_edges])
+                    self.grps[name] = old_grp
                     raise ValueError(f"Cannot update group '{name}': node '{node_name}' would create cycle through edge(s) {cycle_info}")
 
-        self.grps[name] = grp
         return {
             "result": "update", "affected_nodes": affected_nodes, "old_grp": old_grp, "grp": grp
         }

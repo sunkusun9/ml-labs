@@ -7,6 +7,15 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한다.
 커밋 메시지에 "Co-Authored-By" 넣지 마라. PR에 "Generated with Claude Code" 같은 광고성 메시지 넣지 마라.
 
+## CLI 버전
+- git 2.43.0
+- gh 2.45.0
+
+## gh CLI 주의사항
+- `gh issue view <num>` 는 Projects Classic 지원 deprecated 경고로 exit code 1 반환 → **반드시 `--json` 플래그 사용**
+  - 예: `gh issue view 40 --json title,body,comments`
+- `--repo` 플래그 없이도 현재 디렉토리의 remote origin에서 자동 추론됨
+
 # modeler 모듈 요약
 
 ## 아키텍처 개요

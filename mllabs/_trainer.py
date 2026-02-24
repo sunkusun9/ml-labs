@@ -273,7 +273,8 @@ class Trainer:
                 obj, _, _ = next(obj_iters[name])
                 node_attrs = self.pipeline.get_node_attrs(name)
                 output = self._process_node(obj, data_dicts, node_attrs['edges'])
-
+                if output is None:
+                    continue
                 if name in stage_set:
                     data_dicts[name] = (output, obj)
                 else:
@@ -289,22 +290,28 @@ class Trainer:
 
     def _process_node(self, obj, data_dicts, edges):
         input_data = self._get_process_data(data_dicts, edges)
-        return obj.process(input_data['X'])
+        if input_data is not None:
+            return obj.process(input_data['X'])
+        else:
+            return None
 
     def _get_process_data(self, data_dicts, edges):
         result = {}
-        for key, edge_list in edges.items():
-            parts = []
-            for src_node, var in edge_list:
-                src, obj = data_dicts[src_node]
-                if var is not None:
-                    cols = resolve_columns(src, var, processor=obj)
-                    src = src.select_columns(cols)
-                parts.append(src)
-            if len(parts) == 1:
-                result[key] = parts[0]
-            else:
-                result[key] = type(parts[0]).concat(parts, axis=1)
+        if 'X' not in edges:
+            return None
+        key = 'X'
+        edge_list = edges[key]
+        parts = []
+        for src_node, var in edge_list:
+            src, obj = data_dicts[src_node]
+            if var is not None:
+                cols = resolve_columns(src, var, processor=obj)
+                src = src.select_columns(cols)
+            parts.append(src)
+        if len(parts) == 1:
+            result[key] = parts[0]
+        else:
+            result[key] = type(parts[0]).concat(parts, axis=1)
         return result
 
     # ------------------------------------------------------------------
