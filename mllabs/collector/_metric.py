@@ -116,8 +116,8 @@ class MetricCollector(Collector):
             else:
                 df_agg_std = None
             if outer_fold:
-                df_agg_mean = df_agg_mean.stack(level=0, future_stack=True).groupby(level=0).mean()
                 if include_std:
-                    df_agg_std = df_agg_std.stack(level=0, future_stack=True).groupby(level=0).mean()
+                    df_agg_std = df_agg_mean.stack(level=0, future_stack=True).groupby(level=0).std()
+                df_agg_mean = df_agg_mean.stack(level=0, future_stack=True).groupby(level=0).mean()
             return df_agg_mean, df_agg_std
         return df
