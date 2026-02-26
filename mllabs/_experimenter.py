@@ -657,7 +657,7 @@ class Experimenter():
         for key, edge_list in edges.items():
             key_data_list = []
             for node_name, var in edge_list:
-                key_data_list.append(self.get_node_output(idx, node_name, var))
+                key_data_list.append(self.get_node_output(node_name, idx, var))
             data_dict[key] = zip(*key_data_list)
 
         for _ in range(self.get_n_splits_inner()):
@@ -685,7 +685,7 @@ class Experimenter():
         for key, edge_list in edges.items():
             key_data_list = []
             for node_name, var in edge_list:
-                key_data_list.append(self.get_node_train_output(idx, node_name, var))
+                key_data_list.append(self.get_node_train_output(node_name, idx, var))
             data_dict[key] = zip(*key_data_list)
         
         for _ in range(self.get_n_splits_inner()):
@@ -710,7 +710,7 @@ class Experimenter():
         for key, edge_list in edges.items():
             key_data_list = []
             for node_name, var in edge_list:
-                key_data_list.append(self.get_node_valid_output(idx, node_name, var))
+                key_data_list.append(self.get_node_valid_output(node_name, idx, var))
             data_dict[key] = zip(*key_data_list)
         for _ in range(self.get_n_splits_inner()):
             result = {}
@@ -739,7 +739,7 @@ class Experimenter():
         for idx in range(len(self.train_idx_list)):
             yield self.get_data(idx, edges)
     
-    def get_node_output(self, idx, node, v = None):
+    def get_node_output(self, node, idx, v = None):
         if node is None:
             outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
             if v is not None:
@@ -810,7 +810,7 @@ class Experimenter():
         if use_cache:
             self.cache.put_data(node, "all", idx, cache_data)
 
-    def get_node_train_output(self, idx, node, v=None):
+    def get_node_train_output(self, node, idx, v=None):
         if node is None:
             for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
                 if v is None:
@@ -859,7 +859,7 @@ class Experimenter():
             yield yld
         self.cache.put_data(node, "train", idx, cache_data)
     
-    def get_node_valid_output(self, idx, node, v=None):
+    def get_node_valid_output(self, node, idx, v=None):
         if node is None:
             outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
             if v is not None:
