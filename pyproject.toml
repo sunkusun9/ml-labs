@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "ml-labs"
 version = "0.5.0"
 requires-python = ">=3.10"
+readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 dependencies = [
@@ -14,6 +15,12 @@ dependencies = [
     "scikit-learn>=1.2",
     "cachetools>=5.0",
 ]
+
+[project.urls]
+Homepage = "https://sunkusun9.github.io/ml-labs/"
+Documentation = "https://sunkusun9.github.io/ml-labs/"
+Repository = "https://github.com/sunkusun9/ml-labs"
+Changelog = "https://github.com/sunkusun9/ml-labs/releases"
 
 [project.optional-dependencies]
 xgboost = ["xgboost>=1.7"]

@@ -11,12 +11,12 @@ pip install ml-labs
 With optional dependencies:
 
 ```bash
-pip install ml-lab[xgboost]    # XGBoost support
-pip install ml-lab[lightgbm]   # LightGBM support
-pip install ml-lab[catboost]   # CatBoost support
-pip install ml-lab[shap]       # SHAP value analysis
-pip install ml-lab[polars]     # Polars DataFrame support
-pip install ml-lab[all]        # All optional dependencies
+pip install ml-labs[xgboost]    # XGBoost support
+pip install ml-labs[lightgbm]   # LightGBM support
+pip install ml-labs[catboost]   # CatBoost support
+pip install ml-labs[shap]       # SHAP value analysis
+pip install ml-labs[polars]     # Polars DataFrame support
+pip install ml-labs[all]        # All optional dependencies
 ```
 
 ## Key Features
@@ -50,7 +50,7 @@ init ──→ built ──→ finalized
 ## Quick Start
 
 ```python
-from mllab import Experimenter, Connector, MetricCollector
+from mllabs import Experimenter, Connector, MetricCollector
 
 exp = Experimenter(data=df, path="exp/my_experiment")
 
