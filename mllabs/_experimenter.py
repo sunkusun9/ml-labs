@@ -450,7 +450,7 @@ class Experimenter():
             self.logger.start_progress("Node", len(target_nodes))
             for ni, node in enumerate(target_nodes):
                 self.logger.update_progress(ni)
-                self.logger._progress[-1][0] = node
+                self.logger.rename_progress(node)
                 node_obj = self.node_objs[node]
                 if node_obj.status == 'error':
                     continue
@@ -532,7 +532,7 @@ class Experimenter():
             self.logger.start_progress("Node", len(target_nodes))
             for ni, node in enumerate(target_nodes):
                 self.logger.update_progress(ni)
-                self.logger._progress[-1][0] = node
+                self.logger.rename_progress(node)
                 node_obj = self.node_objs[node]
                 if node_obj.status == 'error':
                     continue
@@ -627,7 +627,7 @@ class Experimenter():
             self.logger.start_progress("Node", len(target_nodes))
             for ni, node in enumerate(target_nodes):
                 self.logger.update_progress(ni)
-                self.logger._progress[-1][0] = node
+                self.logger.rename_progress(node)
                 node_obj = self.node_objs[node]
                 node_attrs = node_attrs_cache[node]
                 result_iter = node_obj.exp_idx(

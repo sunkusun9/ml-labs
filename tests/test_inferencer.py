@@ -87,17 +87,17 @@ class TestProcess:
     def test_mean_agg(self, trained_trainer, sample_data):
         inf = trained_trainer.to_inferencer()
         result = inf.process(sample_data, agg='mean')
-        assert result.get_shape()[0] == len(sample_data)
+        assert result.shape[0] == len(sample_data)
 
     def test_mode_agg(self, trained_trainer, sample_data):
         inf = trained_trainer.to_inferencer()
         result = inf.process(sample_data, agg='mode')
-        assert result.get_shape()[0] == len(sample_data)
+        assert result.shape[0] == len(sample_data)
 
     def test_callable_agg(self, trained_trainer, sample_data):
         inf = trained_trainer.to_inferencer()
         result = inf.process(sample_data, agg=lambda results: results[0])
-        assert result.get_shape()[0] == len(sample_data)
+        assert result.shape[0] == len(sample_data)
 
     def test_none_agg(self, trained_trainer, sample_data):
         inf = trained_trainer.to_inferencer()
@@ -118,7 +118,7 @@ class TestProcess:
         trainer.train()
         inf = trainer.to_inferencer(v=slice(-1, None))
         result = inf.process(sample_data)
-        assert result.get_shape()[1] == 1
+        assert result.shape[1] == 1
 
     def test_single_split(self, exp, sample_data):
         trainer = exp.add_trainer('t_nosplit', splitter=None)
@@ -126,7 +126,7 @@ class TestProcess:
         trainer.train()
         inf = trainer.to_inferencer()
         result = inf.process(sample_data)
-        assert result.get_shape()[0] == len(sample_data)
+        assert result.shape[0] == len(sample_data)
 
     def test_unknown_agg_raises(self, trained_trainer, sample_data):
         inf = trained_trainer.to_inferencer()
