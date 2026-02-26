@@ -155,13 +155,21 @@ class Experimenter():
     def get_n_splits_inner(self):
         return len(self.train_idx_list[0])
 
+    def get_collector(self, name):
+        return self.collectors.get(name)
+
+    def remove_collector(self, name):
+        if name in self.collectors:
+            del self.collectors[name]
+            self._save()
+
     def add_collector(self, collector, exist = 'skip'):
         if collector.name in self.collectors:
             if exist == 'skip':
                 return self.collectors[collector.name]
             elif exist == 'error':
                 raise RuntimeError("")
-        
+
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
         collector.save()
@@ -169,6 +177,14 @@ class Experimenter():
         self.collect(collector)
         self._save()
         return collector
+
+    def get_trainer(self, name):
+        return self.trainers.get(name)
+
+    def remove_trainer(self, name):
+        if name in self.trainers:
+            del self.trainers[name]
+            self._save()
 
     def add_trainer(self, name, data=None, splitter="same", splitter_params=None, exist='skip'):
         if name in self.trainers:

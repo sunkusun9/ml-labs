@@ -535,8 +535,8 @@ class TestCollectorWithExperimenter:
         path = built_exp.path
 
         loaded = Experimenter.load(path, sample_data)
-        assert 'acc' in loaded.collectors
-        loaded_mc = loaded.collectors['acc']
+        assert loaded.get_collector('acc') is not None
+        loaded_mc = loaded.get_collector('acc')
         assert loaded_mc.has('dt')
         result_orig = mc.get_metric('dt')
         result_loaded = loaded_mc.get_metric('dt')

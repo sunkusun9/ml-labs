@@ -278,7 +278,7 @@ class TestCollectorManagement:
                             output_var=None,
                             metric_func=dummy_metric)
         exp.add_collector(mc)
-        assert 'acc' in exp.collectors
+        assert exp.get_collector('acc') is not None
         assert mc.path is not None
 
     def test_add_collector_skip(self, exp):
@@ -453,7 +453,7 @@ class TestStateManagement:
         assert loaded.status == 'open'
         loaded.exp()
 
-        mc2 = list(loaded.collectors.values())[0]
+        mc2 = loaded.get_collector('acc')
         assert mc2.has('dt')
         second_result = mc2.get_metrics_agg(None)[0]
         assert second_result.shape == first_result.shape

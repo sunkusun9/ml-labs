@@ -208,7 +208,7 @@ class TestSaveLoad:
         path = exp.path
 
         loaded_exp = Experimenter.load(path, sample_data)
-        loaded_trainer = loaded_exp.trainers['t1']
+        loaded_trainer = loaded_exp.get_trainer('t1')
         assert loaded_trainer.name == 't1'
         assert set(loaded_trainer.selected_stages) == set(trainer.selected_stages)
         assert set(loaded_trainer.selected_heads) == set(trainer.selected_heads)
