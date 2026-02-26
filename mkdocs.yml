@@ -1,0 +1,55 @@
+site_name: ml-labs
+site_description: ML pipeline and experiment management library
+repo_url: https://github.com/sunkusun9/ml-labs
+repo_name: sunkusun9/ml-labs
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - toc.integrate
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Concepts:
+    - concepts/index.md
+  - User Guide:
+    - guide/pipeline-experimenter.md
+    - guide/trainer-collectors.md
+    - guide/adapters-processors.md
+  - Serving Guide:
+    - serving/inferencer.md
+  - API Reference:
+    - reference/index.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - toc:
+      permalink: true
