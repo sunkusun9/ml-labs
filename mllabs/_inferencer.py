@@ -6,6 +6,19 @@ from ._node_processor import resolve_columns
 
 
 class Inferencer:
+    """Applies trained processors to new data for inference.
+
+    Created by :meth:`~mllabs._trainer.Trainer.to_inferencer`. Self-contained —
+    no dependency on Experimenter or Trainer at serve time.
+
+    Attributes:
+        pipeline (Pipeline): Minimal pipeline (selected nodes only).
+        selected_stages (list[str]): Stage node names.
+        selected_heads (list[str]): Head node names.
+        n_splits (int): Number of cross-validation splits.
+        node_objs (dict): ``{node_name: [processor_split0, ...]}``.
+        v: Output column filter applied to Head outputs.
+    """
 
     def __init__(self, pipeline, selected_stages, selected_heads, n_splits, node_objs, v=None):
         self.pipeline = pipeline
@@ -16,6 +29,19 @@ class Inferencer:
         self.v = v
 
     def process(self, data, agg='mean'):
+        """Run inference on new data and aggregate across splits.
+
+        Args:
+            data: Input dataset (pandas/polars DataFrame or numpy array).
+            agg (str | callable | None): Aggregation strategy across splits.
+                ``'mean'`` (default), ``'mode'``, a callable receiving a list of
+                per-split DataFrames, or ``None`` (returns list).
+                Ignored when ``n_splits == 1``.
+
+        Returns:
+            DataFrame | list: Aggregated predictions, or a list of per-split
+            predictions when ``agg=None``.
+        """
         results = list(self._process_splits(data))
 
         if self.n_splits == 1:
@@ -90,6 +116,12 @@ class Inferencer:
     # ------------------------------------------------------------------
 
     def save(self, path):
+        """Serialize the Inferencer to a single file.
+
+        Args:
+            path (str | Path): Directory to save into. Creates
+                ``{path}/__inferencer.pkl``.
+        """
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         save_data = {
@@ -105,6 +137,14 @@ class Inferencer:
 
     @classmethod
     def load(cls, path):
+        """Load a saved Inferencer from disk.
+
+        Args:
+            path (str | Path): Directory containing ``__inferencer.pkl``.
+
+        Returns:
+            Inferencer: Restored inferencer.
+        """
         path = Path(path)
         with open(path / '__inferencer.pkl', 'rb') as f:
             save_data = pkl.load(f)

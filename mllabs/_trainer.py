@@ -12,6 +12,19 @@ from ._node_processor import resolve_columns
 
 
 class Trainer:
+    """Runs cross-validation training on a subset of Pipeline nodes.
+
+    Created via :meth:`~mllabs.Experimenter.add_trainer`. Shares the
+    Experimenter's Pipeline and DataCache.
+
+    Attributes:
+        name (str): Trainer name.
+        selected_stages (list[str]): Stage nodes included in training.
+        selected_heads (list[str]): Head nodes to train.
+        split_indices (list[tuple] | None): ``[(train_idx, valid_idx), ...]``
+            or ``None`` if no splitting.
+        node_objs (dict): ``{node_name: TrainStageObj | TrainHeadObj}``.
+    """
 
     def __init__(self, name, pipeline, data, path, splitter, splitter_params, cache, logger):
         self.name = name
@@ -36,6 +49,11 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def select_head(self, nodes):
+        """Specify Head nodes to train and auto-collect their upstream Stages.
+
+        Args:
+            nodes: Node query — ``list``, regex ``str``, or ``None`` (all heads).
+        """
         node_names = self.pipeline.get_node_names(nodes)
 
         selected = set(self.selected_stages + self.selected_heads)
@@ -92,6 +110,11 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def train(self):
+        """Train all unbuilt selected nodes across all splits.
+
+        Nodes are trained in topological order. Each node completes all splits
+        before the next node begins.
+        """
         selected_set = set(self.selected_stages + self.selected_heads)
         stage_set = set(self.selected_stages)
 
@@ -256,6 +279,15 @@ class Trainer:
         return self.get_data(node_attrs['edges'])
     
     def process(self, data, v=None):
+        """Apply trained processors to new data, yielding one result per split.
+
+        Args:
+            data: Input dataset.
+            v: Output column filter applied to Head outputs.
+
+        Yields:
+            DataFrame: Concatenated Head outputs for each split.
+        """
         data = wrap(data)
         ordered = [
             name for name in self.pipeline._get_affected_nodes([None])
@@ -319,6 +351,19 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def to_inferencer(self, v=None):
+        """Export trained processors to a standalone :class:`~mllabs.Inferencer`.
+
+        All selected nodes must be in ``built`` state.
+
+        Args:
+            v: Output column filter passed to the Inferencer.
+
+        Returns:
+            Inferencer: Independent inferencer ready for deployment.
+
+        Raises:
+            RuntimeError: If any selected node is not built.
+        """
         from ._inferencer import Inferencer
 
         all_selected = self.selected_stages + self.selected_heads

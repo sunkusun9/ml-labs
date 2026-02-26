@@ -30,6 +30,25 @@ def _params_equal(a, b):
         return False
     return _params_equal(a_dict, b_dict)
 class PipelineGroup:
+    """A named group that shares configuration across its member nodes.
+
+    Groups form a hierarchy via ``parent``. Child groups and their nodes
+    inherit ``processor``, ``method``, ``adapter``, ``edges``, and ``params``
+    from ancestors, with child values taking precedence.
+
+    Attributes:
+        name (str): Group name.
+        role (str): ``'stage'`` or ``'head'``.
+        processor: Processor class (optional, may be inherited).
+        edges (dict): Edge definitions (optional, merged with parent).
+        method (str): Processor method name (optional, may be inherited).
+        parent (str): Parent group name, or ``None``.
+        adapter: ModelAdapter instance (optional, may be inherited).
+        params (dict): Constructor parameters (optional, merged with parent).
+        children (list[str]): Child group names.
+        nodes (list[str]): Node names belonging to this group.
+    """
+
     def __init__(
         self, name, role, processor=None, edges=None, method=None, parent=None, adapter=None, params=None
     ):
@@ -117,6 +136,22 @@ class PipelineGroup:
         return ret
 
 class PipelineNode:
+    """An individual executable unit in the pipeline.
+
+    Node-level attributes override group attributes. Final resolved values
+    are obtained via :meth:`get_attrs`.
+
+    Attributes:
+        name (str): Node name.
+        grp (str): Parent group name.
+        processor: Processor class override (``None`` → inherit from group).
+        edges (dict): Additional or overriding edge definitions.
+        method (str): Processor method name override.
+        adapter: ModelAdapter instance override.
+        params (dict): Constructor parameter overrides.
+        output_edges (list[str]): Names of nodes that consume this node's output.
+    """
+
     def __init__(
         self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None
     ):
@@ -193,18 +228,39 @@ class PipelineNode:
 
 
 class Pipeline:
+    """Node graph that describes an ML workflow.
+
+    Holds groups (:class:`PipelineGroup`) and nodes (:class:`PipelineNode`).
+    The implicit DataSource node is stored as ``nodes[None]``.
+
+    Attributes:
+        grps (dict[str, PipelineGroup]): All registered groups.
+        nodes (dict[str | None, PipelineNode]): All nodes, keyed by name.
+            ``None`` is the DataSource.
+    """
+
     def __init__(self):
         self.nodes = {}
         self.grps = {}
         self.nodes = {None: PipelineNode("Data_Source", None, None, None, None, None)}
 
     def copy(self):
+        """Return a deep copy of the entire pipeline.
+
+        Returns:
+            Pipeline: New pipeline with all groups and nodes copied.
+        """
         ret = Pipeline()
         ret.grps = {k: v.copy() for k, v in self.grps.items()}
         ret.nodes = {k: v.copy() for k, v in self.nodes.items()}
         return ret
 
     def copy_stage(self):
+        """Return a copy containing only Stage groups and nodes.
+
+        Returns:
+            Pipeline: Pipeline with only ``role='stage'`` groups and nodes.
+        """
         ret = Pipeline()
 
         stage_grp_names = {name for name, grp in self.grps.items() if grp.role == 'stage'}
@@ -235,6 +291,15 @@ class Pipeline:
         return ret
 
     def copy_nodes(self, node_names):
+        """Return a copy containing the specified nodes and all their ancestors.
+
+        Args:
+            node_names (list[str]): Target node names. Their upstream Stage
+                dependencies are included automatically.
+
+        Returns:
+            Pipeline: Minimal pipeline needed to run *node_names*.
+        """
         needed_nodes = set()
         queue = list(node_names)
 
@@ -373,6 +438,27 @@ class Pipeline:
     def set_grp(
             self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist='diff'
         ):
+        """Create or update a group.
+
+        Args:
+            name (str): Group name. Cannot contain ``__`` or path-invalid chars.
+            role (str): ``'stage'`` or ``'head'``. Inherited from parent if omitted.
+            processor: Processor class.
+            edges (dict): Edge definitions ``{key: [(node_name, var_spec), ...]}``.
+            method (str): Processor method name (e.g. ``'fit_transform'``).
+            parent (str): Parent group name, or ``None``.
+            adapter: ModelAdapter instance.
+            params (dict): Constructor parameters for the processor.
+            exist (str): Conflict resolution — ``'diff'`` (default, skip if unchanged),
+                ``'skip'``, ``'error'``, or ``'replace'``.
+
+        Returns:
+            dict: ``{result, grp, affected_nodes, [old_grp]}`` where *result* is
+            ``'new'``, ``'skip'``, or ``'update'``.
+
+        Raises:
+            ValueError: If name is invalid, role conflicts, or edges form a cycle.
+        """
         self._validate_name(name)
         if name in self.nodes:
             raise ValueError(f"Name '{name}' already exists as a node")
@@ -530,6 +616,16 @@ class Pipeline:
         return result
 
     def get_node_names(self, query):
+        """Resolve a node query to a list of node names.
+
+        Args:
+            query: ``None`` (all nodes), ``list`` (exact names), or
+                ``str`` (regex pattern matched against node names).
+
+        Returns:
+            list[str]: Matching node names (DataSource ``None`` excluded for
+            str/list queries).
+        """
         if query is None:
             node_names = list(self.nodes.keys())
         elif isinstance(query, list):
@@ -585,6 +681,26 @@ class Pipeline:
     def set_node(
         self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, exist='diff'
     ):
+        """Create or update a node.
+
+        Args:
+            name (str): Node name.
+            grp (str): Group the node belongs to.
+            processor: Processor class override.
+            edges (dict): Additional edge definitions merged on top of the group.
+            method (str): Method name override.
+            adapter: ModelAdapter instance override.
+            params (dict): Constructor parameter overrides.
+            exist (str): Conflict resolution — ``'diff'`` (default), ``'skip'``,
+                ``'error'``, or ``'replace'``.
+
+        Returns:
+            dict: ``{result, obj, old_obj, affected_nodes}``.
+
+        Raises:
+            ValueError: If the resolved processor or method is missing, edges are
+                invalid, or a cycle would be created.
+        """
         self._validate_name(name)
 
         if name in self.grps:
@@ -671,6 +787,15 @@ class Pipeline:
         return self.nodes.get(name, None)
 
     def get_node_attrs(self, name):
+        """Return fully resolved attributes for a node (group hierarchy merged).
+
+        Args:
+            name (str): Node name.
+
+        Returns:
+            dict: Keys — ``name``, ``grp``, ``processor``, ``method``,
+            ``adapter``, ``edges``, ``params``.
+        """
         node = self.get_node(name)
         return node.get_attrs(self.grps)
 
@@ -684,6 +809,19 @@ class Pipeline:
         return desc_pipeline(self, max_depth, direction)
 
     def compare_nodes(self, nodes):
+        """Compare params and X-edges across nodes that share the same processor.
+
+        Nodes are grouped by processor class. Within each group, only columns
+        that differ between nodes are included.
+
+        Args:
+            nodes (list[str]): Node names to compare.
+
+        Returns:
+            dict[str, pd.DataFrame]: ``{processor_name: DataFrame}`` where the
+            DataFrame index is node names and columns are a MultiIndex of
+            ``('params', param_key)`` and ``('X', stage_label)``.
+        """
         attrs_map = {n: self.get_node_attrs(n) for n in nodes}
 
         groups = {}

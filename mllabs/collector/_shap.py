@@ -8,6 +8,20 @@ from .._data_wrapper import unwrap
 
 
 class SHAPCollector(Collector):
+    """Computes SHAP values and feature importance for each fold.
+
+    Applies an optional ``data_filter`` to subsample rows before computing
+    SHAP values. Supports tree-based multiclass models (3-D SHAP arrays are
+    averaged over the class axis).
+
+    Args:
+        name (str): Collector name.
+        connector (Connector): Node matching criteria.
+        explainer_cls: SHAP explainer class. Default ``shap.TreeExplainer``.
+        data_filter (DataFilter, optional): Applied to train and valid data
+            before calling the explainer.
+    """
+
     def __init__(self, name, connector, explainer_cls=None, data_filter=None):
         super().__init__(name, connector)
         self.explainer_cls = explainer_cls or shap.TreeExplainer
@@ -142,6 +156,16 @@ class SHAPCollector(Collector):
         return pd.Series(abs_vals.mean(axis=0), index=columns)
 
     def get_feature_importance(self, node, idx):
+        """Return per-inner-fold feature importance for one outer fold.
+
+        Args:
+            node (str): Node name.
+            idx (int): Outer fold index.
+
+        Returns:
+            list[pd.Series]: One Series per inner fold (mean absolute SHAP
+            values over samples).
+        """
         data = self._load_node_data(node)
         entries = sorted(
             ((k, v) for k, v in data.items() if k[0] == idx),
@@ -153,6 +177,21 @@ class SHAPCollector(Collector):
         ]
 
     def get_feature_importance_agg(self, node, agg_inner='mean', agg_outer='mean'):
+        """Return aggregated feature importance across all folds.
+
+        Args:
+            node (str): Node name.
+            agg_inner (str | None): Aggregation function name for inner folds
+                (passed to ``pd.DataFrame.agg``). ``None`` keeps inner fold
+                axis as a MultiIndex level.
+            agg_outer (str | None): Aggregation function name for outer folds.
+                ``None`` returns a DataFrame with one column per outer fold.
+
+        Returns:
+            pd.Series | pd.DataFrame: When both *agg_inner* and *agg_outer* are
+            set, returns a ``pd.Series``. When *agg_outer* is ``None``, returns
+            a DataFrame. When *agg_inner* is ``None``, returns a MultiIndex DataFrame.
+        """
         data = self._load_node_data(node)
         outer_indices = sorted(set(k[0] for k in data.keys()))
 
