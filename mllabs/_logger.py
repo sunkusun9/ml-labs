@@ -33,6 +33,10 @@ class BaseLogger(ABC):
         pass
 
 class DefaultLogger(BaseLogger):
+    def __init__(self, level=['info', 'warning', 'progress'], n_store_warning=1000):
+        super().__init__(level, n_store_warning)
+        self._prev_progress_len = 0
+
     def info(self, msg):
         if self.show_info:
             print(msg)
@@ -51,7 +55,9 @@ class DefaultLogger(BaseLogger):
                 parts.append(f"{title} {current}/{total} ({pct}%)")
             else:
                 parts.append(f"{title} {current}")
-        print(f"\r{' > '.join(parts)}", end='', flush=True)
+        line = ' > '.join(parts)
+        print(f"\r{line.ljust(self._prev_progress_len)}", end='', flush=True)
+        self._prev_progress_len = len(line)
 
     def start_progress(self, title, total=None):
         self._progress.append([title, 0, total])
@@ -71,6 +77,7 @@ class DefaultLogger(BaseLogger):
         self._progress.pop()
         if len(self._progress) == 0:
             print()
+            self._prev_progress_len = 0
 
     def adhoc_progress(self, current, total, msg=None):
         if not self.show_progress or len(self._progress) == 0:
@@ -87,9 +94,12 @@ class DefaultLogger(BaseLogger):
         if msg:
             adhoc_str += f" {msg}"
         parts.append(adhoc_str)
-        print(f"\r{' > '.join(parts)}", end='', flush=True)
+        line = ' > '.join(parts)
+        print(f"\r{line.ljust(self._prev_progress_len)}", end='', flush=True)
+        self._prev_progress_len = len(line)
 
     def clear_progress(self):
         if len(self._progress) > 0:
             self._progress.clear()
             print()
+            self._prev_progress_len = 0
