@@ -2,6 +2,20 @@ import re
 
 
 class Collector:
+    """Base class for data collectors attached to an Experimenter.
+
+    Subclasses override the lifecycle hooks ``_start``, ``_collect``,
+    ``_end_idx``, and ``_end`` to capture data during :meth:`~mllabs.Experimenter.exp`.
+
+    Args:
+        name (str): Collector name (unique within an Experimenter).
+        connector (Connector): Determines which Head nodes this collector
+            attaches to.
+
+    Attributes:
+        path (Path | None): Set by Experimenter on registration.
+    """
+
     def __init__(self, name, connector):
         self.name = name
         self.connector = connector

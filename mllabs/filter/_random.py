@@ -4,6 +4,16 @@ from ._base import DataFilter
 
 
 class RandomFilter(DataFilter):
+    """Randomly subsample rows from a data dict.
+
+    Args:
+        n (int, optional): Absolute number of rows to sample.
+            Mutually exclusive with *frac*.
+        frac (float, optional): Fraction of rows to sample (0–1).
+            Mutually exclusive with *n*.
+        random_state (int, optional): Random seed for reproducibility.
+    """
+
     def __init__(self, n=None, frac=None, random_state=None):
         if n is not None and frac is not None:
             raise ValueError("n and frac are mutually exclusive")

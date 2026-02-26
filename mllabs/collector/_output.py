@@ -6,6 +6,17 @@ from .._node_processor import resolve_columns
 
 
 class OutputCollector(Collector):
+    """Saves raw train/valid outputs to disk for each fold.
+
+    Data is stored as ``{path}/{node}/{idx}_{inner_idx}.pkl``.
+
+    Args:
+        name (str): Collector name.
+        connector (Connector): Node matching criteria.
+        output_var: Column selector applied to Head output.
+        include_target (bool): Whether to save target alongside output.
+    """
+
     def __init__(self, name, connector, output_var, include_target=True):
         super().__init__(name, connector)
         self.output_var = output_var
@@ -82,6 +93,17 @@ class OutputCollector(Collector):
         return [d.name for d in self.path.iterdir() if d.is_dir()]
 
     def get_output(self, node, idx, inner_idx):
+        """Load saved output for a specific fold.
+
+        Args:
+            node (str): Node name.
+            idx (int): Outer fold index.
+            inner_idx (int): Inner fold index.
+
+        Returns:
+            dict: ``{'output_train': (train_arr, valid_sub_arr),
+            'output_valid': arr, 'columns': [...]}``.
+        """
         file_path = self.path / node / f"{idx}_{inner_idx}.pkl"
         if not file_path.exists():
             raise FileNotFoundError(f"Output data not found: {file_path}")
@@ -89,6 +111,15 @@ class OutputCollector(Collector):
             return pickle.load(f)
 
     def get_outputs(self, node):
+        """Load all saved outputs for a node.
+
+        Args:
+            node (str): Node name.
+
+        Returns:
+            dict[tuple[int, int], dict]: ``{(idx, inner_idx): entry}`` for all
+            saved folds.
+        """
         node_dir = self.path / node
         if not node_dir.exists():
             raise FileNotFoundError(f"Node directory not found: {node_dir}")

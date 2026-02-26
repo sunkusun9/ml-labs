@@ -6,6 +6,17 @@ from .._node_processor import resolve_columns
 
 
 class MetricCollector(Collector):
+    """Computes a scalar metric against ground-truth ``y`` for each fold.
+
+    Args:
+        name (str): Collector name.
+        connector (Connector): Node matching criteria.
+        output_var: Column selector for prediction output. ``None`` uses all
+            output columns.
+        metric_func (callable): ``func(y_true, y_pred) -> float``.
+        include_train (bool): If ``True``, also compute on train/inner-valid folds.
+    """
+
     def __init__(self, name, connector, output_var, metric_func, include_train=False):
         super().__init__(name, connector)
         self.output_var = output_var
@@ -94,6 +105,14 @@ class MetricCollector(Collector):
         return obj
 
     def get_metric(self, node):
+        """Return per-fold metrics for a single node.
+
+        Args:
+            node (str): Node name.
+
+        Returns:
+            pd.Series: Metrics indexed by ``(split, inner_split, metric_key)``.
+        """
         l = list()
         for i, sub in enumerate(self.metrics[node]):
             l.append(
@@ -102,10 +121,32 @@ class MetricCollector(Collector):
         return pd.concat(l, axis=1).unstack(level=[0, 1]).rename(node)
 
     def get_metrics(self, nodes=None):
+        """Return per-fold metrics for multiple nodes.
+
+        Args:
+            nodes: Node query — ``None`` (all), ``list``, or regex ``str``.
+
+        Returns:
+            pd.DataFrame: Rows are nodes, columns are fold MultiIndex.
+        """
         node_names = self._get_nodes(nodes, self.metrics.keys())
         return pd.concat([self.get_metric(node) for node in node_names], axis=1).T
 
     def get_metrics_agg(self, nodes=None, inner_fold=True, outer_fold=True, include_std=False):
+        """Return aggregated metrics across folds.
+
+        Args:
+            nodes: Node query. ``None`` uses all collected nodes.
+            inner_fold (bool): Aggregate inner folds first (mean). Required when
+                ``outer_fold=True``.
+            outer_fold (bool): Aggregate outer folds after inner aggregation.
+            include_std (bool): Also return a std DataFrame.
+
+        Returns:
+            tuple[pd.DataFrame, pd.DataFrame | None]: ``(mean, std)`` where *std*
+            is ``None`` unless ``include_std=True``. When ``inner_fold=False``
+            returns the raw DataFrame directly.
+        """
         if outer_fold and not inner_fold:
             raise ValueError("")
         df = self.get_metrics(nodes)

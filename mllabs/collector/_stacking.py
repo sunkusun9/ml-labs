@@ -7,6 +7,21 @@ from .._data_wrapper import DataWrapper
 
 
 class StackingCollector(Collector):
+    """Collects out-of-fold (OOF) predictions for stacking.
+
+    Predictions are aggregated across inner folds and saved per outer fold,
+    then assembled into a dataset aligned to the original data index.
+
+    Args:
+        name (str): Collector name.
+        connector (Connector): Node matching criteria. The ``edges`` ``'y'``
+            entry is used to extract the target column.
+        output_var: Column selector for the Head output.
+        experimenter (Experimenter): Used to build the OOF index and target.
+        method (str): Inner-fold aggregation — ``'mean'`` (default), ``'mode'``,
+            or ``'simple'`` (concatenate).
+    """
+
     def __init__(self, name, connector, output_var, experimenter, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
@@ -174,6 +189,16 @@ class StackingCollector(Collector):
             return list(self._mem_data.keys())
 
     def get_dataset(self, nodes=None, include_target=True):
+        """Return OOF predictions as a DataFrame aligned to the original index.
+
+        Args:
+            nodes: Node query. ``None`` returns all collected nodes.
+            include_target (bool): Append the target column(s) if available.
+
+        Returns:
+            DataFrame: OOF prediction columns (+ target) indexed to match
+            the original dataset.
+        """
         node_names = self._get_nodes(nodes, self._get_saved_nodes())
 
         node_data = []

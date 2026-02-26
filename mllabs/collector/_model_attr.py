@@ -6,6 +6,20 @@ from ..adapter import get_adapter
 
 
 class ModelAttrCollector(Collector):
+    """Collects model attributes (e.g. feature importances) for each fold.
+
+    Args:
+        name (str): Collector name.
+        connector (Connector): Node matching criteria. Used to infer the
+            adapter from ``connector.processor`` when *adapter* is ``None``.
+        result_key (str): Key in the adapter's ``result_objs`` dict (e.g.
+            ``'feature_importances'``).
+        adapter (ModelAdapter, optional): Explicit adapter. Auto-inferred
+            from ``connector.processor`` if omitted.
+        params (dict, optional): Extra keyword arguments forwarded to the
+            result extractor function.
+    """
+
     def __init__(self, name, connector, result_key, adapter=None, params=None):
         super().__init__(name, connector)
         self.result_key = result_key
@@ -95,6 +109,23 @@ class ModelAttrCollector(Collector):
         return {node: self.results[node] for node in node_names}
 
     def get_attrs_agg(self, node, agg_inner=True, agg_outer=True):
+        """Return aggregated model attributes across folds.
+
+        Only valid for mergeable result types (``result_objs[key][1] == True``).
+
+        Args:
+            node (str): Node name.
+            agg_inner (bool): Average inner folds. Required when ``agg_outer=True``.
+            agg_outer (bool): Average outer folds after inner aggregation.
+                Returns a ``pd.Series`` when both are ``True``.
+
+        Returns:
+            pd.Series | pd.DataFrame: Aggregated result.
+
+        Raises:
+            ValueError: If the result type is not mergeable or
+                ``agg_outer=True`` while ``agg_inner=False``.
+        """
         if agg_outer and not agg_inner:
             raise ValueError("agg_outer requires agg_inner to be True")
         if not self._is_mergeable():

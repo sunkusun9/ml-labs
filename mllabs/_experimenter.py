@@ -38,6 +38,14 @@ def _get_data_size(data):
     return sys.getsizeof(data)
 
 class DataCache():
+    """LRU cache for Stage node outputs, keyed by ``(node, type, fold_idx)``.
+
+    Capacity is measured in bytes using ``nbytes`` / ``memory_usage``.
+
+    Args:
+        maxsize (int): Maximum cache capacity in bytes. Default 4 GB.
+    """
+
     def __init__(self, maxsize=4 * 1024 ** 3):  # 4GB 기본값
         self.cache_dic = LRUCache(maxsize=maxsize, getsizeof=_get_data_size)
 
@@ -59,6 +67,35 @@ class DataCache():
             del self.cache_dic[k]
 
 class Experimenter():
+    """Executes and manages a Pipeline experiment on a single dataset.
+
+    Splits data using *sp* (outer) and optionally *sp_v* (inner), then runs
+    Stage builds and Head experiments fold-by-fold.
+
+    Args:
+        data: Input dataset (pandas DataFrame, polars DataFrame, or numpy array).
+        path (str | Path): Directory for persisting experiment artifacts.
+        data_names (list[str], optional): Column names override.
+        sp: Outer splitter (sklearn splitter API). Default
+            ``ShuffleSplit(n_splits=1, random_state=1)``.
+        sp_v: Inner splitter for nested cross-validation. ``None`` disables.
+        splitter_params (dict, optional): Maps splitter keyword args to column
+            names in *data*, e.g. ``{'y': 'target'}``.
+        title (str, optional): Human-readable experiment title.
+        data_key (str, optional): Identifier verified on :meth:`load` to prevent
+            data mismatch.
+        cache_maxsize (int): Stage output cache size in bytes. Default 4 GB.
+        logger: Logger instance. Default ``DefaultLogger(level=['info', 'progress'])``.
+
+    Attributes:
+        pipeline (Pipeline): The pipeline being experimented on.
+        node_objs (dict): ``{node_name: StageObj | HeadObj}``.
+        cache (DataCache): Shared LRU cache.
+        collectors (dict): Registered :class:`~mllabs.collector.Collector` instances.
+        trainers (dict): Registered :class:`~mllabs._trainer.Trainer` instances.
+        status (str): ``'open'`` or ``'closed'``.
+    """
+
     def __init__(
             self, data, path, data_names = None, sp = ShuffleSplit(n_splits=1, random_state=1), sp_v=None,
             splitter_params=None, title=None, data_key=None, cache_maxsize=4 * 1024 ** 3,
@@ -164,6 +201,16 @@ class Experimenter():
             self._save()
 
     def add_collector(self, collector, exist = 'skip'):
+        """Register a Collector and immediately collect from built Head nodes.
+
+        Args:
+            collector (Collector): Collector instance to register.
+            exist (str): ``'skip'`` (default) returns existing if already registered;
+                ``'error'`` raises.
+
+        Returns:
+            Collector: The registered collector.
+        """
         if collector.name in self.collectors:
             if exist == 'skip':
                 return self.collectors[collector.name]
@@ -187,6 +234,22 @@ class Experimenter():
             self._save()
 
     def add_trainer(self, name, data=None, splitter="same", splitter_params=None, exist='skip'):
+        """Create and register a Trainer.
+
+        Args:
+            name (str): Trainer name.
+            data: Dataset for the Trainer. ``None`` → use Experimenter's data.
+            splitter: Splitter to use. ``'same'`` reuses ``sp_v``; pass a
+                sklearn splitter object for a custom split strategy; ``None``
+                trains on the full dataset.
+            splitter_params (dict): Column mappings for the splitter. Must be
+                ``None`` when ``splitter='same'``.
+            exist (str): ``'skip'`` (default) returns existing if name already
+                registered; ``'error'`` raises.
+
+        Returns:
+            Trainer: The newly created (or existing) Trainer.
+        """
         if name in self.trainers:
             if exist == 'skip':
                 return self.trainers[name]
@@ -323,6 +386,13 @@ class Experimenter():
         self._save()
 
     def finalize(self, nodes):
+        """Release memory for built Head nodes (``built`` → ``finalized``).
+
+        Disk artifacts are preserved so nodes can be reloaded.
+
+        Args:
+            nodes: Node query for Head nodes to finalize.
+        """
         self._check_open()
         node_names = self.pipeline.get_node_names(nodes)
         for i in node_names:
@@ -349,6 +419,12 @@ class Experimenter():
                     del self.node_objs[i]
 
     def close_exp(self):
+        """Finalize all built nodes and mark the experiment as closed.
+
+        Collector data is preserved. After this call, :attr:`status` is
+        ``'closed'`` and no further builds or experiments are permitted until
+        :meth:`reopen_exp` is called.
+        """
         if self.status != "open":
             raise RuntimeError("")
         for k, node_obj in self.node_objs.items():
@@ -359,6 +435,11 @@ class Experimenter():
         self._save()
 
     def reopen_exp(self):
+        """Reopen a closed experiment and rebuild Stage nodes.
+
+        Clears all node objects, sets status back to ``'open'``, then calls
+        :meth:`build`.
+        """
         if self.status != "closed":
             raise RuntimeError("")
         for k in list(self.node_objs.keys()):
@@ -389,6 +470,14 @@ class Experimenter():
         return result_obj
 
     def reset_nodes(self, nodes):
+        """Reset nodes to ``init`` state.
+
+        Removes node objects, clears cache entries, and resets Collector and
+        Trainer data for the affected nodes.
+
+        Args:
+            nodes (list[str]): Node names to reset.
+        """
         for i in nodes:
             if i in self.node_objs:
                 node_obj = self.node_objs[i]
@@ -405,6 +494,12 @@ class Experimenter():
             v.reset_nodes(nodes)
 
     def show_error_nodes(self, nodes=None, traceback=False):
+        """Print nodes in ``error`` state.
+
+        Args:
+            nodes: Node query to filter. ``None`` checks all nodes.
+            traceback (bool): Include full traceback in output.
+        """
         node_names = self.pipeline.get_node_names(nodes)
         error_nodes = [
             n for n in node_names
@@ -421,6 +516,12 @@ class Experimenter():
                 self.logger.info(f"[{n}] {err['type']}: {err['message']}")
 
     def build(self, nodes = None, rebuild = False):
+        """Build Stage nodes.
+
+        Args:
+            nodes: Node query — ``None`` (all stages), ``list``, or regex ``str``.
+            rebuild (bool): If ``True``, rebuild already-built nodes.
+        """
         self._check_open()
         node_names = self.pipeline.get_node_names(nodes)
         target_nodes = list()
@@ -486,6 +587,11 @@ class Experimenter():
             self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
     def exp(self, nodes = None):
+        """Run Head nodes and invoke all matching Collectors.
+
+        Args:
+            nodes: Node query — ``None`` (all heads), ``list``, or regex ``str``.
+        """
         self._check_open()
         node_names = set(self.pipeline.get_node_names(nodes))
         target_nodes = list()
@@ -599,6 +705,15 @@ class Experimenter():
         self._save()
 
     def collect(self, collector, exist = 'skip'):
+        """Run a Collector ad-hoc over already-built Head nodes.
+
+        Args:
+            collector (Collector): Collector instance to run.
+            exist (str): ``'skip'`` (default) skips nodes already collected.
+
+        Returns:
+            Collector: The same collector after collection.
+        """
         # built head 노드 중 connector 매칭
         target_nodes = []
         node_attrs_cache = {}
@@ -1049,6 +1164,22 @@ class Experimenter():
 
     @staticmethod
     def load(filepath, data, data_key=None):
+        """Load a saved Experimenter from disk.
+
+        Args:
+            filepath (str | Path): Path to the experiment directory
+                (contains ``__exp.pkl``).
+            data: Dataset to attach. Must match the original data shape.
+            data_key (str, optional): If the saved experiment has a ``data_key``,
+                this must match.
+
+        Returns:
+            Experimenter: Restored experimenter with all nodes, collectors, and
+            trainers reloaded.
+
+        Raises:
+            ValueError: If ``data_key`` does not match the saved value.
+        """
         COLLECTOR_TYPES = {
             'MetricCollector': MetricCollector,
             'StackingCollector': StackingCollector,

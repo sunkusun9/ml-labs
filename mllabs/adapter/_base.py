@@ -6,6 +6,18 @@ from abc import ABC, abstractmethod
 
 
 class ModelAdapter(ABC):
+    """Abstract base class for ML framework adapters.
+
+    Adapters translate ml-labs' unified data format into the framework-specific
+    ``fit()`` parameters of each model. Registered by model class name via
+    :func:`~mllabs.adapter.register_adapter`.
+
+    Class Attributes:
+        result_objs (dict): ``{key: (callable, mergeable_bool)}`` mapping of
+            extractable model attributes for use with
+            :class:`~mllabs.collector.ModelAttrCollector`.
+    """
+
     result_objs = {}
     """Abstract base class for model adapters
 

@@ -37,6 +37,14 @@ nav:
     - serving/inferencer.md
   - API Reference:
     - reference/index.md
+    - reference/pipeline.md
+    - reference/experimenter.md
+    - reference/trainer.md
+    - reference/inferencer.md
+    - reference/collectors.md
+    - reference/adapters.md
+    - reference/connector.md
+    - reference/filters.md
 
 plugins:
   - search
