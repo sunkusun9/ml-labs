@@ -264,4 +264,4 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - 릴리즈: `v*` 태그 push → GitHub Actions (`publish.yml`) → 테스트(3.10/3.11/3.12) → build → PyPI 자동 배포 (OIDC)
 
 ## 향후 방향
-- v0.5.0: Documentation
+- v0.6.0: TBD
