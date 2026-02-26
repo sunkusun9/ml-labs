@@ -1,3 +1,0 @@
-# Adapters & Processors
-
-*Coming soon.*

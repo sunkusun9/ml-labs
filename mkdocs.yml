@@ -31,7 +31,8 @@ nav:
   - User Guide:
     - guide/pipeline-experimenter.md
     - guide/trainer-collectors.md
-    - guide/adapters-processors.md
+    - guide/adapters.md
+    - guide/processors.md
   - Serving Guide:
     - serving/inferencer.md
   - API Reference:
