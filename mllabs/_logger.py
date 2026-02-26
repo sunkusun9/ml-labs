@@ -29,6 +29,9 @@ class BaseLogger(ABC):
     def adhoc_progress(self, current, total, msg=None):
         pass
 
+    def rename_progress(self, title):
+        pass
+
     def clear_progress(self):
         pass
 
@@ -97,6 +100,12 @@ class DefaultLogger(BaseLogger):
         line = ' > '.join(parts)
         print(f"\r{line.ljust(self._prev_progress_len)}", end='', flush=True)
         self._prev_progress_len = len(line)
+
+    def rename_progress(self, title):
+        if self._progress:
+            self._progress[-1][0] = title
+            if self.show_progress:
+                self._render_progress()
 
     def clear_progress(self):
         if len(self._progress) > 0:
