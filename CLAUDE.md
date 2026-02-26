@@ -87,7 +87,12 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - 상태관리: `reset_nodes(nodes)` - node_objs, cache, collectors 초기화
 - 에러 조회: `show_error_nodes(nodes=None, traceback=False)` - error 상태 노드 출력
 - `add_collector(collector)`: Collector 등록 (path 설정, save)
+- `get_collector(name)`: Collector 반환 (없으면 None)
+- `remove_collector(name)`: Collector 제거 후 `_save()`
+- `get_trainer(name)`: Trainer 반환 (없으면 None)
+- `remove_trainer(name)`: Trainer 제거 후 `_save()`
 - `collect(collector, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, progress 포함)
+- `get_node_output(node, idx, v=None)`, `get_node_train_output(node, idx, v=None)`, `get_node_valid_output(node, idx, v=None)`: 노드 출력 추출 (파라미터 순서: node → idx)
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
   - pipeline, node_obj_keys, collector_keys 저장/복원
 
@@ -222,13 +227,13 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## 보조 모듈
 - **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze/mean/mode/simple) — pandas/polars/cudf/numpy 통합
 - **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
-- **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress)
+- **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress, rename_progress)
 - **col.py**: 컬럼 선택 유틸리티
 - **_connector.py**: Connector (노드 매칭)
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
-- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter
+- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder, ColSelector
   - polars 설치 시: PolarsLoader, ExprProcessor, PandasConverter 추가
   - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
 
@@ -259,4 +264,4 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - 릴리즈: `v*` 태그 push → GitHub Actions (`publish.yml`) → 테스트(3.10/3.11/3.12) → build → PyPI 자동 배포 (OIDC)
 
 ## 향후 방향
-- Experimenter에서 도출한 Pipeline으로 Train/Inference 파이프라인 구성 → test 데이터 예측
+- v0.5.0: Documentation
