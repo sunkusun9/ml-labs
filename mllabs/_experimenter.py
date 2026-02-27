@@ -704,22 +704,26 @@ class Experimenter():
             self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
         self._save()
 
-    def collect(self, collector, exist = 'skip'):
+    def collect(self, collector, nodes=None, exist='skip'):
         """Run a Collector ad-hoc over already-built Head nodes.
 
         Args:
             collector (Collector): Collector instance to run.
+            nodes: Node query — ``None`` (all heads), ``list``, or regex ``str``.
             exist (str): ``'skip'`` (default) skips nodes already collected.
 
         Returns:
             Collector: The same collector after collection.
         """
+        node_names = set(self.pipeline.get_node_names(nodes))
         # built head 노드 중 connector 매칭
         target_nodes = []
         node_attrs_cache = {}
         for name in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(name)
             grp = self.pipeline.get_grp(node.grp)
+            if name not in node_names:
+                continue
             if name not in self.node_objs:
                 continue
             if exist == 'skip' and collector.has(name):
