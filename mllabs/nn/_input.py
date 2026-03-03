@@ -211,10 +211,21 @@ class _DatasetInputModel(_keras_base):
     """
 
     def __init__(self, cat_specs, emb_models, cont_specs):
-        super().__init__()
+        super().__init__(name='dataset_input')
+        self._cat_specs = cat_specs
+        self._cont_specs = cont_specs
         self._cat_names = [name for name, _, _ in cat_specs]
         self._cont_names = [name for name, _, _ in cont_specs]
         self.emb_models = emb_models
+
+    def make_inputs(self):
+        inputs_dict = {}
+        for name, cols, ts in self._cat_specs:
+            dtype = 'int32' if ts[2] == 'int' else 'string'
+            inputs_dict[name] = tf.keras.Input(shape=(len(cols),), dtype=dtype, name=name)
+        for name, cols, _ in self._cont_specs:
+            inputs_dict[name] = tf.keras.Input(shape=(len(cols),), dtype='float32', name=name)
+        return inputs_dict
 
     def call(self, inputs):
         outputs = {}

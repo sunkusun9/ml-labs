@@ -1,51 +1,39 @@
-from abc import ABC, abstractmethod
-from sklearn.base import BaseEstimator
+try:
+    import tensorflow as tf
+    _keras_base = tf.keras.Model
+except ImportError:
+    tf = None
+    _keras_base = object
 
 
-class NNHead(BaseEstimator, ABC):
-    """Base class for NN heads.
+class NNHead(_keras_base):
 
-    Head receives per-column embedding inputs/outputs from _EmbeddingEncoder
-    and a continuous input tensor, and combines them into a single 2D tensor
-    for Body to process.
+    def __init__(self, input_model):
+        super().__init__()
+        self.input_model = input_model
 
-    build() contract
-    ----------------
-    emb_inputs  : list[tf.keras.Input]   one per cat col, registered as model inputs
-    emb_outputs : list[tf.Tensor]        shape (batch, dim_i) per col
-    cont_input  : tf.keras.Input | None  shape (batch, n_cont)
-    returns     : tf.Tensor              2D (batch, D) — or 3D for Transformer variants
-    """
-
-    @abstractmethod
-    def build(self, emb_inputs, emb_outputs, cont_input):
-        ...
+    def call(self, inputs):
+        raise NotImplementedError
 
 
 class SimpleConcatHead(NNHead):
-    """Concatenates all embeddings and continuous features into one flat tensor.
 
-    Output shape: (batch, sum(emb_dims) + n_cont)
-    Pairs with: DenseBody
-    """
-
-    def __init__(self, emb_dropout=0.0):
+    def __init__(self, input_model, emb_dropout=0.0):
+        super().__init__(input_model)
         self.emb_dropout = emb_dropout
 
-    def build(self, emb_inputs, emb_outputs, cont_input):
-        import tensorflow as tf
+    def call(self, inputs):
+        processed = self.input_model(inputs)
 
         parts = []
-
-        for emb in emb_outputs:
+        for name in self.input_model._cat_names:
+            emb = processed[name]
             if self.emb_dropout > 0:
-                emb = tf.keras.layers.Dropout(self.emb_dropout, name=f'emb_drop')(emb)
+                emb = tf.keras.layers.Dropout(self.emb_dropout)(emb)
             parts.append(emb)
-
-        if cont_input is not None:
-            parts.append(cont_input)
+        for name in self.input_model._cont_names:
+            parts.append(processed[name])
 
         if len(parts) == 1:
             return parts[0]
-
         return tf.keras.layers.Concatenate()(parts)

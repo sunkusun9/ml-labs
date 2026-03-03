@@ -147,22 +147,11 @@ class _NNBase(BaseEstimator):
         var_specs = self._var_specs()
         _, self.input_model_ = _make_tf_dataset(X, var_specs)
 
-        # Input tensors shaped to match dataset format: (len(cols),) per spec
-        inputs_dict = {}
-        for name, cols, ts in var_specs:
-            if isinstance(ts, tuple) and ts[0] == 'Embedding':
-                dtype = 'int32' if ts[2] == 'int' else 'string'
-            else:
-                dtype = 'float32'
-            inputs_dict[name] = tf.keras.Input(shape=(len(cols),), dtype=dtype, name=name)
+        head_factory = self.head or SimpleConcatHead
+        self.head_ = head_factory(self.input_model_)
 
-        processed = self.input_model_(inputs_dict)
-
-        emb_outputs = [processed[col] for col in self.cat_cols_]
-        cont_output = processed.get('__cont__')
-
-        head = self.head or SimpleConcatHead()
-        x = head.build([], emb_outputs, cont_output)
+        inputs_dict = self.input_model_.make_inputs()
+        x = self.head_(inputs_dict)
 
         body = self.body or DenseBody()
         x = body.build(x)

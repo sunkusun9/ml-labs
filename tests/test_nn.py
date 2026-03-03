@@ -216,41 +216,59 @@ class TestSimpleConcatHead:
     @requires_tf
     def test_concat_emb_and_cont(self):
         from mllabs.nn._head import SimpleConcatHead
+        from mllabs.nn._input import _DatasetInputModel
 
-        inp1 = tf.keras.Input(shape=(), dtype='string', name='color')
-        inp2 = tf.keras.Input(shape=(), dtype='string', name='grade')
-        emb1 = tf.keras.layers.Embedding(4, 4, name='emb_color')(
-            tf.keras.layers.StringLookup(vocabulary=['red', 'green', 'blue'], mask_token=None)(inp1)
-        )
-        emb2 = tf.keras.layers.Embedding(5, 3, name='emb_grade')(
-            tf.keras.layers.StringLookup(vocabulary=['A', 'B', 'C', 'D'], mask_token=None)(inp2)
-        )
-        cont_input = tf.keras.Input(shape=(2,), name='__cont__')
-        head = SimpleConcatHead()
-        out = head.build([inp1, inp2], [emb1, emb2], cont_input)
+        emb_models = {
+            'color': tf.keras.Sequential([
+                tf.keras.layers.StringLookup(vocabulary=['red', 'green', 'blue'], mask_token=None),
+                tf.keras.layers.Embedding(4, 4),
+            ]),
+            'grade': tf.keras.Sequential([
+                tf.keras.layers.StringLookup(vocabulary=['A', 'B', 'C', 'D'], mask_token=None),
+                tf.keras.layers.Embedding(5, 3),
+            ]),
+        }
+        cat_specs = [('color', ['color'], ('Embedding', 4, 'str')),
+                     ('grade', ['grade'], ('Embedding', 3, 'str'))]
+        cont_specs = [('__cont__', ['x1', 'x2'], 'num')]
+        input_model = _DatasetInputModel(cat_specs, emb_models, cont_specs)
+
+        head = SimpleConcatHead(input_model)
+        inputs_dict = input_model.make_inputs()
+        out = head(inputs_dict)
         # (4 + 3 + 2) = 9
         assert out.shape[-1] == 9
 
     @requires_tf
     def test_no_cont(self):
         from mllabs.nn._head import SimpleConcatHead
+        from mllabs.nn._input import _DatasetInputModel
 
-        inp1 = tf.keras.Input(shape=(), dtype='int32', name='c1')
-        inp2 = tf.keras.Input(shape=(), dtype='int32', name='c2')
-        emb1 = tf.keras.layers.Embedding(5, 4)(inp1)
-        emb2 = tf.keras.layers.Embedding(5, 3)(inp2)
-        head = SimpleConcatHead()
-        out = head.build([inp1, inp2], [emb1, emb2], None)
+        emb_models = {
+            'c1': tf.keras.Sequential([tf.keras.layers.Embedding(5, 4)]),
+            'c2': tf.keras.Sequential([tf.keras.layers.Embedding(5, 3)]),
+        }
+        cat_specs = [('c1', ['c1'], ('Embedding', 4, 'int')),
+                     ('c2', ['c2'], ('Embedding', 3, 'int'))]
+        input_model = _DatasetInputModel(cat_specs, emb_models, [])
+
+        head = SimpleConcatHead(input_model)
+        inputs_dict = input_model.make_inputs()
+        out = head(inputs_dict)
         assert out.shape[-1] == 7
 
     @requires_tf
     def test_emb_dropout(self):
         from mllabs.nn._head import SimpleConcatHead
+        from mllabs.nn._input import _DatasetInputModel
 
-        inp = tf.keras.Input(shape=(), dtype='int32', name='c')
-        emb = tf.keras.layers.Embedding(5, 4)(inp)
-        head = SimpleConcatHead(emb_dropout=0.2)
-        out = head.build([inp], [emb], None)
+        emb_models = {'c': tf.keras.Sequential([tf.keras.layers.Embedding(5, 4)])}
+        cat_specs = [('c', ['c'], ('Embedding', 4, 'int'))]
+        input_model = _DatasetInputModel(cat_specs, emb_models, [])
+
+        head = SimpleConcatHead(input_model, emb_dropout=0.2)
+        inputs_dict = input_model.make_inputs()
+        out = head(inputs_dict)
         assert out.shape[-1] == 4
 
 
