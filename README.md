@@ -15,8 +15,9 @@ pip install ml-labs[xgboost]    # XGBoost support
 pip install ml-labs[lightgbm]   # LightGBM support
 pip install ml-labs[catboost]   # CatBoost support
 pip install ml-labs[shap]       # SHAP value analysis
-pip install ml-labs[polars]     # Polars DataFrame support
-pip install ml-labs[all]        # All optional dependencies
+pip install ml-labs[polars]      # Polars DataFrame support
+pip install ml-labs[tensorflow]  # Neural network estimators (NNClassifier, NNRegressor)
+pip install ml-labs[all]         # All optional dependencies
 ```
 
 ## Key Features
@@ -71,6 +72,15 @@ exp.collect(mc)
 
 print(mc.get_metrics(["rf_default"]))
 ```
+
+## Documentation
+
+Full documentation is available at **https://sunkusun9.github.io/ml-labs/**
+
+- [Concepts](https://sunkusun9.github.io/ml-labs/concepts/architecture/) — Architecture, Pipeline, State model, Data flow
+- [User Guide](https://sunkusun9.github.io/ml-labs/guide/pipeline-experimenter/) — Pipeline & Experimenter, Trainer & Collectors, Adapters, Processors, Neural Networks
+- [Serving Guide](https://sunkusun9.github.io/ml-labs/serving/inferencer/) — Inferencer export and inference
+- [API Reference](https://sunkusun9.github.io/ml-labs/reference/index/) — Full API reference
 
 ## Requirements
 
