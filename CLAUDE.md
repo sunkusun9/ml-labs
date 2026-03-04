@@ -91,7 +91,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `remove_collector(name)`: Collector 제거 후 `_save()`
 - `get_trainer(name)`: Trainer 반환 (없으면 None)
 - `remove_trainer(name)`: Trainer 제거 후 `_save()`
-- `collect(collector, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, progress 포함)
+- `collect(collector, nodes=None, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, nodes로 범위 제한 가능, progress 포함)
 - `get_node_output(node, idx, v=None)`, `get_node_train_output(node, idx, v=None)`, `get_node_valid_output(node, idx, v=None)`: 노드 출력 추출 (파라미터 순서: node → idx)
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
   - pipeline, node_obj_keys, collector_keys 저장/복원
@@ -219,7 +219,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 
 ## Adapter 인터페이스
 - `get_params(params, logger)`: 모델 생성 파라미터
-- `get_fit_params(data_dict, X, y, params, logger)`: fit 파라미터
+- `get_fit_params(data_dict, params, logger)`: fit 파라미터
 - `result_objs`: `{name: (callable, mergeable_bool)}`
 - `__eq__`: `type(self) is type(other) and self.__dict__ == other.__dict__` — diff 모드에서 adapter 비교에 사용
 - `__hash__`: `id(self)` — set/dict 키로 사용 가능
@@ -232,7 +232,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **_connector.py**: Connector (노드 매칭)
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
-- **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
+- **adapter/**: sklearn, xgboost, lightgbm, catboost, keras, `_nn.py` (NNAdapter)
 - **processor/**: CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder, ColSelector
   - polars 설치 시: PolarsLoader, ExprProcessor, PandasConverter 추가
   - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
@@ -260,8 +260,19 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## 패키지 정보
 - PyPI 패키지명: `ml-labs`, Python 패키지: `mllabs/`
 - `pyproject.toml`: setuptools 기반, Python >=3.10
-- optional deps: `xgboost`, `lightgbm`, `catboost`, `shap`, `polars`, `all`, `dev`
+- optional deps: `xgboost`, `lightgbm`, `catboost`, `shap`, `polars`, `tensorflow`, `all`, `dev`
 - 릴리즈: `v*` 태그 push → GitHub Actions (`publish.yml`) → 테스트(3.10/3.11/3.12) → build → PyPI 자동 배포 (OIDC)
 
+## mllabs.nn 패키지
+- `NNClassifier`, `NNRegressor`: sklearn-compatible TF/Keras 기반 추정기
+  - pandas `Categorical` / polars `Categorical`/`Enum` dtype 자동 감지 → embedding 자동 생성
+  - `embedding_dims`: `{col: dim}` dict로 per-column override
+  - `hidden`: `DenseHidden` 인스턴스 또는 dict (kwargs로 전달) 또는 None(기본값)
+  - `fit(X, y, eval_set=None, callbacks=None)`: constructor callbacks + fit callbacks + early stopping 순서로 합산
+  - `evals_result_`: `{'train': {metric: [...]}, 'valid': {metric: [...]}}` (history 저장)
+  - Pickle: `__getstate__`/`__setstate__` — weights만 저장, `col_info_` 기반 architecture 재빌드
+- 컴포넌트: `SimpleConcatHead`, `DenseHidden`, `LogitOutput`, `BinaryLogitOutput`, `RegressionOutput`
+- `NNAdapter` (`adapter/_nn.py`): eval_set 전달 + `_ProgressCallback` (epoch 진행률 로깅) + `evals_result` result_obj
+
 ## 향후 방향
-- v0.6.0: TBD
+- v0.7.0: TBD
