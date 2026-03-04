@@ -108,16 +108,15 @@ def _analyze_cols(X, col_list):
 # Embedding model builders
 # ======================================================================
 
-def build_embedding_models(X, cat_specs):
-    col_list       = [cols[0] for _, cols, _ in cat_specs]
+def _build_embedding_models_from_info(col_info, cat_specs):
     embedding_dims = {name: ts[1] for name, _, ts in cat_specs}
-    col_info = _analyze_cols(X, col_list)
     models = {}
 
-    for col in col_list:
+    for name, cols, ts in cat_specs:
+        col = cols[0]
         info = col_info[col]
         cardinality = info['cardinality']
-        dim = (embedding_dims or {}).get(col) or _auto_emb_dim(cardinality)
+        dim = (embedding_dims or {}).get(name) or _auto_emb_dim(cardinality)
         t = info['type']
 
         if t == 'ordinal_int':
@@ -144,6 +143,12 @@ def build_embedding_models(X, cat_specs):
         models[col] = model
 
     return models
+
+
+def build_embedding_models(X, cat_specs):
+    col_list = [cols[0] for _, cols, _ in cat_specs]
+    col_info = _analyze_cols(X, col_list)
+    return _build_embedding_models_from_info(col_info, cat_specs)
 
 
 # ======================================================================
@@ -238,6 +243,15 @@ class _DatasetInputModel(_keras_base):
             outputs[name] = inputs[name]
         return outputs
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'cat_spec': self._cat_specs,
+            'cont_spec': self._cont_specs,
+            'emb_models': self.emb_models
+        })
+        return config
+
 def _make_tf_dataset(X, var_specs, y=None):
     if tf is None:
         raise ImportError("tensorflow is required")
@@ -268,4 +282,17 @@ def _make_input_model(X, var_specs):
     else:
         emb_models = {}
 
+    return _DatasetInputModel(cat_specs, emb_models, cont_specs)
+
+
+def _make_input_model_from_col_info(col_info, var_specs):
+    if tf is None:
+        raise ImportError("tensorflow is required")
+
+    cat_specs  = [(n, c, ts) for n, c, ts in var_specs
+                  if isinstance(ts, tuple) and ts[0] == 'Embedding']
+    cont_specs = [(n, c, ts) for n, c, ts in var_specs
+                  if not (isinstance(ts, tuple) and ts[0] == 'Embedding')]
+
+    emb_models = _build_embedding_models_from_info(col_info, cat_specs) if cat_specs else {}
     return _DatasetInputModel(cat_specs, emb_models, cont_specs)

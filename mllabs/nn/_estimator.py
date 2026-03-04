@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
-from ._input import _analyze_cols, _auto_emb_dim, _make_tf_dataset, _make_input_model
+from ._input import _analyze_cols, _auto_emb_dim, _make_tf_dataset, _make_input_model, _make_input_model_from_col_info
 from ._head import SimpleConcatHead
 from ._hidden import DenseHidden
 from ._output import LogitOutput, BinaryLogitOutput, RegressionOutput
@@ -155,6 +155,8 @@ class _NNBase(BaseEstimator):
     # ------------------------------------------------------------------
 
     def _build_model(self, X, n_output):
+        if hasattr(self, 'model_'):
+            del self.model_
         self.input_model_ = _make_input_model(X, self.var_specs_)
 
         head_factory = self.head or SimpleConcatHead
@@ -163,7 +165,7 @@ class _NNBase(BaseEstimator):
         inputs_dict = self.input_model_.make_inputs()
         x = self.head_(inputs_dict)
 
-        hidden = self.hidden or DenseHidden()
+        hidden = DenseHidden(**(self.hidden if isinstance(self.hidden, dict) else {})) if not self.hidden or isinstance(self.hidden, dict) else self.hidden
         x = hidden(x)
 
         self.output_ = self._resolve_output()
@@ -176,7 +178,7 @@ class _NNBase(BaseEstimator):
     # fit
     # ------------------------------------------------------------------
 
-    def fit(self, X, y, eval_set=None):
+    def fit(self, X, y, eval_set=None, callbacks=None):
         self._fit_encoder(X)
         y_encoded = self._prepare_target(y)
         self.model_ = self._build_model(X, self._n_output())
@@ -205,17 +207,19 @@ class _NNBase(BaseEstimator):
             ).batch(self.batch_size)
             val_ds = None
 
-        callbacks = list(self.callbacks) if self.callbacks else []
+        all_callbacks = list(self.callbacks) if self.callbacks else []
+        if callbacks:
+            all_callbacks.extend(callbacks)
         if val_ds is not None:
             cb = self._make_early_stopping()
             if cb is not None:
-                callbacks.append(cb)
+                all_callbacks.append(cb)
 
         history = self.model_.fit(
             train_ds,
             epochs=self.epochs,
             validation_data=val_ds,
-            callbacks=callbacks,
+            callbacks=all_callbacks,
             verbose=0,
         )
 
@@ -239,6 +243,38 @@ class _NNBase(BaseEstimator):
         check_is_fitted(self)
         ds = _make_tf_dataset(X, self.var_specs_).batch(self.batch_size)
         return self.model_.predict(ds, verbose=0)
+
+    # ------------------------------------------------------------------
+    # Pickle support
+    # ------------------------------------------------------------------
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        weights = None
+        if 'model_' in state:
+            weights = state.pop('model_').get_weights()
+            state.pop('head_', None)
+            state.pop('input_model_', None)
+            state.pop('output_', None)
+        state['_model_weights'] = weights
+        return state
+
+    def __setstate__(self, state):
+        weights = state.pop('_model_weights', None)
+        self.__dict__.update(state)
+        if weights is not None:
+            self.input_model_ = _make_input_model_from_col_info(self.col_info_, self.var_specs_)
+            head_factory = self.head or SimpleConcatHead
+            self.head_ = head_factory(self.input_model_)
+            inputs_dict = self.input_model_.make_inputs()
+            x = self.head_(inputs_dict)
+            hidden = DenseHidden(**(self.hidden if isinstance(self.hidden, dict) else {})) if not self.hidden or isinstance(self.hidden, dict) else self.hidden
+            x = hidden(x)
+            self.output_ = self._resolve_output()
+            self.output_.set_output_dim(self._n_output())
+            output = self.output_(x)
+            self.model_ = tf.keras.Model(inputs=list(inputs_dict.values()), outputs=output)
+            self.model_.set_weights(weights)
 
     # ------------------------------------------------------------------
     # Abstract (subclass)
@@ -333,7 +369,7 @@ class NNRegressor(_NNBase, RegressorMixin):
         batch_size=1024,
         learning_rate=1e-3,
         early_stopping=10,
-        validation_fraction=0.1,
+        validation_fraction=0.0,
         shuffle_buffer=-1,
         callbacks=None,
         loss=None,
