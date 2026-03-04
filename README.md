@@ -57,20 +57,20 @@ exp = Experimenter(data=df, path="exp/my_experiment")
 
 p = exp.pipeline
 p.set_grp("scale", role="stage", processor="StandardScaler")
-p.set_grp("model", role="head", processor="RandomForestClassifier",
+p.set_grp("model", role="head", processor="LogisticRegression",
           parent="scale", edges={"X": [(None, None)], "y": [(None, "target")]})
 
-p.set_node("rf_default", grp="model")
-
-exp.build(["rf_default"])
-exp.exp(["rf_default"])
+p.set_node("lr_default", grp="model")
+p.set_node("lr_c01", grp="model", params={"C": 0.1})
 
 mc = MetricCollector("accuracy", Connector(), output_var="prediction",
                      metric_func=lambda y, pred: (y == pred).mean())
 exp.add_collector(mc)
-exp.collect(mc)
 
-print(mc.get_metrics(["rf_default"]))
+exp.build(["lr_default", "lr_c01"])
+exp.exp(["lr_default", "lr_c01"])
+
+print(mc.get_metrics(["lr_default", "lr_c01"]))
 ```
 
 ## Documentation
