@@ -98,6 +98,12 @@ Uses `validation_data=(X_val, y_val)` instead of `eval_set`. Both `'valid'` and 
 
 `result_objs`: none
 
+### NNAdapter
+
+For `NNClassifier` and `NNRegressor`. Passes the inner-validation fold as `eval_set=[(X_val, y_val)]` to `fit()`. Progress is reported via a Keras callback (`_ProgressCallback`) injected into the `callbacks` argument of `fit()`.
+
+`result_objs`: `evals_result`✓
+
 ---
 
 ## Custom Adapter
