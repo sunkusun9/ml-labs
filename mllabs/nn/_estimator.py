@@ -17,7 +17,10 @@ try:
 except ImportError:
     pl = None
 
-import tensorflow as tf
+try:
+    import tensorflow as tf
+except ImportError:
+    tf = None
 
 def _iloc(X, indices):
     if pd is not None and isinstance(X, pd.DataFrame):
