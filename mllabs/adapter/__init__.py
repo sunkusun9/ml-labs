@@ -7,6 +7,7 @@ from ._catboost import CatBoostAdapter
 from ._keras import KerasAdapter
 from ._default import DefaultAdapter
 from ._sklearn import LMAdapter, PCAAdapter, LDAAdapter, DecisionTreeAdapter
+from ._nn import NNAdapter
 
 try:
     from ._xgboost import XGBoostAdapter
@@ -28,6 +29,9 @@ MODEL_ADAPTERS = {
 
     'KerasClassifier': KerasAdapter(),
     'KerasRegressor': KerasAdapter(),
+
+    'NNClassifier': NNAdapter(),
+    'NNRegressor': NNAdapter(),
 
     'LinearRegression': LMAdapter(),
     'LogisticRegression': LMAdapter(),
@@ -110,6 +114,7 @@ __all__ = [
     'LightGBMAdapter',
     'CatBoostAdapter',
     'KerasAdapter',
+    'NNAdapter',
     'DefaultAdapter',
     'LMAdapter',
     'PCAAdapter',

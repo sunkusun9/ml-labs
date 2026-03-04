@@ -33,6 +33,7 @@ nav:
     - guide/trainer-collectors.md
     - guide/adapters.md
     - guide/processors.md
+    - guide/nn.md
   - Serving Guide:
     - serving/inferencer.md
   - API Reference:
@@ -43,6 +44,7 @@ nav:
     - reference/inferencer.md
     - reference/collectors.md
     - reference/adapters.md
+    - reference/nn.md
     - reference/connector.md
     - reference/filters.md
 
