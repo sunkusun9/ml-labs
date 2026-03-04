@@ -108,7 +108,9 @@ def _analyze_cols(X, col_list):
 # Embedding model builders
 # ======================================================================
 
-def build_embedding_models(X, col_list, embedding_dims=None):
+def build_embedding_models(X, cat_specs):
+    col_list       = [cols[0] for _, cols, _ in cat_specs]
+    embedding_dims = {name: ts[1] for name, _, ts in cat_specs}
     col_info = _analyze_cols(X, col_list)
     models = {}
 
@@ -236,23 +238,23 @@ class _DatasetInputModel(_keras_base):
             outputs[name] = inputs[name]
         return outputs
 
+def _make_tf_dataset(X, var_specs, y=None):
+    if tf is None:
+        raise ImportError("tensorflow is required")
 
-# ======================================================================
-# Dataset factory
-# ======================================================================
+    tensors = {}
+    for name, cols, ts in var_specs:
+        if isinstance(ts, tuple) and ts[0] == 'Embedding':
+            dtype = np.int32 if ts[2] == 'int' else np.object_
+        else:
+            dtype = _dtype_of(ts)
+        tensors[name] = _extract(X, cols, dtype)
 
-def _make_tf_dataset(data, var_specs, y=None, emb_models=None):
-    """Build a tf.data.Dataset and a _DatasetInputModel from var_specs.
+    if y is None:
+        return tf.data.Dataset.from_tensor_slices(tensors)
+    return tf.data.Dataset.from_tensor_slices((tensors, y))
 
-    var_specs format
-    ----------------
-    categorical : (name, [col], ('Embedding', dim, 'int'|'str'))
-    continuous  : (name, cols,  'num')
-
-    Returns
-    -------
-    (tf.data.Dataset, _DatasetInputModel)
-    """
+def _make_input_model(X, var_specs):
     if tf is None:
         raise ImportError("tensorflow is required")
 
@@ -261,23 +263,9 @@ def _make_tf_dataset(data, var_specs, y=None, emb_models=None):
     cont_specs = [(n, c, ts) for n, c, ts in var_specs
                   if not (isinstance(ts, tuple) and ts[0] == 'Embedding')]
 
-    if cat_specs and emb_models is None:
-        col_list       = [cols[0] for _, cols, _ in cat_specs]
-        embedding_dims = {name: ts[1] for name, _, ts in cat_specs}
-        emb_models     = build_embedding_models(data, col_list, embedding_dims)
-    elif emb_models is None:
+    if len(cat_specs) > 0:
+        emb_models = build_embedding_models(X, cat_specs)
+    else:
         emb_models = {}
 
-    tensors = {}
-    for name, cols, ts in var_specs:
-        if isinstance(ts, tuple) and ts[0] == 'Embedding':
-            dtype = np.int32 if ts[2] == 'int' else np.object_
-        else:
-            dtype = _dtype_of(ts)
-        tensors[name] = _extract(data, cols, dtype)
-
-    model = _DatasetInputModel(cat_specs, emb_models, cont_specs)
-
-    if y is None:
-        return tf.data.Dataset.from_tensor_slices(tensors), model
-    return tf.data.Dataset.from_tensor_slices((tensors, y)), model
+    return _DatasetInputModel(cat_specs, emb_models, cont_specs)

@@ -2,10 +2,10 @@ import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
-from ._input import _analyze_cols, _auto_emb_dim, _make_tf_dataset, _DatasetInputModel
+from ._input import _analyze_cols, _auto_emb_dim, _make_tf_dataset, _make_input_model
 from ._head import SimpleConcatHead
-from ._body import DenseBody
-from ._tail import LogitTail, BinaryLogitTail, RegressionTail
+from ._hidden import DenseHidden
+from ._output import LogitOutput, BinaryLogitOutput, RegressionOutput
 
 try:
     import pandas as pd
@@ -17,6 +17,7 @@ try:
 except ImportError:
     pl = None
 
+import tensorflow as tf
 
 def _iloc(X, indices):
     if pd is not None and isinstance(X, pd.DataFrame):
@@ -35,25 +36,33 @@ class _NNBase(BaseEstimator):
         cat_cols=None,
         embedding_dims=None,
         head=None,
-        body=None,
-        tail=None,
+        hidden=None,
+        output=None,
         epochs=100,
         batch_size=1024,
         learning_rate=1e-3,
-        early_stopping_patience=10,
+        early_stopping=10,
         validation_fraction=0.1,
+        shuffle_buffer=-1,
+        callbacks=None,
+        loss=None,
+        metrics=None,
         random_state=None,
     ):
         self.cat_cols = cat_cols
         self.embedding_dims = embedding_dims
         self.head = head
-        self.body = body
-        self.tail = tail
+        self.hidden = hidden
+        self.output = output
         self.epochs = epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
-        self.early_stopping_patience = early_stopping_patience
+        self.early_stopping = early_stopping
         self.validation_fraction = validation_fraction
+        self.shuffle_buffer = shuffle_buffer
+        self.callbacks = callbacks
+        self.loss = loss
+        self.metrics = metrics
         self.random_state = random_state
 
     # ------------------------------------------------------------------
@@ -87,6 +96,16 @@ class _NNBase(BaseEstimator):
         self.cat_cols_ = cat_cols
         self.cont_cols_ = [c for c in self._all_cols(X) if c not in set(cat_cols)]
         self.col_info_ = _analyze_cols(X, cat_cols) if cat_cols else {}
+        self.var_specs_ = []
+        self.embedding_dims_ = self._resolve_embedding_dims()
+        for col in self.cat_cols_:
+            t   = self.col_info_[col]['type']
+            ext = 'int' if t in ('ordinal_int', 'int') else 'str'
+            dim = self.embedding_dims_[col]
+            self.var_specs_.append((col, [col], ('Embedding', dim, ext)))
+        if self.cont_cols_:
+            self.var_specs_.append(('__cont__', self.cont_cols_, 'num'))
+        
 
     def _resolve_embedding_dims(self):
         if not self.cat_cols_:
@@ -97,34 +116,28 @@ class _NNBase(BaseEstimator):
             for col in self.cat_cols_
         }
 
-    # ------------------------------------------------------------------
-    # var_specs
-    # ------------------------------------------------------------------
+    def _resolve_loss(self):
+        l = self.loss if self.loss is not None else self.output_.get_loss()
+        return tf.keras.losses.get(l) if isinstance(l, str) else l
 
-    def _var_specs(self):
-        specs = []
-        for col in self.cat_cols_:
-            t   = self.col_info_[col]['type']
-            ext = 'int' if t in ('ordinal_int', 'int') else 'str'
-            dim = self.embedding_dims_[col]
-            specs.append((col, [col], ('Embedding', dim, ext)))
-        if self.cont_cols_:
-            specs.append(('__cont__', self.cont_cols_, 'num'))
-        return specs
+    def _resolve_metrics(self):
+        return self.metrics if self.metrics is not None else self.output_.get_metrics()
 
-    # ------------------------------------------------------------------
-    # Dataset helpers
-    # ------------------------------------------------------------------
+    def _make_early_stopping(self):
+        es = self.early_stopping
+        if not es:
+            return None
+        if isinstance(es, dict):
+            return tf.keras.callbacks.EarlyStopping(**es)
+        return tf.keras.callbacks.EarlyStopping(
+            patience=es, restore_best_weights=True, monitor='val_loss',
+        )
 
-    def _make_x_dataset(self, X):
-        ds, _ = _make_tf_dataset(X, self._var_specs(),
-                                 emb_models=self.input_model_.emb_models)
-        return ds
-
-    def _make_ds(self, X, y_encoded):
-        ds, _ = _make_tf_dataset(X, self._var_specs(), y=y_encoded,
-                                 emb_models=self.input_model_.emb_models)
-        return ds
+    def _shuffled(self, ds, n):
+        if self.shuffle_buffer == 0:
+            return ds
+        buf = n if self.shuffle_buffer == -1 else self.shuffle_buffer
+        return ds.shuffle(buf, seed=self.random_state)
 
     def _split_val(self, X, y_encoded):
         n = len(y_encoded)
@@ -142,10 +155,7 @@ class _NNBase(BaseEstimator):
     # ------------------------------------------------------------------
 
     def _build_model(self, X, n_output):
-        import tensorflow as tf
-
-        var_specs = self._var_specs()
-        _, self.input_model_ = _make_tf_dataset(X, var_specs)
+        self.input_model_ = _make_input_model(X, self.var_specs_)
 
         head_factory = self.head or SimpleConcatHead
         self.head_ = head_factory(self.input_model_)
@@ -153,65 +163,53 @@ class _NNBase(BaseEstimator):
         inputs_dict = self.input_model_.make_inputs()
         x = self.head_(inputs_dict)
 
-        body = self.body or DenseBody()
-        x = body.build(x)
+        hidden = self.hidden or DenseHidden()
+        x = hidden(x)
 
-        self.tail_ = self._resolve_tail()
-        output = self.tail_.build(x, n_output)
+        self.output_ = self._resolve_output()
+        self.output_.set_output_dim(n_output)
+        output = self.output_(x)
 
-        model = tf.keras.Model(inputs=list(inputs_dict.values()), outputs=output)
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(self.learning_rate),
-            loss=self.tail_.loss(),
-            metrics=self.tail_.compile_metrics(),
-        )
-        return model
+        return tf.keras.Model(inputs=list(inputs_dict.values()), outputs=output)
 
     # ------------------------------------------------------------------
     # fit
     # ------------------------------------------------------------------
 
     def fit(self, X, y, eval_set=None):
-        import tensorflow as tf
-
         self._fit_encoder(X)
-        self.embedding_dims_ = self._resolve_embedding_dims()
-
         y_encoded = self._prepare_target(y)
         self.model_ = self._build_model(X, self._n_output())
+        self.model_.compile(
+            optimizer=tf.keras.optimizers.Adam(self.learning_rate),
+            loss=self._resolve_loss(),
+            metrics=self._resolve_metrics(),
+        )
 
         if eval_set is not None:
-            X_val, y_val_raw = eval_set[0]
-            y_val = self._encode_y(y_val_raw)
-            train_ds = (
-                self._make_ds(X, y_encoded)
-                .shuffle(len(y_encoded), seed=self.random_state)
-                .batch(self.batch_size)
-            )
-            val_ds = self._make_ds(X_val, y_val).batch(self.batch_size)
+            X_val, y_val = eval_set[0]
+            y_val = self._encode_y(y_val)
+            train_ds = self._shuffled(
+                _make_tf_dataset(X, self.var_specs_, y_encoded), len(y_encoded)
+            ).batch(self.batch_size)
+            val_ds = _make_tf_dataset(X_val, self.var_specs_, y_val).batch(self.batch_size)
         elif self.validation_fraction > 0:
             X_tr, y_tr, X_val, y_val = self._split_val(X, y_encoded)
-            train_ds = (
-                self._make_ds(X_tr, y_tr)
-                .shuffle(len(y_tr), seed=self.random_state)
-                .batch(self.batch_size)
-            )
-            val_ds = self._make_ds(X_val, y_val).batch(self.batch_size)
+            train_ds = self._shuffled(
+                _make_tf_dataset(X_tr, self.var_specs_, y_tr), len(y_tr)
+            ).batch(self.batch_size)
+            val_ds = _make_tf_dataset(X_val, self.var_specs_, y_val).batch(self.batch_size)
         else:
-            train_ds = (
-                self._make_ds(X, y_encoded)
-                .shuffle(len(y_encoded), seed=self.random_state)
-                .batch(self.batch_size)
-            )
+            train_ds = self._shuffled(
+                _make_tf_dataset(X, self.var_specs_, y_encoded), len(y_encoded)
+            ).batch(self.batch_size)
             val_ds = None
 
-        callbacks = []
-        if self.early_stopping_patience > 0 and val_ds is not None:
-            callbacks.append(tf.keras.callbacks.EarlyStopping(
-                patience=self.early_stopping_patience,
-                restore_best_weights=True,
-                monitor='val_loss',
-            ))
+        callbacks = list(self.callbacks) if self.callbacks else []
+        if val_ds is not None:
+            cb = self._make_early_stopping()
+            if cb is not None:
+                callbacks.append(cb)
 
         history = self.model_.fit(
             train_ds,
@@ -239,7 +237,7 @@ class _NNBase(BaseEstimator):
 
     def _predict_raw(self, X):
         check_is_fitted(self)
-        ds = self._make_x_dataset(X).batch(self.batch_size)
+        ds = _make_tf_dataset(X, self.var_specs_).batch(self.batch_size)
         return self.model_.predict(ds, verbose=0)
 
     # ------------------------------------------------------------------
@@ -255,7 +253,7 @@ class _NNBase(BaseEstimator):
     def _n_output(self):
         raise NotImplementedError
 
-    def _resolve_tail(self):
+    def _resolve_output(self):
         raise NotImplementedError
 
 
@@ -270,21 +268,27 @@ class NNClassifier(_NNBase, ClassifierMixin):
         cat_cols=None,
         embedding_dims=None,
         head=None,
-        body=None,
-        tail=None,
+        hidden=None,
+        output=None,
         epochs=100,
         batch_size=1024,
         learning_rate=1e-3,
-        early_stopping_patience=10,
+        early_stopping=10,
         validation_fraction=0.1,
+        shuffle_buffer=-1,
+        callbacks=None,
+        loss=None,
+        metrics=None,
         random_state=None,
     ):
         super().__init__(
             cat_cols=cat_cols, embedding_dims=embedding_dims,
-            head=head, body=body, tail=tail,
+            head=head, hidden=hidden, output=output,
             epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
-            early_stopping_patience=early_stopping_patience,
-            validation_fraction=validation_fraction, random_state=random_state,
+            early_stopping=early_stopping,
+            validation_fraction=validation_fraction,
+            shuffle_buffer=shuffle_buffer, callbacks=callbacks,
+            loss=loss, metrics=metrics, random_state=random_state,
         )
 
     def _prepare_target(self, y):
@@ -297,10 +301,10 @@ class NNClassifier(_NNBase, ClassifierMixin):
     def _n_output(self):
         return len(self.classes_)
 
-    def _resolve_tail(self):
-        if self.tail is not None:
-            return self.tail
-        return BinaryLogitTail() if len(self.classes_) == 2 else LogitTail()
+    def _resolve_output(self):
+        if self.output is not None:
+            return self.output
+        return BinaryLogitOutput() if len(self.classes_) == 2 else LogitOutput()
 
     def predict_proba(self, X):
         raw = self._predict_raw(X)
@@ -323,21 +327,27 @@ class NNRegressor(_NNBase, RegressorMixin):
         cat_cols=None,
         embedding_dims=None,
         head=None,
-        body=None,
-        tail=None,
+        hidden=None,
+        output=None,
         epochs=100,
         batch_size=1024,
         learning_rate=1e-3,
-        early_stopping_patience=10,
+        early_stopping=10,
         validation_fraction=0.1,
+        shuffle_buffer=-1,
+        callbacks=None,
+        loss=None,
+        metrics=None,
         random_state=None,
     ):
         super().__init__(
             cat_cols=cat_cols, embedding_dims=embedding_dims,
-            head=head, body=body, tail=tail,
+            head=head, hidden=hidden, output=output,
             epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
-            early_stopping_patience=early_stopping_patience,
-            validation_fraction=validation_fraction, random_state=random_state,
+            early_stopping=early_stopping,
+            validation_fraction=validation_fraction,
+            shuffle_buffer=shuffle_buffer, callbacks=callbacks,
+            loss=loss, metrics=metrics, random_state=random_state,
         )
 
     def _prepare_target(self, y):
@@ -351,8 +361,8 @@ class NNRegressor(_NNBase, RegressorMixin):
     def _n_output(self):
         return 1
 
-    def _resolve_tail(self):
-        return self.tail if self.tail is not None else RegressionTail()
+    def _resolve_output(self):
+        return self.output if self.output is not None else RegressionOutput()
 
     def predict(self, X):
         return self._predict_raw(X).ravel()
