@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-05
+
+### Added
+
+- `mllabs.nn`: sklearn-compatible neural network estimators (`NNClassifier`, `NNRegressor`) with automatic categorical embedding support
+  - Auto-detects categorical columns from pandas `Categorical` / polars `Categorical` dtype
+  - Auto-computes embedding dimensions `max(1, min(50, (cardinality+1)//2))`; per-column override via `embedding_dims` dict
+  - Modular components: `SimpleConcatHead`, `DenseHidden`, `LogitOutput`, `BinaryLogitOutput`, `RegressionOutput`
+  - `hidden` parameter accepts a dict of `DenseHidden` constructor kwargs
+  - `fit(X, y, eval_set=None, callbacks=None)` with constructor callbacks and fit callbacks merged; early stopping auto-appended
+  - Pickle support via `__getstate__` / `__setstate__` — weights saved only, architecture rebuilt from `col_info_` on load
+- `NNAdapter` (`mllabs.adapter`): ml-labs adapter for `NNClassifier` / `NNRegressor`
+  - Passes inner-validation fold as `eval_set`
+  - Epoch-based progress logging via `_ProgressCallback`
+  - `evals_result` exposed as `result_obj` for `ModelAttrCollector`
+- `pyproject.toml`: `tensorflow` optional dependency (`pip install ml-labs[tensorflow]`)
+- Experimenter: `collect()` accepts `nodes` parameter to limit collection scope
+- Docs: nn module user guide (`guide/nn.md`) and API reference (`reference/nn.md`)
+- Docs: Concepts index page
+
+### Fixed
+
+- `mllabs.nn._estimator`: guard `import tensorflow` with try/except so tf-free environments can import the package
+
+## [0.5.0] - 2026-02-27
+
+### Added
+
+- Documentation: full MkDocs-based site (Material theme) published to GitHub Pages
+  - Concepts: architecture, pipeline, state model, data flow
+  - User guides: Pipeline & Experimenter, Trainer & Collectors, Adapters, Processors
+  - Serving guide: Inferencer export, save/load, inference
+  - API reference: all public classes auto-generated from docstrings via mkdocstrings
+
+### Fixed
+
+- `pyproject.toml`: add `README.md`, fix package description typos
+
 ## [0.4.0] - 2026-02-26
 
 ### Added
