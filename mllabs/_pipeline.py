@@ -50,7 +50,7 @@ class PipelineGroup:
     """
 
     def __init__(
-        self, name, role, processor=None, edges=None, method=None, parent=None, adapter=None, params=None
+        self, name, role, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, desc=None
     ):
         self.name = name
         self.role = role  # 'stage' or 'head'
@@ -60,6 +60,7 @@ class PipelineGroup:
         self.parent = parent  # parent group name (str)
         self.adapter = adapter
         self.params = params if params is not None else {}
+        self.desc = desc
         self.children = []  # child group names
         self.nodes = []  # node names in this group
         self.attrs = None
@@ -129,7 +130,7 @@ class PipelineGroup:
     def copy(self):
         ret = PipelineGroup(
             self.name, self.role, self.processor, self.edges.copy(),
-            self.method, self.parent, self.adapter, self.params.copy()
+            self.method, self.parent, self.adapter, self.params.copy(), self.desc
         )
         ret.children = self.children.copy()
         ret.nodes = self.nodes.copy()
@@ -153,7 +154,7 @@ class PipelineNode:
     """
 
     def __init__(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None
     ):
         self.name = name
         self.grp = grp  # group name (str)
@@ -162,6 +163,7 @@ class PipelineNode:
         self.method = method
         self.adapter = adapter
         self.params = params if params is not None else {}
+        self.desc = desc
 
         self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
         self.attrs = None
@@ -169,7 +171,7 @@ class PipelineNode:
     def copy(self):
         ret = PipelineNode(
             self.name, self.grp, self.processor, self.edges.copy(),
-            self.method, self.adapter, self.params.copy()
+            self.method, self.adapter, self.params.copy(), self.desc
         )
         ret.output_edges = self.output_edges.copy()
         return ret
@@ -436,7 +438,7 @@ class Pipeline:
         return [i[0] for i in sorted_nodes if i[0] is not None]
 
     def set_grp(
-            self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist='diff'
+            self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, desc=None, exist='diff'
         ):
         """Create or update a group.
 
@@ -478,7 +480,7 @@ class Pipeline:
         if name not in self.grps:
             self._check_edges(edges)
             grp = PipelineGroup(
-                name, role, processor=processor, edges=edges, method=method, parent=parent, adapter=adapter, params=params
+                name, role, processor=processor, edges=edges, method=method, parent=parent, adapter=adapter, params=params, desc=desc
             )
 
             if parent is not None:
@@ -496,6 +498,7 @@ class Pipeline:
         elif exist == 'diff':
             old_grp = self.grps[name]
             if not old_grp.diff(processor, edges, method, parent, adapter, params):
+                old_grp.desc = desc
                 return {"result": "skip", "grp": old_grp, "affected_nodes": list()}
 
         old_grp = self.grps[name]
@@ -519,6 +522,7 @@ class Pipeline:
         grp.method = method
         grp.adapter = adapter
         grp.params = params
+        grp.desc = desc
 
         grp.update_attrs()
         attrs = grp.get_attrs(self.grps)
@@ -679,7 +683,7 @@ class Pipeline:
                             parent_node.output_edges.append(node_name)
 
     def set_node(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, exist='diff'
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, exist='diff'
     ):
         """Create or update a node.
 
@@ -725,6 +729,7 @@ class Pipeline:
             elif exist == 'diff':
                 old_node = self.nodes[name]
                 if not old_node.diff(grp, processor, edges, method, adapter, params):
+                    old_node.desc = desc
                     return {'result': 'skip', 'affected_nodes': [], 'old_obj': old_node, 'obj': old_node}
 
         old_edges = None
@@ -736,7 +741,7 @@ class Pipeline:
             old_output_edges = old_node.output_edges
 
         node = PipelineNode(
-            name, grp, processor, edges, method=method, adapter=adapter, params=params
+            name, grp, processor, edges, method=method, adapter=adapter, params=params, desc=desc
         )
 
         grp_obj = self.grps[grp]
