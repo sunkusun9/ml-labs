@@ -21,8 +21,11 @@ A **node** is the unit of execution. Each node has:
 - `method`: method name to call on the processor
 - `adapter`: optional wrapper that translates data and params to framework conventions
 - `params`: constructor parameters for the processor
+- `desc`: optional free-text description (not inherited from group)
 
 A **group** (`PipelineGroup`) lets multiple nodes share configuration. Node attributes override group attributes; group attributes override parent group attributes.
+
+> **Note:** `desc` is the only attribute that is **not** inherited — each group and node holds its own description independently. Changing `desc` alone has no effect on which nodes are considered affected or need rebuilding.
 
 ## edges
 

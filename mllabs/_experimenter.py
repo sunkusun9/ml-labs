@@ -324,10 +324,10 @@ class Experimenter():
         grp_path = self.get_grp_path(node.grp)
         return grp_path / node.name
 
-    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist = 'diff'):
+    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, desc=None, exist='diff'):
         self._check_open()
         result_obj = self.pipeline.set_grp(
-            name, role, processor, edges, method, parent, adapter, params, exist
+            name, role, processor, edges, method, parent, adapter, params, desc=desc, exist=exist
         )
         
         affected_nodes = result_obj['affected_nodes']
@@ -450,12 +450,12 @@ class Experimenter():
         self._save()
 
     def set_node(
-        self, name, grp, processor = None, edges = None,
-        method = None, adapter = None, params = None, exist = 'diff'
+        self, name, grp, processor=None, edges=None,
+        method=None, adapter=None, params=None, desc=None, exist='diff'
     ):
         self._check_open()
         result_obj = self.pipeline.set_node(
-            name, grp, processor, edges, method, adapter, params, exist
+            name, grp, processor, edges, method, adapter, params, desc=desc, exist=exist
         )
 
         # 기존 노드를 업데이트한 경우, 하위 노드들도 재빌드

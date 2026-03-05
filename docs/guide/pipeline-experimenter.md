@@ -18,7 +18,8 @@ exp = Experimenter(df, path='./exp', sp=StratifiedKFold(n_splits=5))
 
 ```python
 exp.set_grp('scaler', role='stage', processor=StandardScaler,
-            edges={'X': [(None, features)]}, method='fit_transform')
+            edges={'X': [(None, features)]}, method='fit_transform',
+            desc='Standard scaling for numeric features')
 
 exp.set_grp('lgbm', role='head', processor=LGBMClassifier,
             edges={'X': [(None, features)], 'y': [(None, 'target')]},
@@ -29,11 +30,13 @@ exp.set_grp('lgbm', role='head', processor=LGBMClassifier,
 **Nodes** (`set_node`) are the executable units inside a group:
 
 ```python
-exp.set_node('lgbm_v1', grp='lgbm', params={'num_leaves': 31})
-exp.set_node('lgbm_v2', grp='lgbm', params={'num_leaves': 63})
+exp.set_node('lgbm_v1', grp='lgbm', params={'num_leaves': 31}, desc='baseline')
+exp.set_node('lgbm_v2', grp='lgbm', params={'num_leaves': 63}, desc='deeper leaves')
 ```
 
 Node parameters override group parameters. Processor, edges, method, and adapter are inherited if not specified on the node.
+
+`desc` is a free-text annotation for documentation purposes. It is **not** inherited from the group, and changing it does not trigger a rebuild of dependent nodes.
 
 #### Name Restrictions
 
