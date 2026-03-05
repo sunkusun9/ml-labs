@@ -46,6 +46,7 @@ nav:
     - reference/adapters.md
     - reference/nn.md
     - reference/connector.md
+    - reference/processors.md
     - reference/filters.md
 
 plugins:
