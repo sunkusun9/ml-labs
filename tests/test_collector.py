@@ -672,3 +672,96 @@ class TestBaseCollector:
         c = Collector('test', Connector())
         with pytest.raises(ValueError):
             c._get_nodes(123, ['a', 'b'])
+
+
+class TestCollectorErrorHandling:
+    from mllabs.collector._base import Collector as _Collector
+
+    @pytest.fixture
+    def pre_exp(self, tmp_path, sample_data):
+        e = Experimenter(
+            data=sample_data,
+            path=tmp_path / 'exp_pre',
+            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
+        )
+        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                  method='predict',
+                  edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
+                  params={'max_depth': 3, 'random_state': 42})
+        e.set_node('dt', grp='model')
+        e.build()
+        return e
+
+    def _make_broken_collector(self, fail_on):
+        from mllabs.collector._base import Collector
+
+        class BrokenCollector(Collector):
+            def _start(self, node):
+                if fail_on == '_start':
+                    raise RuntimeError("start error")
+
+            def _collect(self, node, idx, inner_idx, context):
+                if fail_on == '_collect':
+                    raise RuntimeError("collect error")
+
+            def _end_idx(self, node, idx):
+                if fail_on == '_end_idx':
+                    raise RuntimeError("end_idx error")
+
+            def _end(self, node):
+                if fail_on == '_end':
+                    raise RuntimeError("end error")
+
+        return BrokenCollector('broken', Connector())
+
+    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
+    def test_exp_does_not_raise_on_collector_error(self, pre_exp, fail_on):
+        bc = self._make_broken_collector(fail_on)
+        pre_exp.add_collector(bc)
+        pre_exp.exp()  # must not raise
+
+    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
+    def test_exp_records_warning_on_collector_error(self, pre_exp, fail_on):
+        bc = self._make_broken_collector(fail_on)
+        pre_exp.add_collector(bc)
+        pre_exp.exp()
+        assert len(bc.warnings) > 0
+        w = bc.warnings[0]
+        assert w['method'] == fail_on
+        assert w['node'] == 'dt'
+        assert w['type'] == 'RuntimeError'
+        assert 'error' in w['message']
+
+    def test_exp_warning_contains_traceback(self, pre_exp):
+        bc = self._make_broken_collector('_collect')
+        pre_exp.add_collector(bc)
+        pre_exp.exp()
+        w = bc.warnings[0]
+        assert 'traceback' in w
+        assert 'RuntimeError' in w['traceback']
+        assert 'collect error' in w['traceback']
+
+    def test_exp_continues_other_collectors_after_error(self, pre_exp):
+        bc = self._make_broken_collector('_collect')
+        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        pre_exp.add_collector(bc)
+        pre_exp.add_collector(mc)
+        pre_exp.exp()
+        assert mc.has('dt')
+        assert len(bc.warnings) > 0
+
+    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
+    def test_collect_does_not_raise_on_collector_error(self, built_exp, fail_on):
+        bc = self._make_broken_collector(fail_on)
+        built_exp.add_collector(bc)  # must not raise
+
+    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
+    def test_collect_records_warning_on_collector_error(self, built_exp, fail_on):
+        bc = self._make_broken_collector(fail_on)
+        built_exp.add_collector(bc)
+        assert len(bc.warnings) > 0
+        w = bc.warnings[0]
+        assert w['method'] == fail_on
+        assert w['type'] == 'RuntimeError'
+        assert 'traceback' in w
+        assert 'RuntimeError' in w['traceback']
