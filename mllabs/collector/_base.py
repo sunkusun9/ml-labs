@@ -20,6 +20,7 @@ class Collector:
         self.name = name
         self.connector = connector
         self.path = None
+        self.warnings = []
 
     def _start(self, node):
         pass

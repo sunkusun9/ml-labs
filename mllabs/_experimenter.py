@@ -626,7 +626,7 @@ class Experimenter():
         for name, collector in self.collectors.items():
             for node in target_nodes:
                 if node in matched[name]:
-                    collector._start(node)
+                    self._safe_collector_call(collector, node, '_start')
 
         # experiment loop
         n_splits = self.get_n_splits()
@@ -661,7 +661,7 @@ class Experimenter():
                             }
                             for name, collector in self.collectors.items():
                                 if node in matched[name]:
-                                    collector._collect(node, i, inner_idx, context)
+                                    self._safe_collector_call(collector, node, '_collect', i, inner_idx, context)
 
                         for w in caught:
                             self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
@@ -669,7 +669,7 @@ class Experimenter():
                     # collector _end_idx
                     for name, collector in self.collectors.items():
                         if node in matched[name]:
-                            collector._end_idx(node, i)
+                            self._safe_collector_call(collector, node, '_end_idx', i)
                 except Exception as e:
                     node_obj.set_error({
                         'type': type(e).__name__,
@@ -696,13 +696,25 @@ class Experimenter():
         for name, collector in self.collectors.items():
             for node in target_nodes:
                 if node in matched[name] and self.node_objs[node].status != 'error':
-                    collector._end(node)
+                    self._safe_collector_call(collector, node, '_end')
 
         if error_nodes:
             self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
             self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
         self._save()
+
+    def _safe_collector_call(self, collector, node, method, *args):
+        try:
+            getattr(collector, method)(node, *args)
+        except Exception as e:
+            tb = traceback.format_exc()
+            msg = f"[Collector:{collector.name}] [{node}] {method} failed: {type(e).__name__}: {e}\n{tb}"
+            self.logger.warning(msg)
+            collector.warnings.append({
+                'method': method, 'node': node,
+                'type': type(e).__name__, 'message': str(e), 'traceback': tb,
+            })
 
     def collect(self, collector, nodes=None, exist='skip'):
         """Run a Collector ad-hoc over already-built Head nodes.
@@ -737,7 +749,7 @@ class Experimenter():
                 node_attrs_cache[name] = node_attrs
 
         for node in target_nodes:
-            collector._start(node)
+            self._safe_collector_call(collector, node, '_start')
 
         n_splits = self.get_n_splits()
         self.logger.start_progress("Collect", n_splits)
@@ -761,13 +773,13 @@ class Experimenter():
                         'output_train': result_data['output_train'],
                         'output_valid': result_data['output_valid'],
                     }
-                    collector._collect(node, idx, inner_idx, context)
-                collector._end_idx(node, idx)
+                    self._safe_collector_call(collector, node, '_collect', idx, inner_idx, context)
+                self._safe_collector_call(collector, node, '_end_idx', idx)
             self.logger.end_progress(len(target_nodes))
         self.logger.end_progress(n_splits)
 
         for node in target_nodes:
-            collector._end(node)
+            self._safe_collector_call(collector, node, '_end')
 
         return collector
 
