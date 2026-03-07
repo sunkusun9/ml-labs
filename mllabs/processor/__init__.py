@@ -1,10 +1,12 @@
 from ._categorical import CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder
+from ._type import TypeConverter
 
 __all__ = [
     "CatConverter",
     "CatPairCombiner",
     "CatOOVFilter",
     "FrequencyEncoder",
+    "TypeConverter",
 ]
 
 try:
