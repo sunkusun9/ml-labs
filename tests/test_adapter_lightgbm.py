@@ -1,7 +1,9 @@
 import pytest
 import numpy as np
 import pandas as pd
-from lightgbm import early_stopping as lgb_early_stopping
+
+lgb = pytest.importorskip("lightgbm", reason="lightgbm not installed")
+lgb_early_stopping = lgb.early_stopping
 
 from mllabs.adapter._lightgbm import LightGBMAdapter
 from mllabs._pipeline import _params_equal
