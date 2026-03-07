@@ -915,9 +915,9 @@ class TestTypeConverter:
     def test_pandas_to_str(self, df_pd):
         tc = TypeConverter(to='str').fit(df_pd)
         out = tc.transform(df_pd)
-        assert out['a'].dtype == object
-        assert out['b'].dtype == object
-        assert out['c'].dtype == object
+        assert pd.api.types.is_string_dtype(out['a'])
+        assert pd.api.types.is_string_dtype(out['b'])
+        assert pd.api.types.is_string_dtype(out['c'])
 
     def test_pandas_to_float(self, df_pd):
         df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
