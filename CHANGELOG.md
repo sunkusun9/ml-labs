@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-03-08
+
+### Fixed
+
+- Pipeline: `set_grp()` now recursively invalidates child group attrs cache (`_cascade_clear_attrs`) and node attrs cache — prevents stale adapter/params being resolved when a parent group is updated
+- Inferencer: `_get_process_data()` skips `resolve_columns` for DataSource edges (`src_node=None`); uses `var` directly as column spec
+
 ## [0.6.1] - 2026-03-07
 
 ### Added
