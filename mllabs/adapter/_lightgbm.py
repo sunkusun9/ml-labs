@@ -86,7 +86,10 @@ class LightGBMAdapter(ModelAdapter):
         if 'early_stopping' in params:
             if 'callbacks' not in fit_params:
                 fit_params['callbacks'] = list()
-            fit_params['callbacks'].append(params['early_stopping'])
+            es = params['early_stopping']
+            if isinstance(es, dict):
+                es = early_stopping(**es)
+            fit_params['callbacks'].append(es)
         if 'eval_metric' in params:
             fit_params['eval_metric'] = params['eval_metric']
         return fit_params
