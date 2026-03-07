@@ -1,4 +1,4 @@
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 from ._experimenter import Experimenter
 from ._inferencer import Inferencer

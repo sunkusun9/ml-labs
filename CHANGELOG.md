@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-07
+
+### Added
+
+- Processor: `TypeConverter(to)` — converts all columns to a target dtype (`'str'`, `'int'`, `'float'`); supports pandas, polars, and numpy
+- Pipeline: `desc` attribute on `PipelineGroup` and `PipelineNode` for free-text annotations
+  - Not inherited via `get_attrs`, not compared in `diff()` — desc-only changes do not trigger rebuilds
+  - Updated silently on `exist='diff'` skip path
+
+### Fixed
+
+- LightGBM adapter: accept `early_stopping` as a plain dict of kwargs; adapter constructs `lgb_early_stopping` internally, eliminating false param-change detection
+- Experimenter: collector lifecycle errors (`_start`, `_collect`, `_end_idx`, `_end`) are now caught and stored as warnings instead of propagating exceptions
+
 ## [0.6.0] - 2026-03-05
 
 ### Added
