@@ -19,6 +19,7 @@ from mllabs.processor import (
     CatPairCombiner,
     CatOOVFilter,
     FrequencyEncoder,
+    TypeConverter,
 )
 
 if HAS_POLARS:
@@ -900,3 +901,74 @@ class TestPipelineDesc:
         from mllabs.processor import CatConverter
         result = pipeline.set_grp('g1', role='stage', processor=CatConverter)
         assert result['result'] == 'update'
+
+
+class TestTypeConverter:
+    @pytest.fixture
+    def df_pd(self):
+        return pd.DataFrame({
+            'a': pd.Categorical(['x', 'y', 'z']),
+            'b': pd.Categorical([1, 2, 3]),
+            'c': [1.0, 2.0, 3.0],
+        })
+
+    def test_pandas_to_str(self, df_pd):
+        tc = TypeConverter(to='str').fit(df_pd)
+        out = tc.transform(df_pd)
+        assert pd.api.types.is_string_dtype(out['a'])
+        assert pd.api.types.is_string_dtype(out['b'])
+        assert pd.api.types.is_string_dtype(out['c'])
+
+    def test_pandas_to_float(self, df_pd):
+        df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+        tc = TypeConverter(to='float').fit(df)
+        out = tc.transform(df)
+        assert out['a'].dtype == np.float64
+
+    def test_pandas_to_int(self, df_pd):
+        df = pd.DataFrame({'a': [1.0, 2.0, 3.0], 'b': [4.0, 5.0, 6.0]})
+        tc = TypeConverter(to='int').fit(df)
+        out = tc.transform(df)
+        assert out['a'].dtype == np.int64
+
+    def test_numpy_to_str(self):
+        arr = np.array([[1, 2], [3, 4]])
+        tc = TypeConverter(to='str').fit(arr)
+        out = tc.transform(arr)
+        assert out.dtype.kind == 'U'
+
+    def test_numpy_to_float(self):
+        arr = np.array([[1, 2], [3, 4]])
+        tc = TypeConverter(to='float').fit(arr)
+        out = tc.transform(arr)
+        assert out.dtype == np.float64
+
+    def test_get_feature_names_out(self, df_pd):
+        tc = TypeConverter(to='str').fit(df_pd)
+        assert tc.get_feature_names_out() == ['a', 'b', 'c']
+
+    def test_get_feature_names_out_with_input(self, df_pd):
+        tc = TypeConverter(to='str').fit(df_pd)
+        assert tc.get_feature_names_out(['x', 'y', 'z']) == ['x', 'y', 'z']
+
+    @requires_polars
+    def test_polars_to_str(self):
+        df = pl.DataFrame({'a': pl.Series(['x', 'y']).cast(pl.Categorical), 'b': [1, 2]})
+        tc = TypeConverter(to='str').fit(df)
+        out = tc.transform(df)
+        assert out['a'].dtype == pl.Utf8
+        assert out['b'].dtype == pl.Utf8
+
+    @requires_polars
+    def test_polars_to_int(self):
+        df = pl.DataFrame({'a': [1.0, 2.0], 'b': [3.0, 4.0]})
+        tc = TypeConverter(to='int').fit(df)
+        out = tc.transform(df)
+        assert out['a'].dtype == pl.Int64
+
+    @requires_polars
+    def test_polars_unsupported_to(self):
+        df = pl.DataFrame({'a': [1, 2]})
+        tc = TypeConverter(to='bool').fit(df)
+        with pytest.raises(ValueError):
+            tc.transform(df)
