@@ -793,3 +793,56 @@ class TestGetParents:
 
     def test_not_found(self, p):
         assert p.get_parents('no_exist') == []
+
+
+class TestAdapterAttrsCacheInvalidation:
+    class DummyAdapter:
+        def __init__(self, mode):
+            self.mode = mode
+        def __eq__(self, other):
+            return type(self) is type(other) and self.__dict__ == other.__dict__
+        def __hash__(self):
+            return id(self)
+
+    def test_direct_grp_adapter_change_detected(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]}, adapter=self.DummyAdapter('a'))
+        r = p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                      edges={'X': [(None, None)]}, adapter=self.DummyAdapter('b'), exist='diff')
+        assert r['result'] == 'update'
+
+    def test_direct_grp_adapter_change_applied(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]}, adapter=self.DummyAdapter('a'))
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]}, adapter=self.DummyAdapter('b'), exist='diff')
+        assert p.grps['g1'].adapter.mode == 'b'
+
+    def test_parent_grp_adapter_change_clears_child_grp_cache(self, p):
+        p.set_grp('parent', role='stage', adapter=self.DummyAdapter('a'))
+        p.set_grp('child', role='stage', parent='parent', processor=DummyStage,
+                  method='transform', edges={'X': [(None, None)]})
+        _ = p.grps['child'].get_attrs(p.grps)
+        p.set_grp('parent', role='stage', adapter=self.DummyAdapter('b'), exist='replace')
+        assert p.grps['child'].attrs is None
+
+    def test_parent_grp_adapter_change_reflected_in_node(self, p):
+        p.set_grp('parent', role='stage', adapter=self.DummyAdapter('a'))
+        p.set_grp('child', role='stage', parent='parent', processor=DummyStage,
+                  method='transform', edges={'X': [(None, None)]})
+        p.set_node('n1', grp='child')
+        _ = p.nodes['n1'].get_attrs(p.grps)
+        p.set_grp('parent', role='stage', adapter=self.DummyAdapter('b'), exist='replace')
+        attrs = p.nodes['n1'].get_attrs(p.grps)
+        assert attrs['adapter'].mode == 'b'
+
+    def test_grandchild_grp_attrs_cleared(self, p):
+        p.set_grp('gp', role='stage', adapter=self.DummyAdapter('a'))
+        p.set_grp('par', role='stage', parent='gp')
+        p.set_grp('child', role='stage', parent='par', processor=DummyStage,
+                  method='transform', edges={'X': [(None, None)]})
+        p.set_node('n1', grp='child')
+        _ = p.nodes['n1'].get_attrs(p.grps)
+        p.set_grp('gp', role='stage', adapter=self.DummyAdapter('b'), exist='replace')
+        attrs = p.nodes['n1'].get_attrs(p.grps)
+        assert attrs['adapter'].mode == 'b'

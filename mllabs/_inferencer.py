@@ -103,7 +103,10 @@ class Inferencer:
         for src_node, var in edge_list:
             src, obj = data_dicts[src_node]
             if var is not None:
-                cols = resolve_columns(src, var, processor=obj)
+                if src_node is None:
+                    cols = var
+                else:
+                    cols = resolve_columns(src, var, processor=obj)
                 src = src.select_columns(cols)
             parts.append(src)
         if len(parts) == 1:
