@@ -415,6 +415,11 @@ class Pipeline:
             result.extend(self._get_all_nodes_in_grp(child_grp))
         return result
 
+    def _cascade_clear_attrs(self, grp_name):
+        for child_name in self.grps[grp_name].children:
+            self.grps[child_name].update_attrs()
+            self._cascade_clear_attrs(child_name)
+
     def _get_affected_nodes(self, nodes):
         priorities = {}
         queue = []
@@ -529,6 +534,7 @@ class Pipeline:
         new_edges = attrs['edges']
         affected_nodes = self._get_all_nodes_in_grp(grp)
         self.grps[name] = grp
+        self._cascade_clear_attrs(name)
         if len(new_edges) > 0 or len(affected_nodes) > 0:
             for node_name in affected_nodes:
                 if node_name not in self.nodes:
@@ -551,6 +557,12 @@ class Pipeline:
                     cycle_info = ", ".join([f"'{e}'" for e in cycle_edges])
                     self.grps[name] = old_grp
                     raise ValueError(f"Cannot update group '{name}': node '{node_name}' would create cycle through edge(s) {cycle_info}")
+
+            # Clear node attrs cache after cycle check to prevent stale data
+            # from being used when nodes are next built.
+            for node_name in affected_nodes:
+                if node_name in self.nodes:
+                    self.nodes[node_name].update_attrs()
 
         return {
             "result": "update", "affected_nodes": affected_nodes, "old_grp": old_grp, "grp": grp
