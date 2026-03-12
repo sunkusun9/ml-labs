@@ -66,30 +66,24 @@ class XGBoostAdapter(ModelAdapter):
         """XGBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = {}
+        fit_params = super().get_fit_params(data_dict, params, logger)
+
         if params is not None and params.get('verbosity', 0) > 0:
             fit_params['verbose'] = True
         else:
             fit_params['verbose'] = False
 
-        # data_dict에서 데이터 추출
         train_X, train_v_X = data_dict['X']
         if 'y' in data_dict:
             train_y, train_v_y = data_dict['y']
         else:
             train_y, train_v_y = None, None
 
-        # eval_set 구성
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
-            train_X_native = unwrap(train_X)
-            train_y_native = unwrap(train_y)
-            train_v_X_native = unwrap(train_v_X)
-            train_v_y_native = unwrap(train_v_y)
-
             if self.eval_mode == 'valid':
-                fit_params['eval_set'] = [(train_v_X_native, train_v_y_native)]
+                fit_params['eval_set'] = [(unwrap(train_v_X), unwrap(train_v_y))]
             elif self.eval_mode == 'both':
-                fit_params['eval_set'] = [(train_X_native, train_y_native), (train_v_X_native, train_v_y_native)]
+                fit_params['eval_set'] = [(fit_params['X'], fit_params['y']), (unwrap(train_v_X), unwrap(train_v_y))]
 
         return fit_params
 
