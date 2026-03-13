@@ -1,7 +1,6 @@
 import re
-from ._data_wrapper import unwrap
 from .adapter._default import DefaultAdapter
-
+from collections.abc import Iterable
 
 def _resolve_col_selectors(params, data):
     if not params or data is None:
@@ -170,27 +169,38 @@ class TransformProcessor():
             column_names = None
 
         if column_names is None and hasattr(result, 'columns'):
-            column_names = [f"{self.name}__{col}" for col in result.columns]
+            if type(result.columns) is str:
+                cols = [result.columns]
+            else:
+                cols = result.columns
+            column_names = [f"{self.name}__{col}" for col in cols]
 
         if column_names is not None:
             self.output_vars = column_names
         elif not self.X_ and self.y_columns is not None:
-            self.output_vars = list(self.y_columns)
+            if isinstance(self.y_columns, Iterable) and not isinstance(self.y_columns, (str, bytes)):
+                self.output_vars = self.y_columns
+            else:
+                self.output_vars = [self.y_columns]
+                
         return train_wrapper_class.from_output(result, self.output_vars, train_index)
 
     def process(self, data):
         data_index = data.get_index()
         data_wrapper_class = type(data)
 
-        if self.X_:
-            data_native = unwrap(data)
-        else:
-            data_native = unwrap(data.squeeze())
+        data_input = data if self.X_ else data.squeeze()
+        data_native = self.adapter.get_process_data(data_input)
 
         result = self.obj.transform(data_native)
         output_vars = self.output_vars
         if output_vars is None and hasattr(result, 'columns'):
-            output_vars = [f"{self.name}__{col}" for col in result.columns]
+            if isinstance(result.columns, Iterable) and not isinstance(result.columns, (str, bytes)):
+                cols = result.columns
+            else:
+                cols = [result.columns]
+                
+            output_vars = [f"{self.name}__{col}" for col in cols]
         return data_wrapper_class.from_output(result, output_vars, data_index)
 
 class PredictProcessor():
@@ -220,7 +230,11 @@ class PredictProcessor():
         fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=self.logger)
         self.obj.fit(**fit_params)
 
-        y_name = '_'.join(self.y_columns) if self.y_columns else 'prediction'
+        if isinstance(self.y_columns, Iterable) and not isinstance(self.y_columns, (str, bytes)):
+            y_name = '_'.join(self.y_columns) if self.y_columns else 'prediction'
+        else:
+            y_name = self.y_columns if self.y_columns else 'prediction'
+        
         if self.method == 'predict':
             self.output_vars = [f"{self.name}__{y_name}"]
         elif self.method == 'predict_proba':
@@ -253,8 +267,7 @@ class PredictProcessor():
         return train_wrapper_class.from_output(predictions, column_names, train_index)
 
     def process(self, data):
-        # DataWrapper에서 native로 변환
-        data_X = unwrap(data)
+        data_X = self.adapter.get_process_data(data)
         data_index = data.get_index()
 
         if self.method == 'predict':

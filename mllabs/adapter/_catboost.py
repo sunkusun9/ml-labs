@@ -8,17 +8,40 @@ import pandas as pd
 from ._base import ModelAdapter
 
 
+def _catboost_supports_polars():
+    from packaging.version import Version
+    import catboost
+    return Version(catboost.__version__) >= Version('1.3.0')
+
+
 class CatBoostAdapter(ModelAdapter):
     """Adapter for CatBoost models (CatBoostClassifier, CatBoostRegressor)
 
     CatBoost도 eval_set을 지원합니다.
     """
 
+    def get_process_data(self, data):
+        from .._data_wrapper import unwrap
+        x = unwrap(data)
+        if not _catboost_supports_polars() and x is not None and 'polars' in type(x).__module__:
+            return x.to_pandas()
+        return x
+
     def get_fit_params(self, data_dict, params=None, logger=None):
         """CatBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
         fit_params = super().get_fit_params(data_dict, params, logger)
+
+        def _maybe_to_pandas(x):
+            if not _catboost_supports_polars() and x is not None and 'polars' in type(x).__module__:
+                return x.to_pandas()
+            return x
+
+        if 'X' in fit_params:
+            fit_params['X'] = _maybe_to_pandas(fit_params['X'])
+        if 'y' in fit_params:
+            fit_params['y'] = _maybe_to_pandas(fit_params['y'])
 
         train_X, train_v_X = data_dict['X']
         if 'y' in data_dict:
@@ -27,10 +50,12 @@ class CatBoostAdapter(ModelAdapter):
             train_y, train_v_y = None, None
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
+            v_X = _maybe_to_pandas(unwrap(train_v_X))
+            v_y = _maybe_to_pandas(unwrap(train_v_y))
             if self.eval_mode == 'valid':
-                fit_params['eval_set'] = [(unwrap(train_v_X), unwrap(train_v_y))]
+                fit_params['eval_set'] = [(v_X, v_y)]
             elif self.eval_mode == 'both':
-                fit_params['eval_set'] = [(fit_params['X'], fit_params['y']), (unwrap(train_v_X), unwrap(train_v_y))]
+                fit_params['eval_set'] = [(fit_params['X'], fit_params['y']), (v_X, v_y)]
 
         if self.verbose > 0:
             if self.verbose < 1:

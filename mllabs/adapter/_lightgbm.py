@@ -44,6 +44,13 @@ class LightGBMAdapter(ModelAdapter):
         """
         return {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric']}
 
+    def get_process_data(self, data):
+        from .._data_wrapper import unwrap
+        x = unwrap(data)
+        if x is not None and 'polars' in type(x).__module__:
+            return x.to_pandas()
+        return x
+
     def get_fit_params(self, data_dict, params=None, logger=None):
         """LightGBM의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
