@@ -168,6 +168,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `__init__(name, connector, output_var, experimenter, method='mean')`
   - 생성 시 `experimenter`에서 `_index`, `_target`(ndarray), `_target_columns` 구축
   - `output_var`, `method`(mean/mode/simple)
+  - `_aggregate()`: `DataWrapper` 대신 `_data_cls`(입력 데이터 타입)의 static 메서드 사용
   - path 있으면 파일 저장, 없으면 `_mem_data`에 메모리 저장
   - 쿼리: `get_dataset(nodes=None, include_target=True)` — experimenter 불필요
 
@@ -209,23 +210,30 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
 - **PredictProcessor**: `fit`, `fit_process`, `process`
+- `adapter=None` 전달 시 `DefaultAdapter()` 로 fallback
 - `fit`/`fit_process`에서 y 데이터를 `squeeze()` 후 전달 (sklearn DataConversionWarning 억제)
 - `get_feature_names_out` 반환값은 `list()` 로 변환하여 사용 (list/ndarray 호환)
+- `process()`: `adapter.get_process_data(data)` 로 입력 타입 변환 — polars 등 라이브러리별 호환성 처리
 - `data_dict` (Experimenter): `{key: ((train, train_v), valid), ...}` 형태
 - `data_dict` (Trainer): `{key: (train, valid), ...}` 형태 (inner fold 없음)
 - **X-less 지원**: `edges`에 `'X'`가 없고 `'y'`만 있는 경우(e.g. `LabelEncoder`) `'y'`를 primary input으로 사용
   - `fit`/`fit_process`: `'X'` 없으면 `'y'` 데이터를 squeeze하여 전달, `output_vars`를 `y_columns`로 설정
   - `process`: `X_`가 비어 있으면 입력 데이터를 squeeze 후 transform
+- `y_columns`가 str인 경우(polars Series 등) `[y_columns]` 로 wrap하여 처리
 
 ## Adapter 인터페이스
 - `get_params(params, logger)`: 모델 생성 파라미터
-- `get_fit_params(data_dict, params, logger)`: fit 파라미터
+- `get_fit_params(data_dict, params, logger)`: fit 파라미터 — base: X/y를 `unwrap()` 후 반환
+- `get_process_data(data)`: `process()` 입력 데이터 변환 — base: `unwrap(data)`
+  - `LightGBMAdapter`: polars→pandas 변환 (LightGBM polars 미지원)
+  - `CatBoostAdapter`: `_catboost_supports_polars()` (>=1.3.0) 기반 분기 — 구버전이면 polars→pandas (`get_fit_params`도 동일 적용)
 - `result_objs`: `{name: (callable, mergeable_bool)}`
 - `__eq__`: `type(self) is type(other) and self.__dict__ == other.__dict__` — diff 모드에서 adapter 비교에 사용
 - `__hash__`: `id(self)` — set/dict 키로 사용 가능
 
 ## 보조 모듈
 - **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze/mean/mode/simple) — pandas/polars/cudf/numpy 통합
+  - `PolarsWrapper.get_columns()`: `pl.DataFrame`이면 `.columns`, `pl.Series`이면 `.name` 반환
 - **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
 - **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress, rename_progress)
 - **col.py**: 컬럼 선택 유틸리티
