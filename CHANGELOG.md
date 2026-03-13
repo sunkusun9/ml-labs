@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-03-14
+
+### Fixed
+
+- `ModelAdapter`: add `get_process_data(data)` — adapters can override to control input type conversion in `process()`; `TransformProcessor` / `PredictProcessor` now use this instead of bare `unwrap()`
+- `LightGBMAdapter`: override `get_process_data()` with polars→pandas conversion (mirrors `get_fit_params` behavior)
+- `CatBoostAdapter`: version-based polars support (`>=1.3.0`); apply polars→pandas in both `get_fit_params` and `get_process_data` for older versions
+- `PolarsWrapper.get_columns()`: handle `pl.Series` correctly (return `.name` instead of `.columns`)
+- `TransformProcessor`: handle non-iterable `y_columns` and `str` `result.columns` in `fit_process` / `process`
+- `PredictProcessor`: handle non-iterable `y_columns` in `fit`
+- `StackingCollector`: wrap `str` `target_columns` in list; use `_data_cls` for `simple` / `mean` / `mode` aggregation
+
 ## [0.6.2] - 2026-03-08
 
 ### Fixed
