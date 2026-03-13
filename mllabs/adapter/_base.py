@@ -55,7 +55,17 @@ class ModelAdapter(ABC):
             dict: fit()에 unpacking으로 전달할 파라미터
                   예: model.fit(**fit_params)
         """
-        return {}
+        from .._data_wrapper import unwrap
+        fit_params = {}
+        if 'X' in data_dict:
+            fit_params['X'] = unwrap(data_dict['X'][0])
+        if 'y' in data_dict:
+            fit_params['y'] = unwrap(data_dict['y'][0].squeeze())
+        return fit_params
+
+    def get_process_data(self, data):
+        from .._data_wrapper import unwrap
+        return unwrap(data)
 
     def get_params(self, params, logger = None):
         """모델 생성자에 전달할 파라미터를 조정

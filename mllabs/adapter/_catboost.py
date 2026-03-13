@@ -8,48 +8,61 @@ import pandas as pd
 from ._base import ModelAdapter
 
 
+def _catboost_supports_polars():
+    from packaging.version import Version
+    import catboost
+    return Version(catboost.__version__) >= Version('1.3.0')
+
+
 class CatBoostAdapter(ModelAdapter):
     """Adapter for CatBoost models (CatBoostClassifier, CatBoostRegressor)
 
     CatBoost도 eval_set을 지원합니다.
     """
 
+    def get_process_data(self, data):
+        from .._data_wrapper import unwrap
+        x = unwrap(data)
+        if not _catboost_supports_polars() and x is not None and 'polars' in type(x).__module__:
+            return x.to_pandas()
+        return x
+
     def get_fit_params(self, data_dict, params=None, logger=None):
         """CatBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = {}
+        fit_params = super().get_fit_params(data_dict, params, logger)
 
-        # data_dict에서 데이터 추출
+        def _maybe_to_pandas(x):
+            if not _catboost_supports_polars() and x is not None and 'polars' in type(x).__module__:
+                return x.to_pandas()
+            return x
+
+        if 'X' in fit_params:
+            fit_params['X'] = _maybe_to_pandas(fit_params['X'])
+        if 'y' in fit_params:
+            fit_params['y'] = _maybe_to_pandas(fit_params['y'])
+
         train_X, train_v_X = data_dict['X']
         if 'y' in data_dict:
             train_y, train_v_y = data_dict['y']
         else:
             train_y, train_v_y = None, None
 
-        # eval_set 구성
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
-            train_X_native = unwrap(train_X)
-            train_y_native = unwrap(train_y)
-            train_v_X_native = unwrap(train_v_X)
-            train_v_y_native = unwrap(train_v_y)
-
+            v_X = _maybe_to_pandas(unwrap(train_v_X))
+            v_y = _maybe_to_pandas(unwrap(train_v_y))
             if self.eval_mode == 'valid':
-                fit_params['eval_set'] = [(train_v_X_native, train_v_y_native)]
+                fit_params['eval_set'] = [(v_X, v_y)]
             elif self.eval_mode == 'both':
-                fit_params['eval_set'] = [(train_X_native, train_y_native), (train_v_X_native, train_v_y_native)]
+                fit_params['eval_set'] = [(fit_params['X'], fit_params['y']), (v_X, v_y)]
 
-        # verbose 처리
         if self.verbose > 0:
             if self.verbose < 1:
-                # 0 < verbose < 1: 진행률 기반 출력
-                # CatBoost는 복잡한 callback 구조라서 간단히 기본 verbose 사용
                 fit_params['verbose'] = False
             else:
-                # verbose >= 1: CatBoost 기본 verbose (iteration 단위)
                 fit_params['verbose'] = int(self.verbose)
         else:
-            # verbose == 0: 출력 안함
             fit_params['verbose'] = False
 
         return fit_params

@@ -39,10 +39,10 @@ class NNAdapter(ModelAdapter):
     def get_fit_params(self, data_dict, params=None, logger=None):
         from .._data_wrapper import unwrap
 
-        fit_params = {}
+        fit_params = super().get_fit_params(data_dict, params, logger)
 
-        train_X, train_v_X = data_dict.get('X', (None, None))
-        train_y, train_v_y = data_dict.get('y', (None, None))
+        train_v_X = data_dict.get('X', (None, None))[1]
+        train_v_y = data_dict.get('y', (None, None))[1]
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
             fit_params['eval_set'] = [(unwrap(train_v_X), unwrap(train_v_y))]

@@ -57,7 +57,8 @@ class StackingCollector(Collector):
             if target_columns is None:
                 target_columns = aggregated.get_columns()
             target_list.append(aggregated.to_array())
-
+        if type(target_columns) is str:
+            target_columns = [target_columns]
         return np.concatenate(target_list, axis=0), target_columns
 
     def _start(self, node):
@@ -103,11 +104,11 @@ class StackingCollector(Collector):
 
     def _aggregate(self, iterator):
         if self.method == 'simple':
-            return DataWrapper.simple(iterator)
+            return self._data_cls.simple(iterator)
         elif self.method == 'mean':
-            return DataWrapper.mean(iterator)
+            return self._data_cls.mean(iterator)
         elif self.method == 'mode':
-            return DataWrapper.mode(iterator)
+            return self._data_cls.mode(iterator)
         else:
             raise ValueError(f"Unsupported method: {self.method}")
 

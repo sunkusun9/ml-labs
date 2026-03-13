@@ -44,53 +44,62 @@ class LightGBMAdapter(ModelAdapter):
         """
         return {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric']}
 
+    def get_process_data(self, data):
+        from .._data_wrapper import unwrap
+        x = unwrap(data)
+        if x is not None and 'polars' in type(x).__module__:
+            return x.to_pandas()
+        return x
+
     def get_fit_params(self, data_dict, params=None, logger=None):
         """LightGBM의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = {}
+        fit_params = super().get_fit_params(data_dict, params, logger)
 
-        # data_dict에서 데이터 추출
+        def _to_pandas(x):
+            if x is not None and 'polars' in type(x).__module__:
+                return x.to_pandas()
+            return x
+
+        if 'X' in fit_params:
+            fit_params['X'] = _to_pandas(fit_params['X'])
+        if 'y' in fit_params:
+            fit_params['y'] = _to_pandas(fit_params['y'])
+
         train_X, train_v_X = data_dict['X']
         if 'y' in data_dict:
             train_y, train_v_y = data_dict['y']
         else:
             train_y, train_v_y = None, None
 
-        # eval_set 구성
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
-            train_X_native = unwrap(train_X)
-            train_y_native = unwrap(train_y)
-            train_v_X_native = unwrap(train_v_X)
-            train_v_y_native = unwrap(train_v_y)
+            train_v_X_native = _to_pandas(unwrap(train_v_X))
+            train_v_y_native = _to_pandas(unwrap(train_v_y))
 
             if self.eval_mode == 'valid':
                 fit_params['eval_set'] = [(train_v_X_native, train_v_y_native)]
             elif self.eval_mode == 'both':
-                fit_params['eval_set'] = [(train_X_native, train_y_native), (train_v_X_native, train_v_y_native)]
+                fit_params['eval_set'] = [(fit_params['X'], fit_params['y']), (train_v_X_native, train_v_y_native)]
 
-        # verbose 처리
         if self.verbose > 0:
             if self.verbose < 1:
-                # 0 < verbose < 1: 진행률 기반 출력
-                # n_estimators 추출 (기본값 100)
                 n_estimators = params.get('n_estimators', 100) if params else 100
                 callbacks = fit_params.get('callbacks', [])
                 if logger is not None:
                     callbacks.append(create_progress_callback(n_estimators, self.verbose, logger))
                 fit_params['callbacks'] = callbacks
             else:
-                # verbose >= 1: LightGBM 기본 verbose (iteration 단위)
                 fit_params['verbose'] = int(self.verbose)
-        
-        if 'early_stopping' in params:
+
+        if params and 'early_stopping' in params:
             if 'callbacks' not in fit_params:
                 fit_params['callbacks'] = list()
             es = params['early_stopping']
             if isinstance(es, dict):
                 es = early_stopping(**es)
             fit_params['callbacks'].append(es)
-        if 'eval_metric' in params:
+        if params and 'eval_metric' in params:
             fit_params['eval_metric'] = params['eval_metric']
         return fit_params
 

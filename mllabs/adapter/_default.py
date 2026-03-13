@@ -17,5 +17,4 @@ class DefaultAdapter(ModelAdapter):
 
         eval_set 관련 파라미터는 무시합니다.
         """
-        # eval_set을 지원하지 않으므로 빈 dict 반환
-        return {}
+        return super().get_fit_params(data_dict, params, logger)

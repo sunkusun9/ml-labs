@@ -350,7 +350,10 @@ class PolarsWrapper(DataWrapper):
         return PolarsWrapper(self.data[columns])
 
     def get_columns(self):
-        return self.data.columns
+        if type(self.data) == pl.DataFrame:
+            return self.data.columns
+        else:
+            return self.data.name
 
     def get_shape(self):
         return self.data.shape
