@@ -100,6 +100,9 @@ class TransformProcessor():
         self.logger = logger
 
     def fit(self, data_dict):
+        sampler = self.params.get('mllab_sampler') if self.params else None
+        _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
+
         if 'X' in data_dict:
             train_X, _ = data_dict['X']
             self.X_ = train_X.get_columns()
@@ -115,10 +118,12 @@ class TransformProcessor():
             self.y_columns = None
 
         _ref_data = train_X if train_X is not None else train_y
-        resolved_params = _resolve_col_selectors(self.params, _ref_data)
+        resolved_params = _resolve_col_selectors(_params, _ref_data)
         self.obj = self.transformer(**self.adapter.get_params(resolved_params, logger=self.logger))
 
         fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=self.logger)
+        if sampler is not None:
+            fit_params = sampler.sample(fit_params)
         self.obj.fit(**fit_params)
 
         if hasattr(self.obj, 'get_feature_names_out'):
@@ -134,6 +139,9 @@ class TransformProcessor():
         return self
 
     def fit_process(self, data_dict):
+        sampler = self.params.get('mllab_sampler') if self.params else None
+        _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
+
         if 'X' in data_dict:
             train_X, _ = data_dict['X']
             self.X_ = train_X.get_columns()
@@ -156,11 +164,15 @@ class TransformProcessor():
             self.y_columns = None
 
         _ref_data = train_X if train_X is not None else train_y
-        resolved_params = _resolve_col_selectors(self.params, _ref_data)
+        resolved_params = _resolve_col_selectors(_params, _ref_data)
         self.obj = self.transformer(**self.adapter.get_params(resolved_params, logger=self.logger))
 
         fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=self.logger)
-        result = self.obj.fit_transform(**fit_params)
+        if sampler is not None:
+            self.obj.fit(**sampler.sample(fit_params))
+            result = self.obj.transform(fit_params['X'])
+        else:
+            result = self.obj.fit_transform(**fit_params)
 
         if hasattr(self.obj, 'get_feature_names_out'):
             column_names = list(self.obj.get_feature_names_out())
@@ -215,6 +227,9 @@ class PredictProcessor():
         self.logger = logger
 
     def fit(self, data_dict):
+        sampler = self.params.get('mllab_sampler') if self.params else None
+        _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
+
         train_X, _ = data_dict['X']
         self.X_ = train_X.get_columns()
 
@@ -224,10 +239,12 @@ class PredictProcessor():
         else:
             self.y_columns = None
 
-        resolved_params = _resolve_col_selectors(self.params, train_X)
+        resolved_params = _resolve_col_selectors(_params, train_X)
         self.obj = self.estimator(**self.adapter.get_params(resolved_params, logger=self.logger))
 
         fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=self.logger)
+        if sampler is not None:
+            fit_params = sampler.sample(fit_params)
         self.obj.fit(**fit_params)
 
         if isinstance(self.y_columns, Iterable) and not isinstance(self.y_columns, (str, bytes)):
@@ -242,6 +259,9 @@ class PredictProcessor():
         return self
 
     def fit_process(self, data_dict):
+        sampler = self.params.get('mllab_sampler') if self.params else None
+        _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
+
         train_X, _ = data_dict['X']
         self.X_ = train_X.get_columns()
         train_index = train_X.get_index()
@@ -252,11 +272,15 @@ class PredictProcessor():
         else:
             self.y_columns = None
 
-        resolved_params = _resolve_col_selectors(self.params, train_X)
+        resolved_params = _resolve_col_selectors(_params, train_X)
         self.obj = self.estimator(**self.adapter.get_params(resolved_params, logger=self.logger))
 
         fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=self.logger)
-        predictions = self.obj.fit_predict(**fit_params)
+        if sampler is not None:
+            self.obj.fit(**sampler.sample(fit_params))
+            predictions = self.obj.predict(fit_params['X'])
+        else:
+            predictions = self.obj.fit_predict(**fit_params)
 
         y_name = '_'.join(self.y_columns) if self.y_columns else 'prediction'
         col_name = f"{self.name}__{y_name}"

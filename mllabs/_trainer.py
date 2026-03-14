@@ -26,7 +26,7 @@ class Trainer:
         node_objs (dict): ``{node_name: TrainStageObj | TrainHeadObj}``.
     """
 
-    def __init__(self, name, pipeline, data, path, splitter, splitter_params, cache, logger):
+    def __init__(self, name, pipeline, data, path, splitter, splitter_params, cache, logger, aug_data=None):
         self.name = name
         self.pipeline = pipeline
         self.data = data
@@ -35,6 +35,7 @@ class Trainer:
         self.splitter_params = splitter_params
         self.cache = cache
         self.logger = logger
+        self.aug_data = wrap(aug_data) if aug_data is not None else None
 
         self.selected_stages = []
         self.selected_heads = []
@@ -226,6 +227,9 @@ class Trainer:
         if node is None:
             if self.split_indices is None:
                 data = self.data if v is None else self.data.select_columns(v)
+                if self.aug_data is not None:
+                    aug = self.aug_data if v is None else self.aug_data.select_columns(v)
+                    data = type(data).concat([data, aug], axis=0)
                 yield data, None
             else:
                 for train_idx, valid_idx in self.split_indices:
@@ -234,6 +238,9 @@ class Trainer:
                     if v is not None:
                         train_data = train_data.select_columns(v)
                         valid_data = valid_data.select_columns(v)
+                    if self.aug_data is not None:
+                        aug = self.aug_data if v is None else self.aug_data.select_columns(v)
+                        train_data = type(train_data).concat([train_data, aug], axis=0)
                     yield train_data, valid_data
             return
 
@@ -419,7 +426,7 @@ class Trainer:
             pkl.dump(save_data, f)
 
     @classmethod
-    def _load(cls, path, pipeline, data, cache, logger):
+    def _load(cls, path, pipeline, data, cache, logger, aug_data=None):
         path = Path(path)
         with open(path / '__trainer.pkl', 'rb') as f:
             save_data = pkl.load(f)
@@ -436,6 +443,7 @@ class Trainer:
         trainer.selected_stages = save_data['selected_stages']
         trainer.selected_heads = save_data['selected_heads']
         trainer.split_indices = save_data['split_indices']
+        trainer.aug_data = wrap(aug_data) if aug_data is not None else None
 
         stage_set = set(trainer.selected_stages)
         trainer.node_objs = {}

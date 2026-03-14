@@ -99,7 +99,7 @@ class Experimenter():
     def __init__(
             self, data, path, data_names = None, sp = ShuffleSplit(n_splits=1, random_state=1), sp_v=None,
             splitter_params=None, title=None, data_key=None, cache_maxsize=4 * 1024 ** 3,
-            logger = DefaultLogger(level=['info', 'progress'])
+            logger = DefaultLogger(level=['info', 'progress']), aug_data=None
         ):
         self.cache_maxsize = cache_maxsize
         self.logger = logger
@@ -111,6 +111,7 @@ class Experimenter():
         self.valid_idx_list = list()
         data_native = data
         self.data = wrap(data)
+        self.aug_data = wrap(aug_data) if aug_data is not None else None
         # 실험 타이틀 저장
         self.title = title
 
@@ -178,13 +179,14 @@ class Experimenter():
     @staticmethod
     def create(data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None,
             splitter_params=None, title=None, data_key=None, cache_maxsize=4 * 1024 ** 3,
-            logger = DefaultLogger(level=['info', 'progress'])):
+            logger = DefaultLogger(level=['info', 'progress']), aug_data=None):
 
         if os.path.exists(path):
             raise RuntimeError(f"Exists: {path}")
         return Experimenter(
             data, path, data_names, sp=sp, sp_v=sp_v, splitter_params=splitter_params,
-            title=title, data_key=data_key, cache_maxsize=cache_maxsize, logger=logger)
+            title=title, data_key=data_key, cache_maxsize=cache_maxsize, logger=logger,
+            aug_data=aug_data)
 
     def get_n_splits(self):
         return len(self.train_idx_list)
@@ -233,7 +235,7 @@ class Experimenter():
             del self.trainers[name]
             self._save()
 
-    def add_trainer(self, name, data=None, splitter="same", splitter_params=None, exist='skip'):
+    def add_trainer(self, name, data=None, splitter="same", splitter_params=None, exist='skip', aug_data=None):
         """Create and register a Trainer.
 
         Args:
@@ -278,7 +280,8 @@ class Experimenter():
             splitter=trainer_splitter,
             splitter_params=trainer_splitter_params,
             logger=self.logger,
-            cache=self.cache
+            cache=self.cache,
+            aug_data=aug_data,
         )
         self.trainers[name] = trainer
         self._save()
@@ -887,6 +890,10 @@ class Experimenter():
                     else:
                         train_v_data = None
 
+                if self.aug_data is not None:
+                    aug = self.aug_data if v is None else self.aug_data.select_columns(v)
+                    train_data = type(train_data).concat([train_data, aug], axis=0)
+
                 yield (train_data, train_v_data), outer_valid_data
             return
 
@@ -946,9 +953,14 @@ class Experimenter():
             for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
                 if v is None:
                     train_data = self.data.iloc(train_v_idx)
+                    if self.aug_data is not None:
+                        train_data = type(train_data).concat([train_data, self.aug_data], axis=0)
                     train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
                 else:
                     train_data = self.data.iloc(train_v_idx).select_columns(v)
+                    if self.aug_data is not None:
+                        aug = self.aug_data.select_columns(v)
+                        train_data = type(train_data).concat([train_data, aug], axis=0)
                     if valid_v_idx is not None:
                         train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
                     else:
@@ -1179,7 +1191,7 @@ class Experimenter():
             pkl.dump(save_data, f)
 
     @staticmethod
-    def load(filepath, data, data_key=None):
+    def load(filepath, data, data_key=None, aug_data=None):
         """Load a saved Experimenter from disk.
 
         Args:
@@ -1221,7 +1233,8 @@ class Experimenter():
             splitter_params=save_data['splitter_params'],
             title=save_data['title'],
             data_key=saved_data_key,
-            cache_maxsize=save_data.get('cache_maxsize', 4 * 1024 ** 3)
+            cache_maxsize=save_data.get('cache_maxsize', 4 * 1024 ** 3),
+            aug_data=aug_data,
         )
         exp.exp_id = save_data['exp_id']
         exp.pipeline = save_data['pipeline']
