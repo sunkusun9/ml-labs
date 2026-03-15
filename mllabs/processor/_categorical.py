@@ -117,44 +117,38 @@ class CatPairCombiner(BaseEstimator, TransformerMixin):
             return True
         return False
 
-    def _combine(self, a, b):
-        if self._is_missing(a) or self._is_missing(b):
+    def _combine(self, *vals):
+        if any(self._is_missing(v) for v in vals):
             return None
-        return f"{a}{self.sep}{b}"
+        return self.sep.join(str(v) for v in vals)
 
-    def _default_new_name(self, a, b):
-        return f"{a}{self.sep}{b}"
+    def _default_new_name(self, *labels):
+        return self.sep.join(str(l) for l in labels)
 
     def _resolve_pair(self, X, p):
-        a, b = p
-
-        # pandas/polars: allow int positional
         if isinstance(X, np.ndarray):
-            if not (isinstance(a, int) and isinstance(b, int)):
+            if not all(isinstance(e, int) for e in p):
                 raise ValueError("For numpy input, pair elements should be integer column indices.")
-            return a, b, str(a), str(b)
+            return [(e, str(e)) for e in p]
 
-        # DataFrame case
         cols = list(X.columns)
-        if isinstance(a, int):
-            a_name = cols[a]
-        else:
-            a_name = a
-        if isinstance(b, int):
-            b_name = cols[b]
-        else:
-            b_name = b
-        return a_name, b_name, str(a_name), str(b_name)
+        result = []
+        for e in p:
+            if isinstance(e, int):
+                name = cols[e]
+            else:
+                name = e
+            result.append((name, str(name)))
+        return result
 
     def _make_new_names(self):
         if self.new_col_names is not None:
             if len(self.new_col_names) != len(self._resolved_pairs_):
                 raise ValueError("new_col_names length must match pairs length.")
             return list(self.new_col_names)
-        # default names: "colA__colB" (sep 사용)
         names = []
-        for _, _, a_label, b_label in self._resolved_pairs_:
-            names.append(self._default_new_name(a_label, b_label))
+        for group in self._resolved_pairs_:
+            names.append(self._default_new_name(*[label for _, label in group]))
         return names
 
     # ----------------- sklearn API -----------------
@@ -185,34 +179,40 @@ class CatPairCombiner(BaseEstimator, TransformerMixin):
 
     def _transform_pandas(self, X):
         new_cols = {}
-        for (a_name, b_name, _, _), new_name in zip(self._resolved_pairs_, self._new_names_):
-            a_col = X[a_name]
-            b_col = X[b_name]
+        for group, new_name in zip(self._resolved_pairs_, self._new_names_):
+            cols = [X[name] for name, _ in group]
             if self.treat_empty_string_as_missing:
-                a_missing = a_col.isna() | (a_col.astype(str) == '')
-                b_missing = b_col.isna() | (b_col.astype(str) == '')
+                missing = [c.isna() | (c.astype(str) == '') for c in cols]
             else:
-                a_missing = a_col.isna()
-                b_missing = b_col.isna()
-            combined = a_col.astype(str) + self.sep + b_col.astype(str)
-            new_cols[new_name] = pd.Categorical(combined.where(~(a_missing | b_missing)))
+                missing = [c.isna() for c in cols]
+            any_missing = missing[0]
+            for m in missing[1:]:
+                any_missing = any_missing | m
+            combined = cols[0].astype(str)
+            for c in cols[1:]:
+                combined = combined + self.sep + c.astype(str)
+            new_cols[new_name] = pd.Categorical(combined.where(~any_missing))
         return pd.DataFrame(new_cols, index=X.index)
 
     def _transform_polars(self, X):
         exprs = []
-        for (a_name, b_name, _, _), new_name in zip(self._resolved_pairs_, self._new_names_):
-            a_utf8 = pl.col(a_name).cast(pl.Utf8)
-            b_utf8 = pl.col(b_name).cast(pl.Utf8)
+        for group, new_name in zip(self._resolved_pairs_, self._new_names_):
+            names = [name for name, _ in group]
+            utf8_cols = [pl.col(n).cast(pl.Utf8) for n in names]
             if self.treat_empty_string_as_missing:
-                a_missing = pl.col(a_name).is_null() | (a_utf8 == "")
-                b_missing = pl.col(b_name).is_null() | (b_utf8 == "")
+                missing_exprs = [pl.col(n).is_null() | (pl.col(n).cast(pl.Utf8) == "") for n in names]
             else:
-                a_missing = pl.col(a_name).is_null()
-                b_missing = pl.col(b_name).is_null()
+                missing_exprs = [pl.col(n).is_null() for n in names]
+            any_missing = missing_exprs[0]
+            for m in missing_exprs[1:]:
+                any_missing = any_missing | m
+            combined = utf8_cols[0]
+            for u in utf8_cols[1:]:
+                combined = combined + pl.lit(self.sep) + u
             exprs.append(
-                pl.when(a_missing | b_missing)
+                pl.when(any_missing)
                 .then(pl.lit(None, dtype=pl.Utf8))
-                .otherwise(a_utf8 + pl.lit(self.sep) + b_utf8)
+                .otherwise(combined)
                 .cast(pl.Categorical)
                 .alias(new_name)
             )
@@ -230,8 +230,8 @@ class CatPairCombiner(BaseEstimator, TransformerMixin):
             arr = arr.reshape(-1, 1)
         vcombine = np.vectorize(self._combine, otypes=[object])
         new_cols = [
-            vcombine(arr[:, a_idx], arr[:, b_idx]).reshape(-1, 1)
-            for (a_idx, b_idx, _, _), _ in zip(self._resolved_pairs_, self._new_names_)
+            vcombine(*[arr[:, idx] for idx, _ in group]).reshape(-1, 1)
+            for group, _ in zip(self._resolved_pairs_, self._new_names_)
         ]
         return np.concatenate(new_cols, axis=1)
 

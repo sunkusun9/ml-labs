@@ -73,7 +73,14 @@ def _is_string_col(X, col):
         _STR = {pl.Utf8}
         if hasattr(pl, 'String'):
             _STR.add(pl.String)
-        return X[col].dtype in _STR
+        dtype = X[col].dtype
+        if dtype in _STR:
+            return True
+        if dtype == pl.Categorical:
+            return True
+        if hasattr(pl, 'Enum') and isinstance(dtype, pl.Enum):
+            return True
+        return False
     if isinstance(X, np.ndarray):
         dtype = X[:, col].dtype
         return np.issubdtype(dtype, np.str_) or dtype == object

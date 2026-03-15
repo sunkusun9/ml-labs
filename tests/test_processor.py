@@ -353,6 +353,46 @@ class TestCatPairCombiner:
         comb.fit(arr)
         assert comb.get_feature_names_out() == ["0__1"]
 
+    def test_triple_pandas(self, pair_pandas_df):
+        df = pair_pandas_df.copy()
+        df["cat3"] = ["p", "q", "p", "q", "p"]
+        comb = CatPairCombiner(pairs=[("cat1", "cat2", "cat3")])
+        comb.fit(df)
+        result = comb.transform(df)
+        assert list(result.columns) == ["cat1__cat2__cat3"]
+        assert result["cat1__cat2__cat3"].tolist()[0] == "a__x__p"
+
+    @requires_polars
+    def test_triple_polars(self, pair_polars_df):
+        df = pair_polars_df.with_columns(pl.Series("cat3", ["p", "q", "p", "q", "p"]))
+        comb = CatPairCombiner(pairs=[("cat1", "cat2", "cat3")])
+        comb.fit(df)
+        result = comb.transform(df)
+        assert result.columns == ["cat1__cat2__cat3"]
+        assert result["cat1__cat2__cat3"].to_list()[0] == "a__x__p"
+
+    def test_triple_missing(self, pair_pandas_df):
+        df = pd.DataFrame({
+            "cat1": ["a", None, "b"],
+            "cat2": ["x", "y", None],
+            "cat3": ["p", "q", "r"],
+        })
+        comb = CatPairCombiner(pairs=[("cat1", "cat2", "cat3")])
+        comb.fit(df)
+        result = comb.transform(df)
+        values = result["cat1__cat2__cat3"].tolist()
+        assert values[0] == "a__x__p"
+        assert pd.isna(values[1])
+        assert pd.isna(values[2])
+
+    def test_triple_numpy(self):
+        arr = np.array([["a", "x", "p"], ["b", "y", "q"]], dtype=object)
+        comb = CatPairCombiner(pairs=[(0, 1, 2)])
+        comb.fit(arr)
+        result = comb.transform(arr)
+        assert result.shape == (2, 1)
+        assert result[0, 0] == "a__x__p"
+
 
 class TestCatOOVFilter:
     @pytest.fixture
