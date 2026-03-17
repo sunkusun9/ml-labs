@@ -19,6 +19,7 @@ clf = NNClassifier(
     cat_cols=None,           # None → auto-detect from pandas Categorical / polars Categorical dtype
     embedding_dims=None,     # {col: dim} overrides; None → auto (min(50, (cardinality+1)//2))
     head=None,               # Head class or None → SimpleConcatHead
+    head_params=None,        # dict of kwargs passed to head factory on construction
     hidden=None,             # NNHidden instance, dict of DenseHidden params, or None → DenseHidden()
     output=None,             # NNOutput instance or None → auto-selected by task
     epochs=100,
@@ -80,9 +81,40 @@ from mllabs.nn import SimpleConcatHead
 # default: concatenate all embeddings (optionally with dropout) and continuous inputs
 NNClassifier(head=SimpleConcatHead)
 
-# with embedding dropout
-NNClassifier(head=lambda input_model: SimpleConcatHead(input_model, emb_dropout=0.1))
+# with embedding dropout via head_params
+NNClassifier(head=SimpleConcatHead, head_params={'emb_dropout': 0.1})
 ```
+
+`head_params` is a dict of keyword arguments passed to the head factory at construction time. This avoids lambda wrappers when passing custom head options.
+
+#### FTTransformerHead
+
+A Feature Tokenizer + Transformer head for tabular data, following the [FT-Transformer](https://arxiv.org/abs/2106.11959) architecture.
+
+```python
+from mllabs.nn import FTTransformerHead
+
+NNClassifier(
+    head=FTTransformerHead,
+    head_params={
+        'd_model': 192,
+        'n_heads': 8,
+        'n_layers': 3,
+        'ffn_factor': 4/3,
+        'attention_dropout': 0.2,
+        'ffn_dropout': 0.1,
+        'residual_dropout': 0.0,
+    },
+)
+```
+
+Each feature is tokenized into a `d_model`-dimensional vector:
+- **Categorical**: embedding projected to `d_model` via a linear layer (if `emb_dim != d_model`)
+- **Continuous**: per-feature learned weight and bias, producing a `d_model` token
+
+A CLS token is prepended, then `n_layers` transformer blocks (pre-LayerNorm, MHA + FFN/GELU, residual dropout) are applied. The CLS token output is returned and fed into the hidden/output layers.
+
+#### Custom Head
 
 Implement a custom head by subclassing `NNHead`:
 

@@ -15,6 +15,8 @@
 
 ::: mllabs.nn.SimpleConcatHead
 
+::: mllabs.nn.FTTransformerHead
+
 ::: mllabs.nn.DenseHidden
 
 ::: mllabs.nn.LogitOutput

@@ -36,20 +36,47 @@ Fitted attribute: `categories_` — dict of `{column: [allowed_values]}`.
 
 ### CatPairCombiner
 
-Combines pairs of categorical columns into new interaction columns by concatenating their string representations.
+Combines groups of categorical columns into new interaction columns by concatenating their string representations. Supports N-way (2 or more columns per group).
 
 ```python
 from mllabs.processor import CatPairCombiner
 
+# pair (2-way)
 CatPairCombiner(
     pairs=[('city', 'gender'), ('age_bin', 'city')],
     sep='__',
     treat_empty_string_as_missing=True,
     new_col_names=None,   # None → 'city__gender', 'age_bin__city'
 )
+
+# N-way (3 or more columns)
+CatPairCombiner(
+    pairs=[('city', 'gender', 'age_bin')],
+    sep='__',
+)
+# output: 'city__gender__age_bin'
 ```
 
-Output column names default to `colA{sep}colB`. Either missing value in a pair produces `None` in the output. Supports integer column indices for numpy inputs.
+Each group element can be a column name (str) or integer index (numpy). If any value in a group is missing, the output is `None`. Supports pandas, polars, and numpy inputs.
+
+### TypeConverter
+
+Converts all columns to a target type. Useful for normalizing mixed-type columns before feeding into processors that require a specific dtype.
+
+```python
+from mllabs.processor import TypeConverter
+
+TypeConverter(to='str')    # str, int, or float
+TypeConverter(to='float')
+```
+
+| Backend | Behavior |
+|---------|----------|
+| pandas | `df.astype(to)` |
+| polars | `cast` to `pl.Utf8` / `pl.Int64` / `pl.Float64` |
+| numpy | `array.astype(to)` |
+
+`get_feature_names_out` is supported — column names are preserved after conversion.
 
 ### FrequencyEncoder
 

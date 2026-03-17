@@ -68,15 +68,22 @@ Used for any model not in the registry. Passes no extra fit parameters — suita
 
 ### LightGBMAdapter
 
-Passes `eval_set` to `fit()`. Supports `early_stopping` and `eval_metric` as node `params` (they are moved from constructor to `fit()`):
+Passes `eval_set` to `fit()`. Supports `early_stopping` and `eval_metric` as node `params` (they are moved from constructor to `fit()`).
+
+`early_stopping` accepts either a `lgb.early_stopping` callback instance or a plain dict of `lgb.early_stopping` constructor kwargs:
 
 ```python
 exp.set_node('lgbm', grp='lgbm_grp', params={
     'n_estimators': 1000,
+    # callback instance
     'early_stopping': early_stopping(50, verbose=False),
+    # or equivalently as a dict (preferred — avoids false rebuild detection)
+    'early_stopping': {'stopping_rounds': 50, 'verbose': False},
     'eval_metric': 'auc',
 })
 ```
+
+Using a dict is recommended: `_params_equal` compares plain dicts correctly, so changing other params won't trigger spurious rebuilds caused by callback object identity.
 
 `result_objs`: `feature_importances`✓, `evals_result`✓, `trees`✗
 
