@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-03-18
+
+### Added
+
+- `ProcessCollector` (`mllabs/collector/_process.py`): collects predictions on external (test) data during `exp()`
+  - Passes ext data through upstream Stage processors via `Experimenter.process_ext()` per outer fold
+  - Inner-fold predictions aggregated by `method` (`mean`/`mode`/`simple`); outer-fold aggregated on query
+  - `get_output(nodes=None, agg='mean')`: multi-node support with nodes filter (None/list/regex) and column-wise concat
+  - Disk-based storage; `save`/`load` roundtrip (ext_data and experimenter not persisted)
+- `Experimenter.process_ext(data, node, idx)`: passes external data through upstream Stage fitted processors for a given outer fold, yielding assembled input per inner split
+- `Connector(role=...)`: new `role` parameter (`'head'`/`'stage'`) for role-based node filtering; `None` (default) skips the check
+- `Pipeline.get_node_attrs`: expose `role` in returned attrs dict
+
+### Fixed
+
+- `Experimenter.load`: prevent `__exp.pkl` corruption when load fails — `__init__` now accepts `_save=False` to skip the initial save; `load()` passes `_save=False`
+- `Experimenter.load`: add `OutputCollector` and `ProcessCollector` to `COLLECTOR_TYPES` lookup
+
 ## [0.6.3] - 2026-03-14
 
 ### Fixed
