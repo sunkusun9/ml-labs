@@ -205,6 +205,7 @@ class PipelineNode:
             'adapter': adapter,
             'params': params,
             'method': grp_attrs.get('method') if self.method is None else self.method,
+            'role': grp_attrs['role']
         }
 
         return self.attrs

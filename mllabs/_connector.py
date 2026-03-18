@@ -16,10 +16,11 @@ class Connector:
             be exactly this class.
     """
 
-    def __init__(self, node_query=None, edges=None, processor=None):
+    def __init__(self, node_query=None, edges=None, processor=None, role=None):
         self.node_query = node_query
         self.edges = edges
         self.processor = processor
+        self.role = role
 
     def match(self, node_name, node_attrs):
         """Return True if the node satisfies all configured criteria.
@@ -42,6 +43,10 @@ class Connector:
 
         if self.processor is not None:
             if node_attrs.get('processor') != self.processor:
+                return False
+
+        if self.role is not None:
+            if node_attrs.get('role') != self.role:
                 return False
 
         if self.edges is not None:

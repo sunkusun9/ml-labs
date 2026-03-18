@@ -39,6 +39,7 @@ class _NNBase(BaseEstimator):
         cat_cols=None,
         embedding_dims=None,
         head=None,
+        head_params=None,
         hidden=None,
         output=None,
         epochs=100,
@@ -55,6 +56,7 @@ class _NNBase(BaseEstimator):
         self.cat_cols = cat_cols
         self.embedding_dims = embedding_dims
         self.head = head
+        self.head_params = head_params
         self.hidden = hidden
         self.output = output
         self.epochs = epochs
@@ -163,7 +165,7 @@ class _NNBase(BaseEstimator):
         self.input_model_ = _make_input_model(X, self.var_specs_)
 
         head_factory = self.head or SimpleConcatHead
-        self.head_ = head_factory(self.input_model_)
+        self.head_ = head_factory(self.input_model_, **(self.head_params or {}))
 
         inputs_dict = self.input_model_.make_inputs()
         x = self.head_(inputs_dict)
@@ -268,7 +270,7 @@ class _NNBase(BaseEstimator):
         if weights is not None:
             self.input_model_ = _make_input_model_from_col_info(self.col_info_, self.var_specs_)
             head_factory = self.head or SimpleConcatHead
-            self.head_ = head_factory(self.input_model_)
+            self.head_ = head_factory(self.input_model_, **(self.head_params or {}))
             inputs_dict = self.input_model_.make_inputs()
             x = self.head_(inputs_dict)
             hidden = DenseHidden(**(self.hidden if isinstance(self.hidden, dict) else {})) if not self.hidden or isinstance(self.hidden, dict) else self.hidden
@@ -307,6 +309,7 @@ class NNClassifier(_NNBase, ClassifierMixin):
         cat_cols=None,
         embedding_dims=None,
         head=None,
+        head_params=None,
         hidden=None,
         output=None,
         epochs=100,
@@ -322,7 +325,7 @@ class NNClassifier(_NNBase, ClassifierMixin):
     ):
         super().__init__(
             cat_cols=cat_cols, embedding_dims=embedding_dims,
-            head=head, hidden=hidden, output=output,
+            head=head, head_params=head_params, hidden=hidden, output=output,
             epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
             early_stopping=early_stopping,
             validation_fraction=validation_fraction,
@@ -366,6 +369,7 @@ class NNRegressor(_NNBase, RegressorMixin):
         cat_cols=None,
         embedding_dims=None,
         head=None,
+        head_params=None,
         hidden=None,
         output=None,
         epochs=100,
@@ -381,7 +385,7 @@ class NNRegressor(_NNBase, RegressorMixin):
     ):
         super().__init__(
             cat_cols=cat_cols, embedding_dims=embedding_dims,
-            head=head, hidden=hidden, output=output,
+            head=head, head_params=head_params, hidden=hidden, output=output,
             epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
             early_stopping=early_stopping,
             validation_fraction=validation_fraction,

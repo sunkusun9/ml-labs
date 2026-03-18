@@ -624,3 +624,222 @@ class TestNNRegressor:
         reg.fit(pd_df, reg_target)
         assert 'mae' in reg.evals_result_['valid']
         assert 'mse' in reg.evals_result_['valid']
+
+
+# ======================================================================
+# FTTransformerHead
+# ======================================================================
+
+class TestFTTransformerHead:
+
+    @requires_tf
+    def test_ft_block_output_shape(self):
+        from mllabs.nn._fttransformer import FTBlock as _FTBlock
+        d_model, n_heads, n_tokens = 32, 4, 5
+        block = _FTBlock(d_model, n_heads, ffn_factor=4/3,
+                         attn_dropout=0.0, ffn_dropout=0.0, residual_dropout=0.0)
+        x = tf.keras.Input(shape=(n_tokens, d_model))
+        out = block(x)
+        assert out.shape == (None, n_tokens, d_model)
+
+    @requires_tf
+    def test_mixed_output_shape(self, pd_df):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        d_model = 64
+        var_specs = [
+            ('color', ['color'], ('Embedding', 4, 'str')),
+            ('grade', ['grade'], ('Embedding', 4, 'str')),
+            ('__cont__', ['num1', 'num2'], 'num'),
+        ]
+        input_model = _make_input_model(pd_df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=2)
+        inputs_dict = input_model.make_inputs()
+        out = head(inputs_dict)
+        assert out.shape[-1] == d_model
+
+    @requires_tf
+    def test_cat_only_output_shape(self, pd_df):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        d_model = 32
+        var_specs = [
+            ('color', ['color'], ('Embedding', 4, 'str')),
+            ('grade', ['grade'], ('Embedding', 4, 'str')),
+        ]
+        input_model = _make_input_model(pd_df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=1)
+        inputs_dict = input_model.make_inputs()
+        out = head(inputs_dict)
+        assert out.shape[-1] == d_model
+
+    @requires_tf
+    def test_cont_only_output_shape(self):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        df = pd.DataFrame({
+            'a': np.random.randn(50).astype(np.float32),
+            'b': np.random.randn(50).astype(np.float32),
+            'c': np.random.randn(50).astype(np.float32),
+        })
+        d_model = 32
+        var_specs = [('__cont__', ['a', 'b', 'c'], 'num')]
+        input_model = _make_input_model(df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=1)
+        inputs_dict = input_model.make_inputs()
+        out = head(inputs_dict)
+        assert out.shape[-1] == d_model
+
+    @requires_tf
+    def test_cat_projection_applied(self, pd_df):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        d_model = 64
+        var_specs = [('color', ['color'], ('Embedding', 4, 'str'))]
+        input_model = _make_input_model(pd_df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=1)
+        assert 'color' in head._cat_projections
+
+    @requires_tf
+    def test_cat_projection_skipped_when_dim_matches(self, pd_df):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        d_model = 32
+        var_specs = [('color', ['color'], ('Embedding', d_model, 'str'))]
+        input_model = _make_input_model(pd_df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=1)
+        assert 'color' not in head._cat_projections
+
+    @requires_tf
+    def test_cont_weights_shape(self):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        df = pd.DataFrame({'a': np.ones(10, dtype=np.float32), 'b': np.ones(10, dtype=np.float32)})
+        d_model = 32
+        var_specs = [('__cont__', ['a', 'b'], 'num')]
+        input_model = _make_input_model(df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=1)
+        assert head._cont_w.shape == (2, d_model)
+        assert head._cont_b.shape == (2, d_model)
+
+    @requires_tf
+    def test_cls_token_shape(self, pd_df):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        d_model = 48
+        var_specs = [('__cont__', ['num1', 'num2'], 'num')]
+        input_model = _make_input_model(pd_df, var_specs)
+        head = FTTransformerHead(input_model, d_model=d_model, n_heads=4, n_layers=1)
+        assert head._cls_token.shape == (1, 1, d_model)
+
+    @requires_tf
+    def test_no_cont_no_cont_weights(self, pd_df):
+        from mllabs.nn import FTTransformerHead
+        from mllabs.nn._input import _make_input_model
+        var_specs = [('color', ['color'], ('Embedding', 16, 'str'))]
+        input_model = _make_input_model(pd_df, var_specs)
+        head = FTTransformerHead(input_model, d_model=16, n_heads=4, n_layers=1)
+        assert head._n_cont == 0
+        assert not hasattr(head, '_cont_w')
+
+    @requires_tf
+    def test_classifier_binary(self, pd_df, bin_target):
+        from mllabs.nn import NNClassifier, FTTransformerHead
+        clf = NNClassifier(
+            head=FTTransformerHead,
+            hidden={'units': ()},
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        clf.fit(pd_df, bin_target)
+        proba = clf.predict_proba(pd_df)
+        assert proba.shape == (200, 2)
+
+    @requires_tf
+    def test_classifier_multiclass(self, pd_df, clf_target):
+        from mllabs.nn import NNClassifier, FTTransformerHead
+        clf = NNClassifier(
+            head=FTTransformerHead,
+            hidden={'units': ()},
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        clf.fit(pd_df, clf_target)
+        proba = clf.predict_proba(pd_df)
+        assert proba.shape == (200, 3)
+
+    @requires_tf
+    def test_regressor(self, pd_df, reg_target):
+        from mllabs.nn import NNRegressor, FTTransformerHead
+        reg = NNRegressor(
+            head=FTTransformerHead,
+            hidden={'units': ()},
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        reg.fit(pd_df, reg_target)
+        preds = reg.predict(pd_df)
+        assert preds.shape == (200,)
+
+    @requires_tf
+    def test_head_params(self, pd_df, bin_target):
+        from mllabs.nn import NNClassifier, FTTransformerHead
+        clf = NNClassifier(
+            head=FTTransformerHead,
+            head_params={'d_model': 64, 'n_heads': 4, 'n_layers': 2},
+            hidden={'units': ()},
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        clf.fit(pd_df, bin_target)
+        assert clf.predict(pd_df).shape == (200,)
+        assert clf.head_.d_model == 64
+        assert clf.head_.n_layers == 2
+
+    @requires_tf
+    def test_pickle_roundtrip(self, pd_df, bin_target):
+        import pickle
+        from mllabs.nn import NNClassifier, FTTransformerHead
+        clf = NNClassifier(
+            head=FTTransformerHead,
+            head_params={'d_model': 48, 'n_heads': 4, 'n_layers': 1},
+            hidden={'units': ()},
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        clf.fit(pd_df, bin_target)
+        expected = clf.predict_proba(pd_df)
+        restored = pickle.loads(pickle.dumps(clf))
+        result = restored.predict_proba(pd_df)
+        assert np.allclose(expected, result, atol=1e-5)
+
+    @requires_tf
+    def test_with_dense_hidden(self, pd_df, clf_target):
+        from mllabs.nn import NNClassifier, FTTransformerHead, DenseHidden
+        clf = NNClassifier(
+            head=FTTransformerHead,
+            hidden=DenseHidden(units=(64,), dropout=0.1),
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        clf.fit(pd_df, clf_target)
+        assert clf.predict(pd_df).shape == (200,)
+
+    @requires_tf
+    @pytest.mark.skipif(not HAS_POLARS, reason="polars not installed")
+    def test_polars_input(self, bin_target):
+        from mllabs.nn import NNClassifier, FTTransformerHead
+        np.random.seed(0)
+        df = pl.DataFrame({
+            'cat1': pl.Series(np.random.choice(['a', 'b', 'c'], 200)).cast(pl.Categorical),
+            'num1': np.random.randn(200).astype(np.float32),
+            'num2': np.random.randn(200).astype(np.float32),
+        })
+        clf = NNClassifier(
+            head=FTTransformerHead,
+            hidden={'units': ()},
+            epochs=2, batch_size=64,
+            validation_fraction=0.0, early_stopping=0,
+        )
+        clf.fit(df, bin_target)
+        assert clf.predict_proba(df).shape == (200, 2)

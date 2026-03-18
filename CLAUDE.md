@@ -66,19 +66,20 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `compare_nodes(nodes)` → `{processor_name: DataFrame}` (params 차이 + edges['X'] stage별 변수 차이)
 
 - **PipelineGroup**: 노드 그룹 (stage/head 역할)
-  - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`
+  - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`, `desc`
   - `children`: 자식 그룹명 리스트, `nodes`: 소속 노드명 리스트
-  - `get_attrs(grps)`: 상위 그룹 속성 병합하여 반환
-  - `diff(processor, edges, method, parent, adapter, params)`: 달라진 필드명 리스트 반환
+  - `get_attrs(grps)`: 상위 그룹 속성 병합하여 반환 (`desc`는 상속 안 됨, 각 요소 독립)
+  - `diff(processor, edges, method, parent, adapter, params)`: 달라진 필드명 리스트 반환 (`desc` 제외 → desc-only 변경은 rebuild 미유발)
 
 - **PipelineNode**: 개별 노드
-  - 속성: `name`, `grp`, `processor`, `edges`, `method`, `adapter`, `params`
+  - 속성: `name`, `grp`, `processor`, `edges`, `method`, `adapter`, `params`, `desc`
   - `output_edges`: 이 노드를 입력으로 사용하는 노드명 리스트
   - `get_attrs(grps)`: 그룹 속성과 노드 속성 병합
-  - `diff(grp, processor, edges, method, adapter, params)`: 달라진 필드명 리스트 반환
+  - `diff(grp, processor, edges, method, adapter, params)`: 달라진 필드명 리스트 반환 (`desc` 제외)
+  - `set_grp`/`set_node`: `desc` 파라미터 수락; exist='diff' skip 경로에서도 `desc`는 업데이트됨
 
 ### Experimenter (`_experimenter.py`)
-- 생성자: `(data, path, ..., cache_maxsize=4GB, logger)`
+- 생성자: `(data, path, ..., cache_maxsize=4GB, logger, aug_data=None)`
 - `pipeline`: Pipeline 인스턴스
 - `node_objs`: `{node_name: StageObj|HeadObj}`
 - `cache`: DataCache (LRU, 용량 기반)
@@ -93,6 +94,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `remove_trainer(name)`: Trainer 제거 후 `_save()`
 - `collect(collector, nodes=None, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, nodes로 범위 제한 가능, progress 포함)
 - `get_node_output(node, idx, v=None)`, `get_node_train_output(node, idx, v=None)`, `get_node_valid_output(node, idx, v=None)`: 노드 출력 추출 (파라미터 순서: node → idx)
+- `process_ext(data, node, idx)`: 임의 외부 데이터를 outer fold `idx`의 upstream stage들에 통과시켜 node 입력 데이터를 inner split 수만큼 yield — ProcessCollector에서 사용
+- `aug_data`: 외부 데이터를 DataSource 수준에서 inner train split에 append — 미퍼시스트, create/load 시 전달
+- `add_trainer(name, ..., aug_data=None)`: Trainer 생성 시 aug_data 전달 가능
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
   - pipeline, node_obj_keys, collector_keys 저장/복원
 
@@ -146,14 +150,15 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - Trainer용 `data_dict`: `{key: (train, valid)}` (Experimenter의 `((train, train_v), valid)`과 다름)
 
 ### Connector (`_connector.py`)
-- `__init__(node_query=None, edges=None, processor=None)` — 3요소 선택적 매칭
+- `__init__(node_query=None, edges=None, processor=None, role=None)` — 4요소 선택적 매칭
 - `match(node_name, node_attrs)`: 설정된 요소만 검사, 모두 충족 시 True
-  - node_query: str(regex) 또는 list(in), edges: contain 기반 매칭, processor: 일치 검사
+  - node_query: str(regex) 또는 list(in), edges: contain 기반 매칭, processor: 일치 검사, role: 'stage'/'head' 일치 검사 (None이면 무시)
 
 ### Collector (`collector/` 패키지)
 - **Collector** (`_base.py`): 기본 클래스
   - `__init__(name, connector)`, `path`는 add_collector 시 설정
   - 라이프사이클: `_start(node)`, `_collect(node, idx, inner_idx, context)`, `_end_idx(node, idx)`, `_end(node)`
+  - 에러 처리: 라이프사이클 메서드는 `_safe_collector_call`로 try/except 래핑 — 에러 시 예외 전파 대신 `warnings` 리스트에 저장 (`{method, node, type, message, traceback}`) 후 warning 로그
   - `has(node)`: 수집 결과 보유 여부 (has_node에 위임)
   - `has_node(node)`, `reset_nodes(nodes)`, `save()`, `load(cls, path)`
   - `_get_nodes(nodes, available)`: None/list/str(regex) 패턴 매칭
@@ -168,6 +173,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `__init__(name, connector, output_var, experimenter, method='mean')`
   - 생성 시 `experimenter`에서 `_index`, `_target`(ndarray), `_target_columns` 구축
   - `output_var`, `method`(mean/mode/simple)
+  - `_aggregate()`: `DataWrapper` 대신 `_data_cls`(입력 데이터 타입)의 static 메서드 사용
   - path 있으면 파일 저장, 없으면 `_mem_data`에 메모리 저장
   - 쿼리: `get_dataset(nodes=None, include_target=True)` — experimenter 불필요
 
@@ -189,6 +195,13 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - 파일 저장: `{path}/{node}/{idx}_{inner_idx}.pkl`
   - 쿼리: `get_output(node, idx, inner_idx)`, `get_outputs(node)`
 
+- **ProcessCollector** (`_process.py`): 외부(테스트) 데이터에 대한 예측 수집
+  - `__init__(name, connector, ext_data, experimenter, output_var=None, method='mean')`
+  - `_collect`: `experimenter.process_ext(ext_data, node, idx)`로 inner fold별 upstream stage 통과 → `context['processor'].process()` 호출
+  - inner fold 결과는 `method`(mean/mode/simple)로 outer fold별 집계, 파일 저장: `{path}/{node}/{idx}.pkl`
+  - 쿼리: `get_output(nodes=None, agg='mean')` — nodes 필터(None/list/regex) + outer fold 집계 후 column-wise concat 반환
+  - save/load 시 `ext_data`, `experimenter`는 미저장 (런타임 전달)
+
 ## edges 구조
 - dict 형태: `{key: [(node_name, var_spec), ...], ...}`
 - key: 변수 집합 이름 (예: 'X', 'y', 'sample_weight')
@@ -209,23 +222,37 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
 - **PredictProcessor**: `fit`, `fit_process`, `process`
+- `adapter=None` 전달 시 `DefaultAdapter()` 로 fallback
 - `fit`/`fit_process`에서 y 데이터를 `squeeze()` 후 전달 (sklearn DataConversionWarning 억제)
 - `get_feature_names_out` 반환값은 `list()` 로 변환하여 사용 (list/ndarray 호환)
+- `process()`: `adapter.get_process_data(data)` 로 입력 타입 변환 — polars 등 라이브러리별 호환성 처리
 - `data_dict` (Experimenter): `{key: ((train, train_v), valid), ...}` 형태
 - `data_dict` (Trainer): `{key: (train, valid), ...}` 형태 (inner fold 없음)
 - **X-less 지원**: `edges`에 `'X'`가 없고 `'y'`만 있는 경우(e.g. `LabelEncoder`) `'y'`를 primary input으로 사용
   - `fit`/`fit_process`: `'X'` 없으면 `'y'` 데이터를 squeeze하여 전달, `output_vars`를 `y_columns`로 설정
   - `process`: `X_`가 비어 있으면 입력 데이터를 squeeze 후 transform
+- `y_columns`가 str인 경우(polars Series 등) `[y_columns]` 로 wrap하여 처리
 
 ## Adapter 인터페이스
 - `get_params(params, logger)`: 모델 생성 파라미터
-- `get_fit_params(data_dict, params, logger)`: fit 파라미터
+- `get_fit_params(data_dict, params, logger)`: fit 파라미터 — base: X/y를 `unwrap()` 후 반환
+- `get_process_data(data)`: `process()` 입력 데이터 변환 — base: `unwrap(data)`
+  - `LightGBMAdapter`: polars→pandas 변환 (LightGBM polars 미지원); `early_stopping` dict 수락 → 내부에서 `lgb_early_stopping` 콜백으로 변환 (`_params_equal`이 plain dict 비교 가능해 false rebuild 방지)
+  - `CatBoostAdapter`: `_catboost_supports_polars()` (>=1.3.0) 기반 분기 — 구버전이면 polars→pandas (`get_fit_params`도 동일 적용)
 - `result_objs`: `{name: (callable, mergeable_bool)}`
 - `__eq__`: `type(self) is type(other) and self.__dict__ == other.__dict__` — diff 모드에서 adapter 비교에 사용
 - `__hash__`: `id(self)` — set/dict 키로 사용 가능
 
+## Sampler (`sampler/` 패키지)
+- **Sampler** (`_base.py`): 기본 클래스 — `sample(fit_params) → fit_params` 인터페이스
+- **ImbLearnSampler** (`_imblearn.py`): imblearn `fit_resample` 래퍼
+  - `__init__(sampler)`: imblearn sampler 인스턴스 주입
+  - `sample(fit_params)`: `fit_params['X']`/`['y']`로 `fit_resample` 호출 후 X, y 교체하여 반환
+- 사용법: node `params`에 `mllab_sampler` 키로 Sampler 인스턴스 지정 → `_node_processor`가 fit/fit_process 전에 `sample()` 호출; estimator에 전달 전 키 제거
+
 ## 보조 모듈
 - **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze/mean/mode/simple) — pandas/polars/cudf/numpy 통합
+  - `PolarsWrapper.get_columns()`: `pl.DataFrame`이면 `.columns`, `pl.Series`이면 `.name` 반환
 - **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
 - **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress, rename_progress)
 - **col.py**: 컬럼 선택 유틸리티
@@ -233,7 +260,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras, `_nn.py` (NNAdapter)
-- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder, ColSelector
+- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder, ColSelector, TypeConverter
+  - `CatPairCombiner`: pair(2) → N-way 그룹 조합으로 확장. `pairs` 요소를 N개 컬럼 인덱스/이름 그룹으로 지정 가능
+  - `TypeConverter`: 모든 컬럼을 지정 타입(`str`/`int`/`float`)으로 변환. pandas: `astype`, polars: cast, numpy: `astype`. `get_feature_names_out` 지원
   - polars 설치 시: PolarsLoader, ExprProcessor, PandasConverter 추가
   - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
 
@@ -267,11 +296,16 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `NNClassifier`, `NNRegressor`: sklearn-compatible TF/Keras 기반 추정기
   - pandas `Categorical` / polars `Categorical`/`Enum` dtype 자동 감지 → embedding 자동 생성
   - `embedding_dims`: `{col: dim}` dict로 per-column override
+  - `head`: head factory 클래스 (default=`SimpleConcatHead`), `head_params`: head factory에 전달할 kwargs dict
   - `hidden`: `DenseHidden` 인스턴스 또는 dict (kwargs로 전달) 또는 None(기본값)
   - `fit(X, y, eval_set=None, callbacks=None)`: constructor callbacks + fit callbacks + early stopping 순서로 합산
   - `evals_result_`: `{'train': {metric: [...]}, 'valid': {metric: [...]}}` (history 저장)
   - Pickle: `__getstate__`/`__setstate__` — weights만 저장, `col_info_` 기반 architecture 재빌드
-- 컴포넌트: `SimpleConcatHead`, `DenseHidden`, `LogitOutput`, `BinaryLogitOutput`, `RegressionOutput`
+- 컴포넌트: `SimpleConcatHead`, `FTTransformerHead`, `DenseHidden`, `LogitOutput`, `BinaryLogitOutput`, `RegressionOutput`
+  - `FTTransformerHead`: Feature Tokenizer + Transformer head
+    - cat embedding → d_model projection, cont feature → per-feature learned (w, b) tokenization
+    - CLS token prepend + N × FTBlock (pre-LN, MHA + FFN/GELU, residual dropout) → CLS token 반환
+    - 파라미터: `d_model=192`, `n_heads=8`, `n_layers=3`, `ffn_factor=4/3`, `attention_dropout=0.2`, `ffn_dropout=0.1`, `residual_dropout=0.0`
 - `NNAdapter` (`adapter/_nn.py`): eval_set 전달 + `_ProgressCallback` (epoch 진행률 로깅) + `evals_result` result_obj
 
 ## 향후 방향

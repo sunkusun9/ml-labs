@@ -8,6 +8,8 @@
 
 ::: mllabs.processor.FrequencyEncoder
 
+::: mllabs.processor.TypeConverter
+
 ::: mllabs.processor.PolarsLoader
 
 ::: mllabs.processor.ExprProcessor

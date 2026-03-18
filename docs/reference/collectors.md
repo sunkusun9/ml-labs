@@ -39,3 +39,8 @@
       members:
         - get_output
         - get_outputs
+
+::: mllabs.collector.ProcessCollector
+    options:
+      members:
+        - get_output

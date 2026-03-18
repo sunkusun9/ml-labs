@@ -8,7 +8,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
 from mllabs._experimenter import Experimenter
-from mllabs import Connector, MetricCollector, StackingCollector, ModelAttrCollector, OutputCollector
+from mllabs import Connector, MetricCollector, StackingCollector, ModelAttrCollector, OutputCollector, ProcessCollector
 
 
 def accuracy_metric(y, pred):
@@ -765,3 +765,120 @@ class TestCollectorErrorHandling:
         assert w['type'] == 'RuntimeError'
         assert 'traceback' in w
         assert 'RuntimeError' in w['traceback']
+
+
+class TestProcessCollector:
+    @pytest.fixture
+    def ext_data(self, sample_data):
+        return sample_data.iloc[:20].reset_index(drop=True)
+
+    def test_collect_basic(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        assert pc.has_node('dt')
+
+    def test_get_output_shape(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        result = pc.get_output()
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 20
+
+    def test_get_output_nodes_none(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        result = pc.get_output(nodes=None)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_get_output_nodes_list(self, multi_head_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        multi_head_exp.add_collector(pc)
+        result_dt1 = pc.get_output(nodes=['dt1'])
+        result_all = pc.get_output(nodes=None)
+        assert isinstance(result_dt1, pd.DataFrame)
+        assert result_dt1.shape[1] < result_all.shape[1]
+
+    def test_get_output_nodes_regex(self, multi_head_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        multi_head_exp.add_collector(pc)
+        result = pc.get_output(nodes='dt1')
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 20
+
+    def test_with_upstream_stage(self, built_exp, ext_data):
+        # built_exp: scaler(stage) -> dt(head), ext_data goes through scaler first
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        result = pc.get_output()
+        assert len(result) == 20
+
+    def test_agg_mean(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp, method='mean')
+        built_exp.add_collector(pc)
+        result = pc.get_output(agg='mean')
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 20
+
+    def test_agg_mode(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        result = pc.get_output(agg='mode')
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 20
+
+    def test_agg_simple(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp, method='simple')
+        built_exp.add_collector(pc)
+        result = pc.get_output(agg='simple')
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 20
+
+    def test_with_inner_splits(self, built_exp_inner, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp_inner)
+        built_exp_inner.add_collector(pc)
+        result = pc.get_output()
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 20
+
+    def test_multi_head_columns_concat(self, multi_head_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        multi_head_exp.add_collector(pc)
+        result_all = pc.get_output(nodes=None)
+        result_dt1 = pc.get_output(nodes=['dt1'])
+        result_dt2 = pc.get_output(nodes=['dt2'])
+        assert result_all.shape[1] == result_dt1.shape[1] + result_dt2.shape[1]
+
+    def test_connector_filter(self, multi_head_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(node_query=['dt1']), ext_data=ext_data, experimenter=multi_head_exp)
+        multi_head_exp.add_collector(pc)
+        assert pc.has_node('dt1')
+        assert not pc.has_node('dt2')
+
+    def test_reset_nodes(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        assert pc.has_node('dt')
+        pc.reset_nodes(['dt'])
+        assert not pc.has_node('dt')
+
+    def test_get_saved_nodes(self, multi_head_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        multi_head_exp.add_collector(pc)
+        saved = pc._get_saved_nodes()
+        assert 'dt1' in saved
+        assert 'dt2' in saved
+
+    def test_save_load(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        loaded = ProcessCollector.load(pc.path)
+        assert loaded.has_node('dt')
+        result_orig = pc.get_output()
+        result_loaded = loaded.get_output()
+        pd.testing.assert_frame_equal(result_orig, result_loaded)
+
+    def test_invalid_agg(self, built_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        built_exp.add_collector(pc)
+        with pytest.raises(ValueError):
+            pc.get_output(agg='invalid')

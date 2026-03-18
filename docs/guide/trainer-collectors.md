@@ -12,10 +12,13 @@ trainer = exp.add_trainer(
     data=None,              # None → use Experimenter's data
     splitter='same',        # 'same' → use exp.sp_v (inner splitter)
     splitter_params=None,   # None when splitter='same'
+    aug_data=None,          # external DataFrame appended to inner train split at DataSource level
 )
 ```
 
 `splitter='same'` reuses the inner splitter (`sp_v`) configured on the Experimenter. Pass a scikit-learn splitter object to use a different split strategy. `splitter=None` trains on the entire dataset without splitting.
+
+`aug_data` is appended to the inner training split at the DataSource level before any Stage processing. It is not persisted — pass it again on `add_trainer` after loading. The Experimenter constructor and `create()` also accept `aug_data` for the same purpose in the experiment loop.
 
 ### select_head, train, process
 
@@ -54,9 +57,63 @@ inferencer.save('./inferencer')
 
 ---
 
+---
+
+## Sampler
+
+`Sampler` applies resampling to training data before each `fit()` call. This is useful for class imbalance correction.
+
+### ImbLearnSampler
+
+Wraps any [imbalanced-learn](https://imbalanced-learn.org/) sampler:
+
+```python
+from imblearn.over_sampling import SMOTE
+from mllabs.sampler import ImbLearnSampler
+
+sampler = ImbLearnSampler(SMOTE(random_state=42))
+```
+
+To apply a sampler to a node, set the `mllab_sampler` key in `params`:
+
+```python
+exp.set_node('lgbm_smote', grp='lgbm_grp', params={
+    'n_estimators': 300,
+    'mllab_sampler': ImbLearnSampler(SMOTE(random_state=42)),
+})
+```
+
+`mllab_sampler` is intercepted by `_node_processor` before `fit()` / `fit_process()` — the key is stripped before the remaining params are passed to the estimator.
+
+### Custom Sampler
+
+```python
+from mllabs.sampler import Sampler
+
+class MySampler(Sampler):
+    def sample(self, fit_params):
+        X = fit_params['X']
+        y = fit_params['y']
+        # ... resample ...
+        return {**fit_params, 'X': X_resampled, 'y': y_resampled}
+```
+
+---
+
 ## Collectors
 
 Collectors capture data from Head nodes during `exp()`. Each Collector uses a `Connector` to select which nodes it observes.
+
+### Error Handling
+
+Collector lifecycle methods (`_start`, `_collect`, `_end_idx`, `_end`) are wrapped in try/except. If an error occurs, it is stored in `collector.warnings` as a dict:
+
+```python
+# each entry in collector.warnings:
+{'method': '_collect', 'node': 'lgbm_v1', 'type': 'ValueError', 'message': '...', 'traceback': '...'}
+```
+
+The error is logged as a warning but does not interrupt the experiment. Check `collector.warnings` after `exp()` if results are missing.
 
 ### Connector-Based Matching
 
@@ -70,6 +127,8 @@ Connector(node_query='lgbm')                 # regex match on node name
 Connector(node_query=['lgbm_v1', 'lgbm_v2']) # exact list match
 Connector(processor=LGBMClassifier)          # processor class match
 Connector(edges={'y': [(None, 'target')]})   # edges contain-based match
+Connector(role='head')                       # head nodes only
+Connector(role='stage')                      # stage nodes only
 ```
 
 Multiple criteria are combined with AND logic.
@@ -249,3 +308,42 @@ entry = oc.get_output('lgbm_v1', idx=0, inner_idx=0)
 all_entries = oc.get_outputs('lgbm_v1')
 # {(idx, inner_idx): entry, ...}
 ```
+
+---
+
+### ProcessCollector
+
+Collects predictions on external (test) data for each matched Head node. During `exp()`, it passes the external data through the same fitted upstream Stage processors as the experiment and calls the Head processor to produce predictions. Inner-fold predictions are aggregated per outer fold; outer-fold predictions are aggregated on query.
+
+```python
+from mllabs.collector import ProcessCollector
+
+pc = ProcessCollector(
+    name='test_preds',
+    connector=Connector(role='head'),  # head nodes only
+    ext_data=test_df,                  # external dataset to predict on
+    experimenter=exp,                  # used to run upstream stage transforms
+    output_var=None,                   # column selector for processor output
+    method='mean',                     # inner-fold aggregation: 'mean', 'mode', 'simple'
+)
+exp.add_collector(pc)
+```
+
+`ext_data` and `experimenter` are not persisted — pass them again if you reload the collector after saving.
+
+**Querying results:**
+
+```python
+pc = exp.get_collector('test_preds')
+
+# Aggregate across all outer folds, columns from all matched nodes concatenated
+df = pc.get_output(
+    nodes=None,    # None → all collected nodes; list or regex str to filter
+    agg='mean',    # outer-fold aggregation: 'mean', 'mode', 'simple'
+)
+
+# Single node
+df_lgbm = pc.get_output(nodes=['lgbm_v1'], agg='mean')
+```
+
+Internally, `exp.process_ext(ext_data, node, idx)` is called to assemble the correctly transformed input for each node per outer fold, iterating over inner splits.

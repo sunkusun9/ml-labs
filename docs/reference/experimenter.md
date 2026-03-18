@@ -28,6 +28,7 @@
         - get_node_output
         - get_node_train_output
         - get_node_valid_output
+        - process_ext
         - get_n_splits
         - get_n_splits_inner
         - desc_status
