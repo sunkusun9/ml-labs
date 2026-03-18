@@ -127,6 +127,8 @@ Connector(node_query='lgbm')                 # regex match on node name
 Connector(node_query=['lgbm_v1', 'lgbm_v2']) # exact list match
 Connector(processor=LGBMClassifier)          # processor class match
 Connector(edges={'y': [(None, 'target')]})   # edges contain-based match
+Connector(role='head')                       # head nodes only
+Connector(role='stage')                      # stage nodes only
 ```
 
 Multiple criteria are combined with AND logic.
@@ -306,3 +308,42 @@ entry = oc.get_output('lgbm_v1', idx=0, inner_idx=0)
 all_entries = oc.get_outputs('lgbm_v1')
 # {(idx, inner_idx): entry, ...}
 ```
+
+---
+
+### ProcessCollector
+
+Collects predictions on external (test) data for each matched Head node. During `exp()`, it passes the external data through the same fitted upstream Stage processors as the experiment and calls the Head processor to produce predictions. Inner-fold predictions are aggregated per outer fold; outer-fold predictions are aggregated on query.
+
+```python
+from mllabs.collector import ProcessCollector
+
+pc = ProcessCollector(
+    name='test_preds',
+    connector=Connector(role='head'),  # head nodes only
+    ext_data=test_df,                  # external dataset to predict on
+    experimenter=exp,                  # used to run upstream stage transforms
+    output_var=None,                   # column selector for processor output
+    method='mean',                     # inner-fold aggregation: 'mean', 'mode', 'simple'
+)
+exp.add_collector(pc)
+```
+
+`ext_data` and `experimenter` are not persisted — pass them again if you reload the collector after saving.
+
+**Querying results:**
+
+```python
+pc = exp.get_collector('test_preds')
+
+# Aggregate across all outer folds, columns from all matched nodes concatenated
+df = pc.get_output(
+    nodes=None,    # None → all collected nodes; list or regex str to filter
+    agg='mean',    # outer-fold aggregation: 'mean', 'mode', 'simple'
+)
+
+# Single node
+df_lgbm = pc.get_output(nodes=['lgbm_v1'], agg='mean')
+```
+
+Internally, `exp.process_ext(ext_data, node, idx)` is called to assemble the correctly transformed input for each node per outer fold, iterating over inner splits.

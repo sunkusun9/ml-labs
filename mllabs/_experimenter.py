@@ -21,7 +21,7 @@ from ._logger import DefaultLogger
 from ._pipeline import Pipeline
 from ._node_processor import resolve_columns
 from ._connector import Connector
-from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
+from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
 from ._trainer import Trainer
 
 def _get_data_size(data):
@@ -99,7 +99,7 @@ class Experimenter():
     def __init__(
             self, data, path, data_names = None, sp = ShuffleSplit(n_splits=1, random_state=1), sp_v=None,
             splitter_params=None, title=None, data_key=None, cache_maxsize=4 * 1024 ** 3,
-            logger = DefaultLogger(level=['info', 'progress']), aug_data=None
+            logger = DefaultLogger(level=['info', 'progress']), aug_data=None, _save=True
         ):
         self.cache_maxsize = cache_maxsize
         self.logger = logger
@@ -157,7 +157,8 @@ class Experimenter():
         self.collectors = {}
         self.trainers = {}
         self.status = "open"
-        self._save()
+        if _save:
+            self._save()
 
     def _check_open(self):
         """상태가 open인지 확인하고, 아니면 에러 발생"""
@@ -872,7 +873,55 @@ class Experimenter():
     def split(self, edges):
         for idx in range(len(self.train_idx_list)):
             yield self.get_data(idx, edges)
-    
+
+    def process_ext(self, data, node, idx):
+        data = wrap(data)
+        node_attrs = self.pipeline.get_node_attrs(node)
+        edges = node_attrs['edges']
+
+        all_ordered = self.pipeline._get_affected_nodes([None])
+        upstream_stages = []
+        for name in all_ordered:
+            if name == node:
+                break
+            if name is not None and name in self.node_objs:
+                grp = self.pipeline.get_grp(self.pipeline.get_node(name).grp)
+                if grp.role == 'stage':
+                    upstream_stages.append(name)
+
+        stage_objs = {name: list(self.node_objs[name].get_objs(idx)) for name in upstream_stages}
+        stage_edges = {name: self.pipeline.get_node_attrs(name)['edges'] for name in upstream_stages}
+
+        for inner_idx in range(self.get_n_splits_inner()):
+            data_dicts = {None: (data, None)}
+            for name in upstream_stages:
+                objs = stage_objs[name]
+                if inner_idx >= len(objs):
+                    continue
+                obj, _, _ = objs[inner_idx]
+                input_data = self._get_ext_process_data(data_dicts, stage_edges[name])
+                if input_data is not None:
+                    data_dicts[name] = (obj.process(input_data), obj)
+            yield self._get_ext_process_data(data_dicts, edges)
+
+    def _get_ext_process_data(self, data_dicts, edges):
+        if 'X' not in edges:
+            return None
+        parts = []
+        for src_node, var in edges['X']:
+            if src_node not in data_dicts:
+                continue
+            src, obj = data_dicts[src_node]
+            if var is not None:
+                cols = var if src_node is None else resolve_columns(src, var, processor=obj)
+                src = src.select_columns(cols)
+            parts.append(src)
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return type(parts[0]).concat(parts, axis=1)
+
     def get_node_output(self, node, idx, v = None):
         if node is None:
             outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
@@ -1213,6 +1262,8 @@ class Experimenter():
             'StackingCollector': StackingCollector,
             'ModelAttrCollector': ModelAttrCollector,
             'SHAPCollector': SHAPCollector,
+            'OutputCollector': OutputCollector,
+            'ProcessCollector': ProcessCollector,
         }
 
         filepath = Path(filepath)
@@ -1235,6 +1286,7 @@ class Experimenter():
             data_key=saved_data_key,
             cache_maxsize=save_data.get('cache_maxsize', 4 * 1024 ** 3),
             aug_data=aug_data,
+            _save=False,
         )
         exp.exp_id = save_data['exp_id']
         exp.pipeline = save_data['pipeline']
