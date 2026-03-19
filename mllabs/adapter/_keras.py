@@ -2,7 +2,7 @@
 Keras adapter
 """
 
-from ._base import ModelAdapter
+from ._base import ModelAdapter, GPU_POSSIBLE
 
 
 class KerasAdapter(ModelAdapter):
@@ -10,6 +10,21 @@ class KerasAdapter(ModelAdapter):
 
     Keras는 validation_data 파라미터로 (X, y) 튜플을 받습니다.
     """
+
+    def get_gpu_usage(self, params):
+        gpu = (params or {}).get('gpu', 'auto')
+        if gpu != 'auto':
+            raise ValueError(f"KerasAdapter only supports gpu='auto', got {gpu!r}")
+        return GPU_POSSIBLE
+
+    def get_params(self, params, logger=None):
+        if params is None:
+            return {}
+        params = params.copy()
+        gpu = params.pop('gpu', 'auto')
+        if gpu != 'auto':
+            raise ValueError(f"KerasAdapter only supports gpu='auto', got {gpu!r}")
+        return params
 
     def get_fit_params(self, data_dict, params=None, logger=None):
         """Keras의 fit 파라미터 구성"""

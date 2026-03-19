@@ -2,7 +2,8 @@
 Model adapters for handling eval_set in different ML frameworks
 """
 
-from ._base import ModelAdapter
+from ._base import ModelAdapter, GPU_NO, GPU_POSSIBLE, GPU_YES
+from ._gpu import get_gpus, get_idle_gpu
 from ._catboost import CatBoostAdapter
 from ._keras import KerasAdapter
 from ._default import DefaultAdapter
@@ -110,6 +111,11 @@ def register_adapter(model_name, adapter):
 
 __all__ = [
     'ModelAdapter',
+    'GPU_NO',
+    'GPU_POSSIBLE',
+    'GPU_YES',
+    'get_gpus',
+    'get_idle_gpu',
     'XGBoostAdapter',
     'LightGBMAdapter',
     'CatBoostAdapter',

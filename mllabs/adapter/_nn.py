@@ -1,5 +1,5 @@
 import pandas as pd
-from ._base import ModelAdapter
+from ._base import ModelAdapter, GPU_NO, GPU_POSSIBLE, GPU_YES
 
 try:
     import tensorflow as tf
@@ -35,6 +35,21 @@ class _ProgressCallback(_keras_cb):
 
 
 class NNAdapter(ModelAdapter):
+
+    def get_gpu_usage(self, params):
+        gpu = (params or {}).get('gpu', 'auto')
+        if gpu != 'auto':
+            raise ValueError(f"NNAdapter only supports gpu='auto', got {gpu!r}")
+        return GPU_POSSIBLE
+
+    def get_params(self, params, logger=None):
+        if params is None:
+            return {}
+        params = params.copy()
+        gpu = params.pop('gpu', 'auto')
+        if gpu != 'auto':
+            raise ValueError(f"NNAdapter only supports gpu='auto', got {gpu!r}")
+        return params
 
     def get_fit_params(self, data_dict, params=None, logger=None):
         from .._data_wrapper import unwrap

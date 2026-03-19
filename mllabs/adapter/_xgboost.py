@@ -3,7 +3,7 @@ XGBoost adapter
 """
 
 import pandas as pd
-from ._base import ModelAdapter
+from ._base import ModelAdapter, GPU_NO, GPU_YES, GPU_NO, GPU_YES
 
 from xgboost.callback import TrainingCallback
 
@@ -45,15 +45,30 @@ class XGBoostAdapter(ModelAdapter):
         'evals_result', 'trees'
     ]
 
-    def get_params(self, params, logger = None):
+    def get_gpu_usage(self, params):
+        gpu = (params or {}).get('gpu', 'auto')
+        if gpu is None:
+            return GPU_NO
+        if gpu == 'auto':
+            device = (params or {}).get('device', '')
+            return GPU_YES if isinstance(device, str) and 'cuda' in device else GPU_NO
+        return GPU_YES  # 'yes'
+
+    def inject_gpu_id(self, params, gpu_id):
+        params = params.copy()
+        params['device'] = f'cuda:{gpu_id}'
+        return params
+
+    def get_params(self, params, logger=None):
         """XGBoost 모델 생성자 파라미터 조정 (ProgressCallback 설정)"""
         if params is None:
             params = {}
         else:
             params = params.copy()
-        if self.verbose > 0 and self.verbose < 1:
-            # 0 < verbose < 1: 진행률 기반 출력을 위한 callback 설정
 
+        params.pop('gpu', None)
+
+        if self.verbose > 0 and self.verbose < 1:
             n_estimators = params.get('n_estimators', 100)
             callbacks = params.get('callbacks', [])
             if logger is not None:

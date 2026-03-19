@@ -3,7 +3,7 @@ LightGBM adapter
 """
 
 import pandas as pd
-from ._base import ModelAdapter
+from ._base import ModelAdapter, GPU_NO, GPU_YES
 from lightgbm import early_stopping
 
 def create_progress_callback(n_estimators, period_pct, logger):
@@ -33,16 +33,23 @@ class LightGBMAdapter(ModelAdapter):
 
     LightGBM도 eval_set 파라미터를 사용하지만 약간 다른 방식입니다.
     """
-    def get_params(self, params, logger = None):
-        """모델 생성자에 전달할 파라미터를 조정
+    def get_gpu_usage(self, params):
+        gpu = (params or {}).get('gpu', 'auto')
+        if gpu is None:
+            return GPU_NO
+        if gpu == 'auto':
+            return GPU_YES if (params or {}).get('device') == 'gpu' else GPU_NO
+        return GPU_YES  # 'yes'
 
-        Args:
-            params (dict): 원본 파라미터
+    def inject_gpu_id(self, params, gpu_id):
+        params = params.copy()
+        params['device'] = 'gpu'
+        params['gpu_device_id'] = gpu_id
+        return params
 
-        Returns:
-            dict: 조정된 파라미터
-        """
-        return {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric']}
+    def get_params(self, params, logger=None):
+        params = {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric', 'gpu']}
+        return params
 
     def get_process_data(self, data):
         from .._data_wrapper import unwrap
