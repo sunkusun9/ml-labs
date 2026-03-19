@@ -4,6 +4,10 @@ Base adapter class for ML model frameworks
 
 from abc import ABC, abstractmethod
 
+GPU_NO = 'no'
+GPU_POSSIBLE = 'possible'
+GPU_YES = 'yes'
+
 
 class ModelAdapter(ABC):
     """Abstract base class for ML framework adapters.
@@ -67,15 +71,34 @@ class ModelAdapter(ABC):
         from .._data_wrapper import unwrap
         return unwrap(data)
 
-    def get_params(self, params, logger = None):
+    def get_gpu_usage(self, params):
+        """Returns whether the current params will use GPU.
+
+        Returns:
+            'no'      — GPU not used
+            'possible' — GPU may be used (framework auto-selects based on hardware)
+            'yes'     — GPU will definitely be used
+        """
+        gpu = (params or {}).get('gpu', 'auto')
+        if gpu is None:
+            return GPU_NO
+        if gpu == 'auto':
+            return GPU_NO
+        return GPU_YES
+
+    def get_params(self, params, logger=None):
         """모델 생성자에 전달할 파라미터를 조정
 
         Args:
             params (dict): 원본 파라미터
 
         Returns:
-            dict: 조정된 파라미터
+            dict: 조정된 파라미터. gpu 키는 제거됨
         """
+        if params is None:
+            return params
+        params = params.copy()
+        params.pop('gpu', None)
         return params
 
     def __eq__(self, other):

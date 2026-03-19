@@ -5,7 +5,7 @@ CatBoost adapter
 import tempfile
 import json
 import pandas as pd
-from ._base import ModelAdapter
+from ._base import ModelAdapter, GPU_NO, GPU_YES
 
 
 def _catboost_supports_polars():
@@ -19,6 +19,27 @@ class CatBoostAdapter(ModelAdapter):
 
     CatBoost도 eval_set을 지원합니다.
     """
+
+    def get_gpu_usage(self, params):
+        gpu = (params or {}).get('gpu', 'auto')
+        if gpu is None:
+            return GPU_NO
+        if gpu == 'auto':
+            return GPU_YES if (params or {}).get('task_type') == 'GPU' else GPU_NO
+        return GPU_YES  # 'yes'
+
+    def inject_gpu_id(self, params, gpu_id):
+        params = params.copy()
+        params['task_type'] = 'GPU'
+        params['devices'] = str(gpu_id)
+        return params
+
+    def get_params(self, params, logger=None):
+        if params is None:
+            return {}
+        params = params.copy()
+        params.pop('gpu', None)
+        return params
 
     def get_process_data(self, data):
         from .._data_wrapper import unwrap
