@@ -18,19 +18,19 @@ def _get_process_inputs(data_dict):
 def _build_sub(node_attrs, data_dict, fit_process, logger):
     method = node_attrs['method']
     if method in ['transform', 'fit_transform']:
-        obj = TransformProcessor(node_attrs['name'], node_attrs['processor'], node_attrs['adapter'], node_attrs['params'], logger = logger)
+        obj = TransformProcessor(node_attrs['name'], node_attrs['processor'], node_attrs['adapter'], node_attrs['params'])
     else:
-        obj = PredictProcessor(node_attrs['name'], node_attrs['processor'], method, node_attrs['adapter'], node_attrs['params'], logger = logger)
+        obj = PredictProcessor(node_attrs['name'], node_attrs['processor'], method, node_attrs['adapter'], node_attrs['params'])
 
     # (train, train_v) only — strip valid from ((train, train_v), valid)
     fit_data = {key: val[0] for key, val in data_dict.items()}
 
     start_time = time.time()
     if fit_process:
-        result = obj.fit_process(fit_data)
+        result = obj.fit_process(fit_data, logger=logger)
     else:
         result = None
-        obj.fit(fit_data)
+        obj.fit(fit_data, logger=logger)
     elapsed_time = time.time() - start_time
 
     _ref_key = 'X' if 'X' in data_dict else 'y'

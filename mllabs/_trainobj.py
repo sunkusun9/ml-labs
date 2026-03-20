@@ -12,22 +12,22 @@ def _train_build(node_attrs, data_dict, logger):
         fit_process = method == 'fit_transform'
         obj = TransformProcessor(
             node_attrs['name'], node_attrs['processor'],
-            node_attrs['adapter'], node_attrs['params'], logger=logger,
+            node_attrs['adapter'], node_attrs['params'],
         )
     elif method in ['predict', 'predict_proba', 'fit_predict']:
         fit_process = method == 'fit_predict'
         obj = PredictProcessor(
             node_attrs['name'], node_attrs['processor'],
-            method, node_attrs['adapter'], node_attrs['params'], logger=logger,
+            method, node_attrs['adapter'], node_attrs['params'],
         )
     else:
         raise ValueError(f"Unknown method: {method}")
 
     start_time = time.time()
     if fit_process:
-        result = obj.fit_process(data_dict)
+        result = obj.fit_process(data_dict, logger=logger)
     else:
-        obj.fit(data_dict)
+        obj.fit(data_dict, logger=logger)
         result = None
     elapsed_time = time.time() - start_time
 
