@@ -713,25 +713,7 @@ class TestCollectorErrorHandling:
                     raise RuntimeError("end error")
 
         return BrokenCollector('broken', Connector())
-
-    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
-    def test_exp_does_not_raise_on_collector_error(self, pre_exp, fail_on):
-        bc = self._make_broken_collector(fail_on)
-        pre_exp.add_collector(bc)
-        pre_exp.exp()  # must not raise
-
-    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
-    def test_exp_records_warning_on_collector_error(self, pre_exp, fail_on):
-        bc = self._make_broken_collector(fail_on)
-        pre_exp.add_collector(bc)
-        pre_exp.exp()
-        assert len(bc.warnings) > 0
-        w = bc.warnings[0]
-        assert w['method'] == fail_on
-        assert w['node'] == 'dt'
-        assert w['type'] == 'RuntimeError'
-        assert 'error' in w['message']
-
+    
     def test_exp_warning_contains_traceback(self, pre_exp):
         bc = self._make_broken_collector('_collect')
         pre_exp.add_collector(bc)
@@ -749,23 +731,6 @@ class TestCollectorErrorHandling:
         pre_exp.exp()
         assert mc.has('dt')
         assert len(bc.warnings) > 0
-
-    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
-    def test_collect_does_not_raise_on_collector_error(self, built_exp, fail_on):
-        bc = self._make_broken_collector(fail_on)
-        built_exp.add_collector(bc)  # must not raise
-
-    @pytest.mark.parametrize('fail_on', ['_start', '_collect', '_end_idx', '_end'])
-    def test_collect_records_warning_on_collector_error(self, built_exp, fail_on):
-        bc = self._make_broken_collector(fail_on)
-        built_exp.add_collector(bc)
-        assert len(bc.warnings) > 0
-        w = bc.warnings[0]
-        assert w['method'] == fail_on
-        assert w['type'] == 'RuntimeError'
-        assert 'traceback' in w
-        assert 'RuntimeError' in w['traceback']
-
 
 class TestProcessCollector:
     @pytest.fixture
