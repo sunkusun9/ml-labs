@@ -8,7 +8,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
 from mllabs._experimenter import Experimenter, DataCache
-from mllabs._expobj import StageObj, HeadObj
+from mllabs._expobj import StageObj, get_head_status, finalize_head
 from mllabs._pipeline import Pipeline
 from mllabs import Connector, MetricCollector
 
@@ -240,16 +240,18 @@ class TestExp:
         _setup_full(exp)
         exp.build()
         exp.exp()
-        assert 'dt' in exp.node_objs
-        assert exp.node_objs['dt'].status == 'built'
+        node_path = exp.get_node_path('dt')
+        assert get_head_status(node_path.parent, 'dt') == 'built'
 
     def test_exp_skips_built(self, exp):
         _setup_full(exp)
         exp.build()
         exp.exp()
-        objs_before = dict(exp.node_objs)
+        node_path = exp.get_node_path('dt')
+        pkls_before = set(node_path.glob('obj*.pkl'))
         exp.exp()
-        assert exp.node_objs['dt'] is objs_before['dt']
+        pkls_after = set(node_path.glob('obj*.pkl'))
+        assert pkls_before == pkls_after
 
     def test_exp_error(self, exp):
         exp.set_grp('bad_model', role='head', processor=BadPredictor,
@@ -257,7 +259,8 @@ class TestExp:
                                               'y': [(None, 'target')]})
         exp.set_node('bad_dt', grp='bad_model')
         exp.exp()
-        assert exp.node_objs['bad_dt'].status == 'error'
+        node_path = exp.get_node_path('bad_dt')
+        assert get_head_status(node_path.parent, 'bad_dt') == 'error'
 
     def test_exp_with_collector(self, exp):
         _setup_full(exp)
@@ -360,13 +363,12 @@ class TestRebuild:
         _setup_full(exp)
         exp.build()
         exp.exp()
-        old_obj = exp.node_objs['dt']
+        node_path = exp.get_node_path('dt')
+        assert get_head_status(node_path.parent, 'dt') == 'built'
         exp.reset_nodes(['dt'])
+        assert get_head_status(node_path.parent, 'dt') not in ['built', 'finalized']
         exp.exp()
-        assert 'dt' in exp.node_objs
-        new_obj = exp.node_objs['dt']
-        assert new_obj is not old_obj
-        assert new_obj.status == 'built'
+        assert get_head_status(node_path.parent, 'dt') == 'built'
 
 
 class TestStateManagement:
@@ -381,7 +383,8 @@ class TestStateManagement:
         exp.build()
         exp.exp()
         exp.finalize(['dt'])
-        assert exp.node_objs['dt'].status == 'finalized'
+        node_path = exp.get_node_path('dt')
+        assert get_head_status(node_path.parent, 'dt') == 'finalized'
 
     def test_reinitialize(self, exp):
         _setup_full(exp)
@@ -389,7 +392,8 @@ class TestStateManagement:
         exp.exp()
         exp.finalize(['dt'])
         exp.reinitialize(['dt'])
-        assert 'dt' not in exp.node_objs
+        node_path = exp.get_node_path('dt')
+        assert get_head_status(node_path.parent, 'dt') is None
 
     def test_reopen_exp_status(self, exp):
         _setup_full(exp)
@@ -474,7 +478,9 @@ class TestSaveLoad:
         assert set(loaded.pipeline.grps.keys()) == set(exp.pipeline.grps.keys())
         assert 'scaler' in loaded.node_objs
         assert loaded.node_objs['scaler'].status == 'built'
-        assert 'dt' in loaded.node_objs
+        assert 'dt' not in loaded.node_objs  # head nodes not stored in node_objs
+        node_path = loaded.get_node_path('dt')
+        assert get_head_status(node_path.parent, 'dt') == 'built'
 
     def test_load_data_key_mismatch(self, tmp_path, sample_data):
         e = Experimenter(data=sample_data, path=tmp_path / 'dk',
@@ -542,27 +548,25 @@ class TestExpObj:
         assert obj.status == 'finalized'
         assert not path.exists()
 
-    def test_head_obj_lifecycle(self, tmp_path):
-        path = tmp_path / 'head_node'
-        obj = HeadObj(path)
-        assert obj.status is None
-        obj.start_exp()
-        assert path.exists()
-        obj.end_exp()
-        assert obj.status == 'built'
+    def test_head_status_lifecycle(self, tmp_path):
+        # dir does not exist → None (init)
+        assert get_head_status(tmp_path, 'head_node') is None
+        # dir exists but empty → None
+        (tmp_path / 'head_node').mkdir()
+        assert get_head_status(tmp_path, 'head_node') is None
 
-    def test_head_obj_finalize_after_exp(self, tmp_path):
-        path = tmp_path / 'head_node'
-        obj = HeadObj(path)
-        obj.start_exp(finalize=True)
-        obj.end_exp()
-        assert obj.status == 'finalized'
-
-    def test_head_obj_get_objs_requires_built(self, tmp_path):
-        path = tmp_path / 'head_node'
-        obj = HeadObj(path)
-        with pytest.raises(RuntimeError):
-            list(obj.get_objs(0))
+    def test_head_status_finalize_with_specs(self, tmp_path):
+        import pickle
+        node_path = tmp_path / 'head_node'
+        node_path.mkdir()
+        spec = {'build_id': 'x', 'fit_time': 0.1, 'train_shape': None, 'train_v_shape': None}
+        with open(node_path / 'obj0_0.pkl', 'wb') as f:
+            pickle.dump((None, None, spec), f)
+        assert get_head_status(tmp_path, 'head_node') == 'built'
+        finalize_head(tmp_path, 'head_node')
+        assert get_head_status(tmp_path, 'head_node') == 'finalized'
+        assert (node_path / 'finalized.pkl').exists()
+        assert not (node_path / 'obj0_0.pkl').exists()
 
     def test_stage_obj_load(self, tmp_path):
         path = tmp_path / 'stage_node'
@@ -570,8 +574,5 @@ class TestExpObj:
         obj.load()
         assert obj.status == 'finalized'
 
-    def test_head_obj_load(self, tmp_path):
-        path = tmp_path / 'head_node'
-        obj = HeadObj(path)
-        obj.load()
-        assert obj.status == 'finalized'
+    def test_head_status_load(self, tmp_path):
+        assert get_head_status(tmp_path, 'head_node') is None

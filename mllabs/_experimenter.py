@@ -14,7 +14,11 @@ from cachetools import LRUCache
 from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap
-from ._expobj import HeadObj, StageObj
+from ._expobj import (
+    StageObj,
+    get_head_status, get_head_error, set_head_error, finalize_head,
+    exp_node as _head_exp_node, get_head_objs,
+)
 from ._describer import desc_spec, desc_status, desc_obj_vars
 from ._logger import DefaultLogger
 
@@ -23,6 +27,7 @@ from ._node_processor import resolve_columns
 from ._connector import Connector
 from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
 from ._trainer import Trainer
+
 
 def _get_data_size(data):
     if data is None:
@@ -89,7 +94,7 @@ class Experimenter():
 
     Attributes:
         pipeline (Pipeline): The pipeline being experimented on.
-        node_objs (dict): ``{node_name: StageObj | HeadObj}``.
+        node_objs (dict): ``{node_name: StageObj}`` — stage nodes only; head node state is checked on-demand via :func:`get_head_status`.
         cache (DataCache): Shared LRU cache.
         collectors (dict): Registered :class:`~mllabs.collector.Collector` instances.
         trainers (dict): Registered :class:`~mllabs._trainer.Trainer` instances.
@@ -404,11 +409,11 @@ class Experimenter():
                 continue
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'head' and i in self.node_objs:
-                node_obj = self.node_objs[i]
-                if node_obj.status == 'built':
+            if grp.role == 'head':
+                grp_path = self.get_grp_path(node.grp)
+                if get_head_status(grp_path, i) == 'built':
                     self.logger.info(f"Finalize '{i}'")
-                    node_obj.finalize()
+                    finalize_head(grp_path, i)
 
     def reinitialize(self, nodes):
         self._check_open()
@@ -416,11 +421,18 @@ class Experimenter():
         for i in node_names:
             if i is None:
                 continue
-            if i in self.node_objs:
-                node_obj = self.node_objs[i]
-                if node_obj.status == 'finalized':
+            node = self.pipeline.get_node(i)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role == 'stage':
+                if i in self.node_objs and self.node_objs[i].status == 'finalized':
                     self.logger.info(f"reinitialize '{i}'")
                     del self.node_objs[i]
+            else:
+                grp_path = self.get_grp_path(node.grp)
+                finalized_pkl = grp_path / i / 'finalized.pkl'
+                if finalized_pkl.exists():
+                    finalized_pkl.unlink()
+                    self.logger.info(f"reinitialize '{i}'")
 
     def close_exp(self):
         """Finalize all built nodes and mark the experiment as closed.
@@ -431,10 +443,16 @@ class Experimenter():
         """
         if self.status != "open":
             raise RuntimeError("")
-        for k, node_obj in self.node_objs.items():
-            if node_obj.status == 'built':
-                self.logger.info(f"Finalize '{k}'")
-                node_obj.finalize()
+        for name in list(self.pipeline.nodes):
+            if name is None:
+                continue
+            node = self.pipeline.get_node(name)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role == 'head':
+                grp_path = self.get_grp_path(node.grp)
+                if get_head_status(grp_path, name) == 'built':
+                    self.logger.info(f"Finalize '{name}'")
+                    finalize_head(grp_path, name)
         self.status = "closed"
         self._save()
 
@@ -488,6 +506,14 @@ class Experimenter():
                 if node_obj.status == 'built':
                     node_obj.finalize()
                 del self.node_objs[i]
+            else:
+                node = self.pipeline.get_node(i)
+                if node is not None:
+                    grp = self.pipeline.get_grp(node.grp)
+                    if grp.role == 'head':
+                        node_path = self.get_node_path(i)
+                        if os.path.isdir(node_path):
+                            shutil.rmtree(node_path)
 
         self.cache.clear_nodes(nodes)
 
@@ -505,15 +531,28 @@ class Experimenter():
             traceback (bool): Include full traceback in output.
         """
         node_names = self.pipeline.get_node_names(nodes)
-        error_nodes = [
-            n for n in node_names
-            if n in self.node_objs and self.node_objs[n].status == 'error'
-        ]
+        error_nodes = []
+        for n in node_names:
+            if n is None:
+                continue
+            node = self.pipeline.get_node(n)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role == 'stage':
+                if n in self.node_objs and self.node_objs[n].status == 'error':
+                    error_nodes.append(n)
+            else:
+                if get_head_status(self.get_node_path(n).parent, n) == 'error':
+                    error_nodes.append(n)
         if not error_nodes:
             self.logger.info("No error nodes found")
             return
         for n in error_nodes:
-            err = self.node_objs[n].error
+            node = self.pipeline.get_node(n)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role == 'stage':
+                err = self.node_objs[n].error
+            else:
+                err = get_head_error(self.get_node_path(n).parent, n)
             if traceback:
                 self.logger.info(f"[{n}] {err['type']}: {err['message']}\n{err['traceback']}")
             else:
@@ -590,11 +629,15 @@ class Experimenter():
         else:
             self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
-    def exp(self, nodes = None):
+    def exp(self, nodes=None, finalize=False, include_train=True):
         """Run Head nodes and invoke all matching Collectors.
 
         Args:
             nodes: Node query — ``None`` (all heads), ``list``, or regex ``str``.
+            finalize (bool): If ``True``, save ``finalized.pkl`` with specs after
+                all folds complete and remove per-fold pkl files.
+            include_train (bool): If ``False``, skip computing train output
+                (``output_train`` will be absent from collector context).
         """
         self._check_open()
         node_names = set(self.pipeline.get_node_names(nodes))
@@ -603,122 +646,68 @@ class Experimenter():
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'head' and i in node_names:
-                if i not in self.node_objs or self.node_objs[i].status not in ['built', 'finalized']:
+                grp_path = self.get_grp_path(node.grp)
+                if get_head_status(grp_path, i) not in ['built', 'finalized']:
                     target_nodes.append(i)
 
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
 
-        # connector matching
-        node_attrs_cache = {n: self.pipeline.get_node_attrs(n) for n in target_nodes}
-        matched = {}
-        for name, collector in self.collectors.items():
-            matched[name] = set(
-                n for n in target_nodes
-                if collector.connector.match(n, node_attrs_cache[n])
-            )
+        # node_attrs with path injected
+        node_attrs_cache = {}
+        for n in target_nodes:
+            attrs = self.pipeline.get_node_attrs(n)
+            attrs['path'] = self.get_grp_path(self.pipeline.get_node(n).grp)
+            node_attrs_cache[n] = attrs
 
-        # start_experiment for all nodes
+        # matched collectors per node — used for _start / _end / error reset
+        node_matched = {
+            node: [c for c in self.collectors.values()
+                   if c.connector.match(node, node_attrs_cache[node])]
+            for node in target_nodes
+        }
+
         for node in target_nodes:
-            if node in self.node_objs:
-                node_obj = self.node_objs[node]
-            else:
-                node_obj = HeadObj(self.get_node_path(node))
-                self.node_objs[node] = node_obj
-            node_obj.start_exp()
+            for collector in node_matched[node]:
+                collector._start(node)
 
-        # collector _start
-        for name, collector in self.collectors.items():
-            for node in target_nodes:
-                if node in matched[name]:
-                    self._safe_collector_call(collector, node, '_start')
-
-        # experiment loop
+        error_nodes_set = set()
         n_splits = self.get_n_splits()
         self.logger.clear_progress()
         self.logger.start_progress("Exp", n_splits)
         for i in range(n_splits):
             self.logger.update_progress(i)
-
             self.logger.start_progress("Node", len(target_nodes))
             for ni, node in enumerate(target_nodes):
                 self.logger.update_progress(ni)
                 self.logger.rename_progress(node)
-                node_obj = self.node_objs[node]
-                if node_obj.status == 'error':
+                if node in error_nodes_set:
                     continue
-                try:
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always")
-                        node_attrs = node_attrs_cache[node]
-                        result_iter = node_obj.exp_idx(
-                            i, node_attrs, self.get_node_data(node, i), self.logger
-                        )
-
-                        for inner_idx, result_data in enumerate(result_iter):
-                            context = {
-                                'node_attrs': node_attrs,
-                                'processor': result_data['object'],
-                                'spec': result_data['spec'],
-                                'input': result_data['input'],
-                                'output_train': result_data['output_train'],
-                                'output_valid': result_data['output_valid'],
-                            }
-                            for name, collector in self.collectors.items():
-                                if node in matched[name]:
-                                    self._safe_collector_call(collector, node, '_collect', i, inner_idx, context)
-
-                        for w in caught:
-                            self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
-
-                    # collector _end_idx
-                    for name, collector in self.collectors.items():
-                        if node in matched[name]:
-                            self._safe_collector_call(collector, node, '_end_idx', i)
-                except Exception as e:
-                    node_obj.set_error({
-                        'type': type(e).__name__,
-                        'message': str(e),
-                        'traceback': traceback.format_exc(),
-                        'fold': i,
-                    })
-                    self.logger.info(f"[{node}] Exp error at fold {i}: {type(e).__name__}: {e}")
-                    for name, collector in self.collectors.items():
-                        if node in matched[name]:
-                            collector.reset_nodes([node])
+                success = _head_exp_node(
+                    node_attrs_cache[node], self.get_node_data(node, i), i, self.logger,
+                    collectors=self.collectors, finalize=finalize, include_train=include_train,
+                )
+                if not success:
+                    error_nodes_set.add(node)
+                    for collector in node_matched[node]:
+                        collector.reset_nodes([node])
 
             self.logger.end_progress(len(target_nodes))
         self.logger.end_progress(n_splits)
 
-        error_nodes = [n for n in target_nodes if self.node_objs[n].status == 'error']
-        # end_experiment for non-error nodes
+        error_nodes = list(error_nodes_set)
         for node in target_nodes:
-            node_obj = self.node_objs[node]
-            if node_obj.status != 'error':
-                node_obj.end_exp()
-
-        # collector _end for non-error nodes
-        for name, collector in self.collectors.items():
-            for node in target_nodes:
-                if node in matched[name] and self.node_objs[node].status != 'error':
-                    self._safe_collector_call(collector, node, '_end')
+            if node not in error_nodes_set:
+                if finalize:
+                    grp_path = node_attrs_cache[node]['path']
+                    finalize_head(grp_path, node)
+                for collector in node_matched[node]:
+                    collector._end(node)
 
         if error_nodes:
             self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
             self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
         self._save()
-
-    def _safe_collector_call(self, collector, node, method, *args):
-        try:
-            getattr(collector, method)(node, *args)
-        except Exception as e:
-            tb = traceback.format_exc()
-            msg = f"[Collector:{collector.name}] [{node}] {method} failed: {type(e).__name__}: {e}\n{tb}"
-            self.logger.warning(msg)
-            collector.warnings.append({
-                'method': method, 'node': node,
-                'type': type(e).__name__, 'message': str(e), 'traceback': tb,
-            })
 
     def collect(self, collector, nodes=None, exist='skip'):
         """Run a Collector ad-hoc over already-built Head nodes.
@@ -738,24 +727,27 @@ class Experimenter():
         for name in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(name)
             grp = self.pipeline.get_grp(node.grp)
-            if name not in node_names:
+            if grp.role != 'head':
                 continue
-            if name not in self.node_objs:
+            if name not in node_names:
                 continue
             if exist == 'skip' and collector.has(name):
                 continue
-            node_obj = self.node_objs[name]
-            if node_obj.status != 'built':
+            grp_path = self.get_grp_path(node.grp)
+            if get_head_status(grp_path, name) != 'built':
                 continue
             node_attrs = self.pipeline.get_node_attrs(name)
+            node_attrs['path'] = grp_path
             if collector.connector.match(name, node_attrs) and not collector.has_node(name):
                 target_nodes.append(name)
                 node_attrs_cache[name] = node_attrs
 
         for node in target_nodes:
-            self._safe_collector_call(collector, node, '_start')
+            collector._start(node)
 
         n_splits = self.get_n_splits()
+        single_collector_dict = {collector.name: collector}
+
         self.logger.start_progress("Collect", n_splits)
         for idx in range(n_splits):
             self.logger.update_progress(idx)
@@ -763,27 +755,15 @@ class Experimenter():
             for ni, node in enumerate(target_nodes):
                 self.logger.update_progress(ni)
                 self.logger.rename_progress(node)
-                node_obj = self.node_objs[node]
-                node_attrs = node_attrs_cache[node]
-                result_iter = node_obj.exp_idx(
-                    idx, node_attrs, self.get_node_data(node, idx), self.logger
+                _head_exp_node(
+                    node_attrs_cache[node], self.get_node_data(node, idx), idx, self.logger,
+                    collectors=single_collector_dict,
                 )
-                for inner_idx, result_data in enumerate(result_iter):
-                    context = {
-                        'node_attrs': node_attrs,
-                        'processor': result_data['object'],
-                        'spec': result_data['spec'],
-                        'input': result_data['input'],
-                        'output_train': result_data['output_train'],
-                        'output_valid': result_data['output_valid'],
-                    }
-                    self._safe_collector_call(collector, node, '_collect', idx, inner_idx, context)
-                self._safe_collector_call(collector, node, '_end_idx', idx)
             self.logger.end_progress(len(target_nodes))
         self.logger.end_progress(n_splits)
 
         for node in target_nodes:
-            self._safe_collector_call(collector, node, '_end')
+            collector._end(node)
 
         return collector
 
@@ -1292,7 +1272,7 @@ class Experimenter():
         exp.pipeline = save_data['pipeline']
         exp.status = save_data['status']
 
-        # node_objs 복원
+        # node_objs 복원 (stage 노드만)
         for node_name in save_data['node_obj_keys']:
             node = exp.pipeline.get_node(node_name)
             grp = exp.pipeline.get_grp(node.grp)
@@ -1300,10 +1280,8 @@ class Experimenter():
 
             if grp.role == 'stage':
                 node_obj = StageObj(node_path)
-            else:
-                node_obj = HeadObj(node_path)
-            node_obj.load()
-            exp.node_objs[node_name] = node_obj
+                node_obj.load()
+                exp.node_objs[node_name] = node_obj
 
         # Collector 복원
         collector_keys = save_data.get('collector_keys', {})
