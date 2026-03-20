@@ -81,9 +81,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ### Experimenter (`_experimenter.py`)
 - 생성자: `(data, path, ..., cache_maxsize=4GB, logger, aug_data=None)`
 - `pipeline`: Pipeline 인스턴스
-- `node_objs`: `{node_name: StageObj|HeadObj}`
+- `node_objs`: `{node_name: StageObj}` — stage 노드만; head 노드 상태는 `get_head_status`로 on-demand 조회
 - `cache`: DataCache (LRU, 용량 기반)
-- 실행: `build(nodes, rebuild=False)` (stage), `exp(nodes)` (head)
+- 실행: `build(nodes, rebuild=False)` (stage), `exp(nodes, finalize=False, include_train=True)` (head)
 - `close_exp()`: open→closed 전환, Stage 객체 일괄 정리 (Collector 데이터 유지)
 - 상태관리: `reset_nodes(nodes)` - node_objs, cache, collectors 초기화
 - 에러 조회: `show_error_nodes(nodes=None, traceback=False)` - error 상태 노드 출력
@@ -111,13 +111,21 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `error`: 에러 정보 dict `{type, message, traceback, fold}` (error 상태 시)
   - `load()`, `start_build()`, `build_idx()`, `end_build()`, `get_objs(idx)`, `finalize()`
 
-- **HeadObj**: head 역할 노드의 실험 객체
-  - `status`: None(init) / 'built' / 'finalized' / 'error'
-  - `error`: 에러 정보 dict (error 상태 시)
-  - `load()`, `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
+- **Head 노드 함수 기반 관리** (HeadObj 없음):
+  - `get_head_status(path, name)` → `None`(init) / `'built'` / `'finalized'` / `'error'` — 디스크 on-demand 조회
+    - dir 없음 또는 빈 dir → `None`, `obj0_0.pkl` 존재 → `'built'`, `finalized.pkl` 존재 → `'finalized'`, `error.txt` 존재 → `'error'`
+  - `get_head_error(path, name)` → error dict 또는 None
+  - `set_head_error(path, name, error_info)` → `error.txt` 기록
+  - `finalize_head(path, name)` → obj pkl에서 spec 추출 → `finalized.pkl` 저장 → obj pkl 삭제
+  - `get_head_objs(path, name, idx)` → generator, `(obj, train_, spec)` yield
+  - `exp_node(node_attrs, data_dict_it, idx, logger, collectors, finalize, include_train, include_input)`:
+    - 이미 빌드된 경우(first_file 존재): 디스크에서 로드 후 collector dispatch
+    - 신규 빌드: `_build_iter_output` 호출, warning 캐치 + 에러 시 `set_head_error` 기록
+    - 반환값: `True`(성공) / `False`(에러)
+  - `_safe_collector_call(collector, node, method, logger, *args)`: `_collect`/`_end_idx`용 safe wrapper
+  - `_start`/`_end`는 Experimenter에서 직접 호출 (safe wrapper 없음)
 
 - **에러 처리**: build/exp 중 노드별 try/except, error 시 나머지 노드 계속 진행
-- **load() 버그 픽스**: 파일 없이 error 상태인 노드는 'finalized'가 아닌 'error'로 복원
 
 ### Trainer (`_trainer.py`)
 - 생성자: `(name, pipeline, data, path, splitter, splitter_params, cache, logger)`
@@ -158,7 +166,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **Collector** (`_base.py`): 기본 클래스
   - `__init__(name, connector)`, `path`는 add_collector 시 설정
   - 라이프사이클: `_start(node)`, `_collect(node, idx, inner_idx, context)`, `_end_idx(node, idx)`, `_end(node)`
-  - 에러 처리: 라이프사이클 메서드는 `_safe_collector_call`로 try/except 래핑 — 에러 시 예외 전파 대신 `warnings` 리스트에 저장 (`{method, node, type, message, traceback}`) 후 warning 로그
+  - 에러 처리: `_collect`/`_end_idx`는 `_safe_collector_call`(`_expobj.py`)로 try/except 래핑; `_start`/`_end`는 직접 호출 — 에러 시 예외 전파 대신 `warnings` 리스트에 저장 (`{method, node, type, message, traceback}`) 후 warning 로그
   - `has(node)`: 수집 결과 보유 여부 (has_node에 위임)
   - `has_node(node)`, `reset_nodes(nodes)`, `save()`, `load(cls, path)`
   - `_get_nodes(nodes, available)`: None/list/str(regex) 패턴 매칭
@@ -275,7 +283,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
     {node}.pkl                 # StackingCollector 노드별 데이터
     {node}/{idx}_{inner_idx}.pkl  # OutputCollector fold별 데이터
   {grp_path}/{node_name}/
-    obj{idx}_{no}.pkl          # 빌드 결과 (StageObj/HeadObj)
+    obj{idx}_{no}.pkl          # 빌드 결과 (StageObj: obj+train+spec / head: obj+result+info)
+    finalized.pkl              # head finalize 후: {(outer, inner): spec} dict
+    error.txt                  # head 에러 시: {type, message, traceback, fold}
 
 {trainer.path}/
   __trainer.pkl                # name, splitter, selected_stages/heads, node_obj_keys, split_indices
