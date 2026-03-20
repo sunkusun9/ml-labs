@@ -1,3 +1,4 @@
+import contextlib
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
@@ -52,6 +53,7 @@ class _NNBase(BaseEstimator):
         loss=None,
         metrics=None,
         random_state=None,
+        device=None,
     ):
         self.cat_cols = cat_cols
         self.embedding_dims = embedding_dims
@@ -69,6 +71,7 @@ class _NNBase(BaseEstimator):
         self.loss = loss
         self.metrics = metrics
         self.random_state = random_state
+        self.device = device
 
     # ------------------------------------------------------------------
     # Column detection
@@ -184,6 +187,19 @@ class _NNBase(BaseEstimator):
     # ------------------------------------------------------------------
 
     def fit(self, X, y, eval_set=None, callbacks=None):
+        if tf is None:
+            scope = contextlib.nullcontext()
+        elif self.device == 'mirror':
+            scope = tf.distribute.MirroredStrategy().scope()
+        elif self.device:
+            scope = tf.device(self.device)
+        else:
+            scope = contextlib.nullcontext()
+
+        with scope:
+            return self._fit(X, y, eval_set=eval_set, callbacks=callbacks)
+
+    def _fit(self, X, y, eval_set=None, callbacks=None):
         self._fit_encoder(X)
         y_encoded = self._prepare_target(y)
         self.model_ = self._build_model(X, self._n_output())

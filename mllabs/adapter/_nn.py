@@ -37,18 +37,19 @@ class _ProgressCallback(_keras_cb):
 class NNAdapter(ModelAdapter):
 
     def get_gpu_usage(self, params):
-        gpu = (params or {}).get('gpu', 'auto')
-        if gpu != 'auto':
-            raise ValueError(f"NNAdapter only supports gpu='auto', got {gpu!r}")
+        device = (params or {}).get('device', None)
+        if device:
+            return GPU_YES
         return GPU_POSSIBLE
+
+    def inject_gpu_id(self, params, gpu_id):
+        params['device'] = f'/GPU:{gpu_id}'
 
     def get_params(self, params, logger=None):
         if params is None:
             return {}
         params = params.copy()
-        gpu = params.pop('gpu', 'auto')
-        if gpu != 'auto':
-            raise ValueError(f"NNAdapter only supports gpu='auto', got {gpu!r}")
+        params.pop('gpu', None)
         return params
 
     def get_fit_params(self, data_dict, params=None, logger=None):
