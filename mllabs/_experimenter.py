@@ -603,7 +603,7 @@ class Experimenter():
                         warnings.simplefilter("always")
                         node_attrs = self.pipeline.get_node_attrs(node)
                         node_obj.build_idx(
-                            i, node_attrs, self.get_node_data(node, i), self.logger
+                            i, node_attrs, self.get_node_data(node, i), [], self.logger
                         )
                         for w in caught:
                             self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
@@ -659,16 +659,12 @@ class Experimenter():
             attrs['path'] = self.get_grp_path(self.pipeline.get_node(n).grp)
             node_attrs_cache[n] = attrs
 
-        # matched collectors per node — used for _start / _end / error reset
+        # matched collectors per node
         node_matched = {
             node: [c for c in self.collectors.values()
                    if c.connector.match(node, node_attrs_cache[node])]
             for node in target_nodes
         }
-
-        for node in target_nodes:
-            for collector in node_matched[node]:
-                collector._start(node)
 
         error_nodes_set = set()
         n_splits = self.get_n_splits()
@@ -683,8 +679,11 @@ class Experimenter():
                 if node in error_nodes_set:
                     continue
                 success = _head_exp_node(
-                    node_attrs_cache[node], self.get_node_data(node, i), i, self.logger,
-                    collectors=self.collectors, finalize=finalize, include_train=include_train,
+                    node_attrs_cache[node]['path'], node_attrs_cache[node],
+                    i, self.get_node_data(node, i),
+                    list(self.collectors.values()),
+                    self.logger,
+                    finalize=finalize, include_train=include_train,
                 )
                 if not success:
                     error_nodes_set.add(node)
@@ -700,8 +699,10 @@ class Experimenter():
                 if finalize:
                     grp_path = node_attrs_cache[node]['path']
                     finalize_head(grp_path, node)
-                for collector in node_matched[node]:
-                    collector._end(node)
+                node_path = self.get_node_path(node)
+                for c in node_matched[node]:
+                    c._node_paths[node] = node_path / c.name
+                    c.save()
 
         if error_nodes:
             self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
@@ -742,11 +743,7 @@ class Experimenter():
                 target_nodes.append(name)
                 node_attrs_cache[name] = node_attrs
 
-        for node in target_nodes:
-            collector._start(node)
-
         n_splits = self.get_n_splits()
-        single_collector_dict = {collector.name: collector}
 
         self.logger.start_progress("Collect", n_splits)
         for idx in range(n_splits):
@@ -756,14 +753,17 @@ class Experimenter():
                 self.logger.update_progress(ni)
                 self.logger.rename_progress(node)
                 _head_exp_node(
-                    node_attrs_cache[node], self.get_node_data(node, idx), idx, self.logger,
-                    collectors=single_collector_dict,
+                    node_attrs_cache[node]['path'], node_attrs_cache[node],
+                    idx, self.get_node_data(node, idx),
+                    [collector], self.logger,
                 )
             self.logger.end_progress(len(target_nodes))
         self.logger.end_progress(n_splits)
 
         for node in target_nodes:
-            collector._end(node)
+            node_path = self.get_node_path(node)
+            collector._node_paths[node] = node_path / collector.name
+        collector.save()
 
         return collector
 

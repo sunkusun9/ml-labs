@@ -1,47 +1,52 @@
 import re
+import shutil
+import pickle
 
 
 class Collector:
-    """Base class for data collectors attached to an Experimenter.
-
-    Subclasses override the lifecycle hooks ``_start``, ``_collect``,
-    ``_end_idx``, and ``_end`` to capture data during :meth:`~mllabs.Experimenter.exp`.
-
-    Args:
-        name (str): Collector name (unique within an Experimenter).
-        connector (Connector): Determines which Head nodes this collector
-            attaches to.
-
-    Attributes:
-        path (Path | None): Set by Experimenter on registration.
-    """
-
     def __init__(self, name, connector):
         self.name = name
         self.connector = connector
         self.path = None
         self.warnings = []
+        self._node_paths = {}  # {node_name: collector_data_dir (node_path / self.name)}
 
-    def _start(self, node):
-        pass
-
-    def _collect(self, node, idx, inner_idx, context):
-        pass
-
-    def _end_idx(self, node, idx):
-        pass
-
-    def _end(self, node):
-        pass
+    def collect(self, context):
+        return None
 
     def has(self, node):
         return self.has_node(node)
 
     def has_node(self, node):
-        return False
+        if node not in self._node_paths:
+            return False
+        p = self._node_paths[node]
+        return p.exists() and any(p.glob('_collect_*.pkl'))
 
     def reset_nodes(self, nodes):
-        pass
+        for node in nodes:
+            if node in self._node_paths:
+                p = self._node_paths[node]
+                if p.exists():
+                    shutil.rmtree(p)
+                del self._node_paths[node]
+        self.save()
+
+    def _load_collect_results(self, node):
+        """Load all outer fold results. Returns {(idx, inner_idx): result}."""
+        p = self._node_paths[node]
+        results = {}
+        for f in sorted(p.glob('_collect_*.pkl'), key=lambda x: int(x.stem.rsplit('_', 1)[1])):
+            idx = int(f.stem.rsplit('_', 1)[1])
+            with open(f, 'rb') as fp:
+                inner_results = pickle.load(fp)
+            for inner_idx, result in enumerate(inner_results):
+                results[(idx, inner_idx)] = result
+        return results
+
+    def _get_saved_nodes(self):
+        return [node for node, p in self._node_paths.items()
+                if p.exists() and any(p.glob('_collect_*.pkl'))]
 
     def _ensure_path(self):
         if self.path is not None and not self.path.exists():

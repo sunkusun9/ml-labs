@@ -1,31 +1,19 @@
 import pickle
-import shutil
 
 from ._base import Collector
 from .._node_processor import resolve_columns
 
 
 class OutputCollector(Collector):
-    """Saves raw train/valid outputs to disk for each fold.
-
-    Data is stored as ``{path}/{node}/{idx}_{inner_idx}.pkl``.
-
-    Args:
-        name (str): Collector name.
-        connector (Connector): Node matching criteria.
-        output_var: Column selector applied to Head output.
-        include_target (bool): Whether to save target alongside output.
-    """
-
     def __init__(self, name, connector, output_var, include_target=True):
         super().__init__(name, connector)
         self.output_var = output_var
         self.include_target = include_target
 
-    def _collect(self, node, idx, inner_idx, context):
+    def collect(self, context):
         cols = resolve_columns(context['output_valid'], self.output_var)
         if len(cols) == 0:
-            return
+            return None
 
         output_valid = context['output_valid'].select_columns(cols)
         train_sub = context['output_train'][0].select_columns(cols)
@@ -33,7 +21,7 @@ class OutputCollector(Collector):
         if valid_sub is not None:
             valid_sub = valid_sub.select_columns(cols)
 
-        entry = {
+        return {
             'output_train': (
                 train_sub.to_array(),
                 valid_sub.to_array() if valid_sub is not None else None
@@ -42,24 +30,8 @@ class OutputCollector(Collector):
             'columns': output_valid.get_columns(),
         }
 
-        self._ensure_path()
-        node_dir = self.path / node
-        node_dir.mkdir(parents=True, exist_ok=True)
-        with open(node_dir / f"{idx}_{inner_idx}.pkl", 'wb') as f:
-            pickle.dump(entry, f)
-
-    def has_node(self, node):
-        if self.path is not None:
-            node_dir = self.path / node
-            return node_dir.exists() and any(node_dir.glob("*.pkl"))
-        return False
-
     def reset_nodes(self, nodes):
-        for node in nodes:
-            if self.path is not None:
-                node_dir = self.path / node
-                if node_dir.exists():
-                    shutil.rmtree(node_dir)
+        super().reset_nodes(nodes)
 
     def save(self):
         if self.path is None:
@@ -70,6 +42,7 @@ class OutputCollector(Collector):
             'connector': self.connector,
             'output_var': self.output_var,
             'include_target': self.include_target,
+            '_node_paths': self._node_paths,
         }
         with open(self.path / '__config.pkl', 'wb') as f:
             pickle.dump(config, f)
@@ -84,49 +57,17 @@ class OutputCollector(Collector):
             output_var=config['output_var'],
             include_target=config['include_target'],
         )
+        obj._node_paths = config.get('_node_paths', {})
         obj.path = path
         return obj
 
-    def _get_saved_nodes(self):
-        if self.path is None or not self.path.exists():
-            return []
-        return [d.name for d in self.path.iterdir() if d.is_dir()]
-
     def get_output(self, node, idx, inner_idx):
-        """Load saved output for a specific fold.
-
-        Args:
-            node (str): Node name.
-            idx (int): Outer fold index.
-            inner_idx (int): Inner fold index.
-
-        Returns:
-            dict: ``{'output_train': (train_arr, valid_sub_arr),
-            'output_valid': arr, 'columns': [...]}``.
-        """
-        file_path = self.path / node / f"{idx}_{inner_idx}.pkl"
-        if not file_path.exists():
-            raise FileNotFoundError(f"Output data not found: {file_path}")
-        with open(file_path, 'rb') as f:
-            return pickle.load(f)
+        p = self._node_paths[node]
+        collect_file = p / f'_collect_{idx}.pkl'
+        with open(collect_file, 'rb') as f:
+            inner_results = pickle.load(f)
+        return inner_results[inner_idx]
 
     def get_outputs(self, node):
-        """Load all saved outputs for a node.
-
-        Args:
-            node (str): Node name.
-
-        Returns:
-            dict[tuple[int, int], dict]: ``{(idx, inner_idx): entry}`` for all
-            saved folds.
-        """
-        node_dir = self.path / node
-        if not node_dir.exists():
-            raise FileNotFoundError(f"Node directory not found: {node_dir}")
-        results = {}
-        for f in sorted(node_dir.glob("*.pkl")):
-            parts = f.stem.split('_')
-            idx, inner_idx = int(parts[0]), int(parts[1])
-            with open(f, 'rb') as fp:
-                results[(idx, inner_idx)] = pickle.load(fp)
-        return results
+        data = self._load_collect_results(node)
+        return {k: v for k, v in data.items() if v is not None}

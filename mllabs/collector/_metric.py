@@ -6,73 +6,35 @@ from .._node_processor import resolve_columns
 
 
 class MetricCollector(Collector):
-    """Computes a scalar metric against ground-truth ``y`` for each fold.
-
-    Args:
-        name (str): Collector name.
-        connector (Connector): Node matching criteria.
-        output_var: Column selector for prediction output. ``None`` uses all
-            output columns.
-        metric_func (callable): ``func(y_true, y_pred) -> float``.
-        include_train (bool): If ``True``, also compute on train/inner-valid folds.
-    """
-
     def __init__(self, name, connector, output_var, metric_func, include_train=False):
         super().__init__(name, connector)
         self.output_var = output_var
         self.metric_func = metric_func
         self.include_train = include_train
-        self.metrics = {}
-        self._sub = {}
 
-    def _start(self, node):
-        self.metrics[node] = []
-        self._sub[node] = []
-
-    def _collect(self, node, idx, inner_idx, context):
-        if 'y' not in context['input']:
-            self._sub[node].append(None)
-            return
+    def collect(self, context):
+        if context['input'] is None or 'y' not in context['input']:
+            return None
 
         (true_t, true_tv), true_v = context['input']['y']
         cols = resolve_columns(context['output_valid'], self.output_var)
         if len(cols) == 0:
-            self._sub[node].append(None)
-            return
+            return None
 
         prd_v = context['output_valid'].select_columns(cols)
         result = {'valid': self.metric_func(true_v.data, prd_v.data)}
 
-        if self.include_train:
+        if self.include_train and context.get('output_train') is not None:
             prd_t = context['output_train'][0].select_columns(cols)
             result['train_sub'] = self.metric_func(true_t.data, prd_t.data)
             if true_tv is not None:
                 prd_tv = context['output_train'][1].select_columns(cols)
                 result['valid_sub'] = self.metric_func(true_tv.data, prd_tv.data)
 
-        self._sub[node].append(result)
-
-    def _end_idx(self, node, idx):
-        self.metrics[node].append(self._sub[node])
-        self._sub[node] = []
-
-    def _end(self, node):
-        if len(self.metrics[node]) == 0:
-            del self.metrics[node]
-        if node in self._sub:
-            del self._sub[node]
-        self.save()
-
-    def has_node(self, node):
-        return node in self.metrics
+        return result
 
     def reset_nodes(self, nodes):
-        for node in nodes:
-            if node in self.metrics:
-                del self.metrics[node]
-            if node in self._sub:
-                del self._sub[node]
-        self.save()
+        super().reset_nodes(nodes)
 
     def save(self):
         if self.path is None:
@@ -84,7 +46,7 @@ class MetricCollector(Collector):
             'output_var': self.output_var,
             'metric_func': self.metric_func,
             'include_train': self.include_train,
-            'metrics': self.metrics,
+            '_node_paths': self._node_paths,
         }
         with open(self.path / '__config.pkl', 'wb') as f:
             pickle.dump(data, f)
@@ -100,53 +62,28 @@ class MetricCollector(Collector):
             metric_func=data['metric_func'],
             include_train=data['include_train'],
         )
-        obj.metrics = data['metrics']
+        obj._node_paths = data.get('_node_paths', {})
         obj.path = path
         return obj
 
     def get_metric(self, node):
-        """Return per-fold metrics for a single node.
-
-        Args:
-            node (str): Node name.
-
-        Returns:
-            pd.Series: Metrics indexed by ``(split, inner_split, metric_key)``.
-        """
-        l = list()
-        for i, sub in enumerate(self.metrics[node]):
+        data = self._load_collect_results(node)
+        outer_idxs = sorted(set(k[0] for k in data.keys()))
+        l = []
+        for idx in outer_idxs:
+            sub = [data[(idx, inner_idx)] for inner_idx in sorted(
+                k[1] for k in data if k[0] == idx
+            )]
             l.append(
                 pd.concat([pd.Series(j, name=str(no)) for no, j in enumerate(sub)], axis=1).unstack()
             )
         return pd.concat(l, axis=1).unstack(level=[0, 1]).rename(node)
 
     def get_metrics(self, nodes=None):
-        """Return per-fold metrics for multiple nodes.
-
-        Args:
-            nodes: Node query — ``None`` (all), ``list``, or regex ``str``.
-
-        Returns:
-            pd.DataFrame: Rows are nodes, columns are fold MultiIndex.
-        """
-        node_names = self._get_nodes(nodes, self.metrics.keys())
+        node_names = self._get_nodes(nodes, self._get_saved_nodes())
         return pd.concat([self.get_metric(node) for node in node_names], axis=1).T
 
     def get_metrics_agg(self, nodes=None, inner_fold=True, outer_fold=True, include_std=False):
-        """Return aggregated metrics across folds.
-
-        Args:
-            nodes: Node query. ``None`` uses all collected nodes.
-            inner_fold (bool): Aggregate inner folds first (mean). Required when
-                ``outer_fold=True``.
-            outer_fold (bool): Aggregate outer folds after inner aggregation.
-            include_std (bool): Also return a std DataFrame.
-
-        Returns:
-            tuple[pd.DataFrame, pd.DataFrame | None]: ``(mean, std)`` where *std*
-            is ``None`` unless ``include_std=True``. When ``inner_fold=False``
-            returns the raw DataFrame directly.
-        """
         if outer_fold and not inner_fold:
             raise ValueError("")
         df = self.get_metrics(nodes)

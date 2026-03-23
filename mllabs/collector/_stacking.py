@@ -7,28 +7,10 @@ from .._data_wrapper import DataWrapper
 
 
 class StackingCollector(Collector):
-    """Collects out-of-fold (OOF) predictions for stacking.
-
-    Predictions are aggregated across inner folds and saved per outer fold,
-    then assembled into a dataset aligned to the original data index.
-
-    Args:
-        name (str): Collector name.
-        connector (Connector): Node matching criteria. The ``edges`` ``'y'``
-            entry is used to extract the target column.
-        output_var: Column selector for the Head output.
-        experimenter (Experimenter): Used to build the OOF index and target.
-        method (str): Inner-fold aggregation — ``'mean'`` (default), ``'mode'``,
-            or ``'simple'`` (concatenate).
-    """
-
     def __init__(self, name, connector, output_var, experimenter, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
         self.method = method
-        self.columns = {}
-        self._buffer = {}
-        self._mem_data = {}
 
         self._data_cls = type(experimenter.data)
         self._index = self._build_index(experimenter)
@@ -61,46 +43,11 @@ class StackingCollector(Collector):
             target_columns = [target_columns]
         return np.concatenate(target_list, axis=0), target_columns
 
-    def _start(self, node):
-        self._buffer[node] = []
-
-    def _collect(self, node, idx, inner_idx, context):
+    def collect(self, context):
         cols = resolve_columns(context['output_valid'], self.output_var)
         if len(cols) == 0:
-            return
-        valid_output = context['output_valid'].select_columns(cols)
-        self._buffer[node].append(valid_output)
-        if inner_idx == 0:
-            self.columns[node] = valid_output.get_columns()
-
-    def _end_idx(self, node, idx):
-        if len(self._buffer[node]) == 0:
-            return
-        aggregated = self._aggregate(iter(self._buffer[node]))
-        arr = aggregated.to_array()
-
-        if self.path is not None:
-            self._ensure_path()
-            file_path = self.path / f"{node}.pkl"
-            if file_path.exists():
-                with open(file_path, 'rb') as f:
-                    existing = pickle.load(f)
-                existing['data'] = np.concatenate([existing['data'], arr])
-            else:
-                existing = {'data': arr, 'columns': self.columns[node]}
-            with open(file_path, 'wb') as f:
-                pickle.dump(existing, f)
-        else:
-            if node not in self._mem_data:
-                self._mem_data[node] = {'data': arr, 'columns': self.columns[node]}
-            else:
-                self._mem_data[node]['data'] = np.concatenate([self._mem_data[node]['data'], arr])
-
-        self._buffer[node] = []
-
-    def _end(self, node):
-        if node in self._buffer:
-            del self._buffer[node]
+            return None
+        return context['output_valid'].select_columns(cols)
 
     def _aggregate(self, iterator):
         if self.method == 'simple':
@@ -112,25 +59,8 @@ class StackingCollector(Collector):
         else:
             raise ValueError(f"Unsupported method: {self.method}")
 
-    def has_node(self, node):
-        if node in self._mem_data:
-            return True
-        if self.path is not None:
-            return (self.path / f"{node}.pkl").exists()
-        return False
-
     def reset_nodes(self, nodes):
-        for node in nodes:
-            if self.path is not None:
-                file_path = self.path / f"{node}.pkl"
-                if file_path.exists():
-                    file_path.unlink()
-            if node in self._mem_data:
-                del self._mem_data[node]
-            if node in self.columns:
-                del self.columns[node]
-            if node in self._buffer:
-                del self._buffer[node]
+        super().reset_nodes(nodes)
 
     def save(self):
         if self.path is None:
@@ -145,6 +75,7 @@ class StackingCollector(Collector):
             '_index': self._index,
             '_target': self._target,
             '_target_columns': self._target_columns,
+            '_node_paths': self._node_paths,
         }
         with open(self.path / '__config.pkl', 'wb') as f:
             pickle.dump(config, f)
@@ -162,50 +93,41 @@ class StackingCollector(Collector):
         obj._index = config['_index']
         obj._target = config['_target']
         obj._target_columns = config['_target_columns']
-        obj.columns = {}
-        obj._buffer = {}
-        obj._mem_data = {}
+        obj._node_paths = config.get('_node_paths', {})
         obj.path = path
+        obj.warnings = []
         return obj
 
     def _load_node_data(self, node):
-        if self.path is not None:
-            file_path = self.path / f"{node}.pkl"
-            if not file_path.exists():
-                raise FileNotFoundError(f"Stacking data not found: {file_path}")
-            with open(file_path, 'rb') as f:
-                node_info = pickle.load(f)
-            return node_info['data'], node_info['columns']
-        else:
-            if node not in self._mem_data:
-                raise KeyError(f"Stacking data not found in memory: {node}")
-            return self._mem_data[node]['data'], self._mem_data[node]['columns']
-
-    def _get_saved_nodes(self):
-        if self.path is not None:
-            if not self.path.exists():
-                return []
-            return [f.stem for f in self.path.glob("*.pkl") if not f.stem.startswith('__')]
-        else:
-            return list(self._mem_data.keys())
+        """Load and aggregate inner folds per outer fold, then concat outer folds."""
+        p = self._node_paths[node]
+        outer_files = sorted(p.glob('_collect_*.pkl'), key=lambda x: int(x.stem.rsplit('_', 1)[1]))
+        arrays, columns = [], None
+        for f in outer_files:
+            with open(f, 'rb') as fp:
+                inner_results = pickle.load(fp)
+            valid_results = [r for r in inner_results if r is not None]
+            if not valid_results:
+                continue
+            aggregated = self._aggregate(iter(valid_results))
+            if columns is None:
+                columns = aggregated.get_columns()
+                if type(columns) is str:
+                    columns = [columns]
+            arrays.append(aggregated.to_array())
+        if not arrays:
+            return None, columns
+        return np.concatenate(arrays, axis=0), columns
 
     def get_dataset(self, nodes=None, include_target=True):
-        """Return OOF predictions as a DataFrame aligned to the original index.
-
-        Args:
-            nodes: Node query. ``None`` returns all collected nodes.
-            include_target (bool): Append the target column(s) if available.
-
-        Returns:
-            DataFrame: OOF prediction columns (+ target) indexed to match
-            the original dataset.
-        """
         node_names = self._get_nodes(nodes, self._get_saved_nodes())
 
         node_data = []
         column_names = []
-        for i in node_names:
-            data, columns = self._load_node_data(i)
+        for n in node_names:
+            data, columns = self._load_node_data(n)
+            if data is None:
+                continue
             node_data.append(data)
             column_names.extend(columns)
 
@@ -215,7 +137,7 @@ class StackingCollector(Collector):
         wrapped_data = self._data_cls.from_output(all_data, all_columns, self._index)
         if include_target and self._target is not None:
             wrapped_data = self._data_cls.concat([
-                wrapped_data, 
+                wrapped_data,
                 self._data_cls.from_output(self._target, self._target_columns, self._index)
             ], axis=1)
 

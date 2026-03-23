@@ -30,8 +30,13 @@ class ProgressCallback(TrainingCallback):
                     for metric_name, values in metrics.items():
                         last_metrics.append(f"{dataset}-{metric_name}: {values[-1]:.4f}")
                 metrics_str = ", ".join(last_metrics)
-            self.logger.adhoc_progress(current, self.n_estimators, metrics_str if metrics_str else None)
+            if self.logger is not None:
+                self.logger.adhoc_progress(current, self.n_estimators, metrics_str if metrics_str else None)
         return False
+    
+    def after_training(self, model):
+        self.logger = None
+        return model
 
 class XGBoostAdapter(ModelAdapter):
     """Adapter for XGBoost models (XGBClassifier, XGBRegressor)
