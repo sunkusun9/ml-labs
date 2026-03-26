@@ -1,4 +1,3 @@
-import pickle
 import pandas as pd
 
 from ._base import Collector
@@ -32,39 +31,6 @@ class MetricCollector(Collector):
                 result['valid_sub'] = self.metric_func(true_tv.data, prd_tv.data)
 
         return result
-
-    def reset_nodes(self, nodes):
-        super().reset_nodes(nodes)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        data = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'metric_func': self.metric_func,
-            'include_train': self.include_train,
-            '_node_paths': self._node_paths,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(data, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            data = pickle.load(f)
-        obj = cls(
-            name=data['name'],
-            connector=data['connector'],
-            output_var=data['output_var'],
-            metric_func=data['metric_func'],
-            include_train=data['include_train'],
-        )
-        obj._node_paths = data.get('_node_paths', {})
-        obj.path = path
-        return obj
 
     def get_metric(self, node):
         data = self._load_collect_results(node)

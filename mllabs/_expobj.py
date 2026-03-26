@@ -57,11 +57,9 @@ def _safe_collect_call(collector, context, logger):
 
 
 def _save_collect_results(node_path, idx, coll_results):
-    for coll_name, results in coll_results.items():
-        coll_dir = node_path / coll_name
-        os.makedirs(coll_dir, exist_ok=True)
-        with open(coll_dir / f'_collect_{idx}.pkl', 'wb') as f:
-            pkl.dump(results, f)
+    os.makedirs(node_path, exist_ok=True)
+    with open(node_path / f'__collect{idx}.pkl', 'wb') as f:
+        pkl.dump(coll_results, f)
 
 
 def _build_iter(node_path, node_attrs, idx, data_dict_it, collectors, logger):

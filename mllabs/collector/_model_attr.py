@@ -1,4 +1,3 @@
-import pickle
 import pandas as pd
 
 from ._base import Collector
@@ -20,39 +19,6 @@ class ModelAttrCollector(Collector):
     def collect(self, context):
         result_func = self.adapter.result_objs[self.result_key][0]
         return result_func(context['processor'], **self.params)
-
-    def reset_nodes(self, nodes):
-        super().reset_nodes(nodes)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        data = {
-            'name': self.name,
-            'connector': self.connector,
-            'result_key': self.result_key,
-            'adapter': self.adapter,
-            'params': self.params,
-            '_node_paths': self._node_paths,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(data, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            data = pickle.load(f)
-        obj = cls(
-            name=data['name'],
-            connector=data['connector'],
-            result_key=data['result_key'],
-            adapter=data.get('adapter'),
-            params=data['params'],
-        )
-        obj._node_paths = data.get('_node_paths', {})
-        obj.path = path
-        return obj
 
     def _is_mergeable(self):
         if self.adapter is None or self.result_key not in self.adapter.result_objs:

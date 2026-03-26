@@ -36,46 +36,6 @@ class ProcessCollector(Collector):
             output = output.select_columns(cols)
         return output
 
-    def reset_nodes(self, nodes):
-        for node in nodes:
-            for key in list(self._input_cache.keys()):
-                if key[0] == node:
-                    del self._input_cache[key]
-        super().reset_nodes(nodes)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        config = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'method': self.method,
-            '_data_cls': self._data_cls,
-            '_node_paths': self._node_paths,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(config, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            config = pickle.load(f)
-        obj = object.__new__(cls)
-        obj.name = config['name']
-        obj.connector = config['connector']
-        obj.output_var = config['output_var']
-        obj.method = config['method']
-        obj._data_cls = config['_data_cls']
-        obj._node_paths = config.get('_node_paths', {})
-        obj._input_cache = {}
-        obj._ext_data = None
-        obj._experimenter = None
-        obj.path = path
-        obj.warnings = []
-        return obj
-
     def _aggregate(self, iterator):
         if self.method == 'mean':
             return self._data_cls.mean(iterator)

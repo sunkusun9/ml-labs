@@ -30,37 +30,6 @@ class OutputCollector(Collector):
             'columns': output_valid.get_columns(),
         }
 
-    def reset_nodes(self, nodes):
-        super().reset_nodes(nodes)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        config = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'include_target': self.include_target,
-            '_node_paths': self._node_paths,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(config, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            config = pickle.load(f)
-        obj = cls(
-            name=config['name'],
-            connector=config['connector'],
-            output_var=config['output_var'],
-            include_target=config['include_target'],
-        )
-        obj._node_paths = config.get('_node_paths', {})
-        obj.path = path
-        return obj
-
     def get_output(self, node, idx, inner_idx):
         p = self._node_paths[node]
         collect_file = p / f'_collect_{idx}.pkl'

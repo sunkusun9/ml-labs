@@ -701,8 +701,7 @@ class Experimenter():
                     finalize_head(grp_path, node)
                 node_path = self.get_node_path(node)
                 for c in node_matched[node]:
-                    c._node_paths[node] = node_path / c.name
-                    c.save()
+                    c._node_paths[node] = node_path
 
         if error_nodes:
             self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
@@ -762,8 +761,7 @@ class Experimenter():
 
         for node in target_nodes:
             node_path = self.get_node_path(node)
-            collector._node_paths[node] = node_path / collector.name
-        collector.save()
+            collector._node_paths[node] = node_path
 
         return collector
 

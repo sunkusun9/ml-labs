@@ -1,4 +1,3 @@
-import pickle
 import numpy as np
 import pandas as pd
 import shap
@@ -34,37 +33,6 @@ class SHAPCollector(Collector):
             'valid_index': valid_dict['X'].get_index(),
             'columns': list(context['processor'].X_),
         }
-
-    def reset_nodes(self, nodes):
-        super().reset_nodes(nodes)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        config = {
-            'name': self.name,
-            'connector': self.connector,
-            'explainer_cls': self.explainer_cls,
-            'data_filter': self.data_filter,
-            '_node_paths': self._node_paths,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(config, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            config = pickle.load(f)
-        obj = cls(
-            name=config['name'],
-            connector=config['connector'],
-            explainer_cls=config.get('explainer_cls'),
-            data_filter=config.get('data_filter'),
-        )
-        obj._node_paths = config.get('_node_paths', {})
-        obj.path = path
-        return obj
 
     def _shap_to_importance(self, shap_vals, columns):
         if isinstance(shap_vals, list):

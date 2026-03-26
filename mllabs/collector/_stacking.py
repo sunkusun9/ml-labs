@@ -59,45 +59,6 @@ class StackingCollector(Collector):
         else:
             raise ValueError(f"Unsupported method: {self.method}")
 
-    def reset_nodes(self, nodes):
-        super().reset_nodes(nodes)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        config = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'method': self.method,
-            '_data_cls': self._data_cls,
-            '_index': self._index,
-            '_target': self._target,
-            '_target_columns': self._target_columns,
-            '_node_paths': self._node_paths,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(config, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            config = pickle.load(f)
-        obj = object.__new__(cls)
-        obj.name = config['name']
-        obj.connector = config['connector']
-        obj.output_var = config['output_var']
-        obj.method = config['method']
-        obj._data_cls = config['_data_cls']
-        obj._index = config['_index']
-        obj._target = config['_target']
-        obj._target_columns = config['_target_columns']
-        obj._node_paths = config.get('_node_paths', {})
-        obj.path = path
-        obj.warnings = []
-        return obj
-
     def _load_node_data(self, node):
         """Load and aggregate inner folds per outer fold, then concat outer folds."""
         p = self._node_paths[node]
