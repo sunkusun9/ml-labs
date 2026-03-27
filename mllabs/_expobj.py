@@ -6,6 +6,7 @@ import time
 import pickle as pkl
 import traceback
 import warnings
+from multiprocessing import Process, Queue
 
 
 def _get_process_inputs(data_dict):
@@ -56,65 +57,140 @@ def _safe_collect_call(collector, context, logger):
         return None
 
 
-def _save_collect_results(node_path, idx, coll_results):
-    os.makedirs(node_path, exist_ok=True)
-    with open(node_path / f'__collect{idx}.pkl', 'wb') as f:
-        pkl.dump(coll_results, f)
+class BuildWorker(Process):
+    """Process-based worker that executes _build_sub jobs from a queue.
+
+    Each job is a tuple ``(node_path, node_attrs, idx, no, data_dict)``.
+    A ``None`` sentinel stops the worker.
+
+    Saves processor pkls and per-inner-fold collector results to disk.
+
+    Args:
+        collectors: Pre-matched Collector list.
+        logger: Logger instance.
+        include_output (bool): Compute output_train/output_valid (head nodes).
+        include_train (bool): Include train output in collector context.
+        include_input (bool): Include input data_dict in collector context.
+        finalize (bool): Save obj as None in pkl (head finalize mode).
+    """
+
+    def __init__(self, collectors, logger,
+                 include_output=False, include_train=True, include_input=True, finalize=False):
+        super().__init__(daemon=True)
+        self.job_queue = Queue()
+        self.collectors = collectors
+        self.logger = logger
+        self.include_output = include_output
+        self.include_train = include_train
+        self.include_input = include_input
+        self.finalize = finalize
+
+    def run(self):
+        while True:
+            job = self.job_queue.get()
+            if job is None:
+                break
+            node_path, node_attrs, idx, no, data_dict = job
+            method = node_attrs['method']
+            fit_process = method in ['fit_transform', 'fit_predict']
+            os.makedirs(node_path, exist_ok=True)
+            try:
+                obj, result, info = _build_sub(node_attrs, data_dict, fit_process, self.logger)
+            except Exception as e:
+                with open(node_path / 'error.txt', 'w') as f:
+                    json.dump({
+                        'type': type(e).__name__,
+                        'message': str(e),
+                        'traceback': traceback.format_exc(),
+                        'fold': idx,
+                    }, f, ensure_ascii=False, indent=2)
+                break
+
+            save_obj = None if (self.include_output and self.finalize) else obj
+            with open(node_path / f'obj{idx}_{no}.pkl', 'wb') as f:
+                pkl.dump((save_obj, result, info), f)
+
+            if self.collectors:
+                context = {
+                    'node_attrs': node_attrs,
+                    'processor': obj,
+                    'spec': info,
+                    'input': data_dict if self.include_input else None,
+                    'idx': idx,
+                    'inner_idx': no,
+                }
+                if self.include_output:
+                    train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
+                    context['output_valid'] = obj.process(valid_X)
+                    if self.include_train:
+                        context['output_train'] = (
+                            result if result is not None else obj.process(train_X),
+                            obj.process(train_v_X) if train_v_X is not None else None,
+                        )
+                    else:
+                        context['output_train'] = None
+                coll_dict = {
+                    c.name: _safe_collect_call(c, context, self.logger)
+                    for c in self.collectors
+                }
+                with open(node_path / f'_collect_{idx}_{no}.pkl', 'wb') as f:
+                    pkl.dump(coll_dict, f)
 
 
-def _build_iter(node_path, node_attrs, idx, data_dict_it, collectors, logger):
-    """Build stage node for one outer fold. Saves processors to disk, runs collectors.
+def _build_iter(node_path, node_attrs, idx, data_dict_it, collectors, logger,
+                include_output=False, include_train=True, include_input=True, finalize=False):
+    """Build one outer fold. Saves processor pkls to disk, yields per inner fold.
 
-    Returns list of (obj, result, info) per inner fold for StageObj.objs_.
+    Yields:
+        (obj, result, info, coll_dict) where coll_dict is {collector_name: collect_result}.
     """
     method = node_attrs['method']
     fit_process = method in ['fit_transform', 'fit_predict']
 
-    coll_results = {c.name: [] for c in collectors}
-    built = []
-
     for no, data_dict in enumerate(data_dict_it):
         obj, result, info = _build_sub(node_attrs, data_dict, fit_process, logger)
+        save_obj = None if (include_output and finalize) else obj
         with open(node_path / f'obj{idx}_{no}.pkl', 'wb') as f:
-            pkl.dump((obj, result, info), f)
-        built.append((obj, result, info))
+            pkl.dump((save_obj, result, info), f)
 
+        coll_dict = {}
         if collectors:
             context = {
                 'node_attrs': node_attrs,
                 'processor': obj,
                 'spec': info,
-                'input': data_dict,
+                'input': data_dict if include_input else None,
                 'idx': idx,
                 'inner_idx': no,
             }
-            for c in collectors:
-                coll_results[c.name].append(_safe_collect_call(c, context, logger))
+            if include_output:
+                train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
+                context['output_valid'] = obj.process(valid_X)
+                if include_train:
+                    context['output_train'] = (
+                        result if result is not None else obj.process(train_X),
+                        obj.process(train_v_X) if train_v_X is not None else None,
+                    )
+                else:
+                    context['output_train'] = None
+            coll_dict = {c.name: _safe_collect_call(c, context, logger) for c in collectors}
 
-    if collectors:
-        _save_collect_results(node_path, idx, coll_results)
-
-    return built
+        yield obj, result, info, coll_dict
 
 
-def _build_iter_output(node_path, node_attrs, idx, data_dict_it, collectors, logger,
-                       include_train=True, include_input=True, finalize=False):
-    """Build/load head node for one outer fold. Saves to disk, runs collectors."""
-    method = node_attrs['method']
-    fit_process = method in ['fit_transform', 'fit_predict']
-
-    coll_results = {c.name: [] for c in collectors}
+def _dispatch_iter_output(node_path, node_attrs, idx, data_dict_it, collectors, logger,
+                          include_train=True, include_input=True):
+    """Dispatch collectors over already-built head obj pkls for one outer fold."""
     no = 0
-    first_file = node_path / f'obj{idx}_0.pkl'
-
-    if first_file.exists():
-        for data_dict in data_dict_it:
-            filename = node_path / f'obj{idx}_{no}.pkl'
-            if not filename.exists():
-                break
-            with open(filename, 'rb') as f:
-                obj, train_, spec = pkl.load(f)
+    for data_dict in data_dict_it:
+        filename = node_path / f'obj{idx}_{no}.pkl'
+        if not filename.exists():
+            break
+        with open(filename, 'rb') as f:
+            obj, train_, spec = pkl.load(f)
+        if collectors:
             train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
+            output_valid = obj.process(valid_X)
             if include_train:
                 output_train = (
                     train_ if train_ is not None else obj.process(train_X),
@@ -122,54 +198,24 @@ def _build_iter_output(node_path, node_attrs, idx, data_dict_it, collectors, log
                 )
             else:
                 output_train = None
-            output_valid = obj.process(valid_X)
-            if collectors:
-                context = {
-                    'node_attrs': node_attrs,
-                    'processor': obj,
-                    'spec': spec,
-                    'input': data_dict if include_input else None,
-                    'output_train': output_train,
-                    'output_valid': output_valid,
-                    'idx': idx,
-                    'inner_idx': no,
-                }
-                for c in collectors:
-                    coll_results[c.name].append(_safe_collect_call(c, context, logger))
-            no += 1
-    else:
-        os.makedirs(node_path, exist_ok=True)
-        for data_dict in data_dict_it:
-            obj, result, info = _build_sub(node_attrs, data_dict, fit_process, logger)
-            train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
-            if include_train:
-                output_train = (
-                    result if result is not None else obj.process(train_X),
-                    obj.process(train_v_X) if train_v_X is not None else None,
-                )
-            else:
-                output_train = None
-            output_valid = obj.process(valid_X)
-            if collectors:
-                context = {
-                    'node_attrs': node_attrs,
-                    'processor': obj,
-                    'spec': info,
-                    'input': data_dict if include_input else None,
-                    'output_train': output_train,
-                    'output_valid': output_valid,
-                    'idx': idx,
-                    'inner_idx': no,
-                }
-                for c in collectors:
-                    coll_results[c.name].append(_safe_collect_call(c, context, logger))
-            save_obj = None if finalize else obj
-            with open(node_path / f'obj{idx}_{no}.pkl', 'wb') as f:
-                pkl.dump((save_obj, result, info), f)
-            no += 1
+            context = {
+                'node_attrs': node_attrs,
+                'processor': obj,
+                'spec': spec,
+                'input': data_dict if include_input else None,
+                'output_train': output_train,
+                'output_valid': output_valid,
+                'idx': idx,
+                'inner_idx': no,
+            }
+            for c in collectors:
+                coll_result = _safe_collect_call(c, context, logger)
+                coll_path = node_path / c.name
+                os.makedirs(coll_path, exist_ok=True)
+                with open(coll_path / f'_collect_{idx}_{no}.pkl', 'wb') as f:
+                    pkl.dump(coll_result, f)
+        no += 1
 
-    if collectors:
-        _save_collect_results(node_path, idx, coll_results)
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +277,15 @@ def exp_node(path, node_attrs, idx, data_dict_it, collectors, logger,
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _build_iter_output(node_path, node_attrs, idx, data_dict_it, matched, logger,
-                               include_train, include_input, finalize)
+            os.makedirs(node_path, exist_ok=True)
+            if (node_path / f'obj{idx}_0.pkl').exists():
+                _dispatch_iter_output(node_path, node_attrs, idx, data_dict_it, matched, logger,
+                                      include_train=include_train, include_input=include_input)
+            else:
+                for _ in _build_iter(node_path, node_attrs, idx, data_dict_it, matched, logger,
+                                     include_output=True, include_train=include_train,
+                                     include_input=include_input, finalize=finalize):
+                    pass
         for w in caught:
             logger.warning(f"[{node_name}] fold {idx}: {w.category.__name__}: {w.message}")
     except Exception as e:
@@ -348,7 +401,8 @@ class StageObj():
     def build_idx(self, idx, node_attrs, data_dict_it, collectors, logger):
         if idx != len(self.objs_):
             raise RuntimeError(f"Build sequence is not valid")
-        objs = _build_iter(self.path, node_attrs, idx, data_dict_it, collectors, logger)
+        objs = [(obj, result, info) for obj, result, info, _ in
+                _build_iter(self.path, node_attrs, idx, data_dict_it, collectors, logger)]
         self.objs_.append(objs)
 
     def end_build(self):

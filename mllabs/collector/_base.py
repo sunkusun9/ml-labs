@@ -4,7 +4,13 @@ class Collector:
         self.connector = connector
         self.path = None
         self.warnings = []
-        self._node_paths = {}  # {node_name: collector_data_dir (node_path / self.name)}
+        self._buf = {}  # {(node, idx): [result, ...]}
 
     def collect(self, context):
         return None
+
+    def push(self, node, idx, no, result):
+        self._buf.setdefault((node, idx), []).append(result)
+
+    def end_idx(self, node, idx):
+        pass
