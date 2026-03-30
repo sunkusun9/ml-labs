@@ -45,20 +45,23 @@ class NNAdapter(ModelAdapter):
     def inject_gpu_id(self, params, gpu_id):
         params['device'] = f'/GPU:{gpu_id}'
 
-    def get_params(self, params, logger=None):
+    def get_params(self, params, gpu_id_list=None, logger=None):
         if params is None:
             return {}
+        gpu = params.get('gpu', 'auto')
         params = params.copy()
         params.pop('gpu', None)
+        if gpu is not None and gpu_id_list:
+            params['device'] = f'/GPU:{gpu_id_list[0]}'
         return params
 
-    def get_fit_params(self, data_dict, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(data_dict, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, logger)
 
-        train_v_X = data_dict.get('X', (None, None))[1]
-        train_v_y = data_dict.get('y', (None, None))[1]
+        train_v_X = valid_data.get('X') if valid_data else None
+        train_v_y = valid_data.get('y') if valid_data else None
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
             fit_params['eval_set'] = [(unwrap(train_v_X), unwrap(train_v_y))]

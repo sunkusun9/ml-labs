@@ -98,19 +98,19 @@ class TransformProcessor():
         self.adapter = adapter if adapter is not None else DefaultAdapter()
         self.output_vars = None
 
-    def fit(self, data_dict, logger=None):
+    def fit(self, train_data, valid_data=None, gpu_id_list=None, logger=None):
         sampler = self.params.get('mllab_sampler') if self.params else None
         _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
 
-        if 'X' in data_dict:
-            train_X, _ = data_dict['X']
+        if 'X' in train_data:
+            train_X = train_data['X']
             self.X_ = train_X.get_columns()
         else:
             train_X = None
             self.X_ = []
 
-        if 'y' in data_dict:
-            train_y, _ = data_dict['y']
+        if 'y' in train_data:
+            train_y = train_data['y']
             self.y_columns = train_y.get_columns()
         else:
             train_y = None
@@ -118,9 +118,9 @@ class TransformProcessor():
 
         _ref_data = train_X if train_X is not None else train_y
         resolved_params = _resolve_col_selectors(_params, _ref_data)
-        self.obj = self.transformer(**self.adapter.get_params(resolved_params, logger=logger))
+        self.obj = self.transformer(**self.adapter.get_params(resolved_params, gpu_id_list=gpu_id_list, logger=logger))
 
-        fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=logger)
+        fit_params = self.adapter.get_fit_params(train_data, valid_data, params=resolved_params, logger=logger)
         if sampler is not None:
             fit_params = sampler.sample(fit_params)
         self.obj.fit(**fit_params)
@@ -137,12 +137,12 @@ class TransformProcessor():
             self.output_vars = list(self.y_columns)
         return self
 
-    def fit_process(self, data_dict, logger=None):
+    def fit_process(self, train_data, valid_data=None, gpu_id_list=None, logger=None):
         sampler = self.params.get('mllab_sampler') if self.params else None
         _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
 
-        if 'X' in data_dict:
-            train_X, _ = data_dict['X']
+        if 'X' in train_data:
+            train_X = train_data['X']
             self.X_ = train_X.get_columns()
             train_index = train_X.get_index()
             train_wrapper_class = type(train_X)
@@ -152,8 +152,8 @@ class TransformProcessor():
             train_index = None
             train_wrapper_class = None
 
-        if 'y' in data_dict:
-            train_y, _ = data_dict['y']
+        if 'y' in train_data:
+            train_y = train_data['y']
             self.y_columns = train_y.get_columns()
             if train_X is None:
                 train_index = train_y.get_index()
@@ -164,9 +164,9 @@ class TransformProcessor():
 
         _ref_data = train_X if train_X is not None else train_y
         resolved_params = _resolve_col_selectors(_params, _ref_data)
-        self.obj = self.transformer(**self.adapter.get_params(resolved_params, logger=logger))
+        self.obj = self.transformer(**self.adapter.get_params(resolved_params, gpu_id_list=gpu_id_list, logger=logger))
 
-        fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=logger)
+        fit_params = self.adapter.get_fit_params(train_data, valid_data, params=resolved_params, logger=logger)
         if sampler is not None:
             self.obj.fit(**sampler.sample(fit_params))
             result = self.obj.transform(fit_params['X'])
@@ -224,23 +224,23 @@ class PredictProcessor():
         self.adapter = adapter if adapter is not None else DefaultAdapter()
         self.y_columns = None
 
-    def fit(self, data_dict, logger=None):
+    def fit(self, train_data, valid_data=None, gpu_id_list=None, logger=None):
         sampler = self.params.get('mllab_sampler') if self.params else None
         _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
 
-        train_X, _ = data_dict['X']
+        train_X = train_data['X']
         self.X_ = train_X.get_columns()
 
-        if 'y' in data_dict:
-            train_y, _ = data_dict['y']
+        if 'y' in train_data:
+            train_y = train_data['y']
             self.y_columns = train_y.get_columns()
         else:
             self.y_columns = None
 
         resolved_params = _resolve_col_selectors(_params, train_X)
-        self.obj = self.estimator(**self.adapter.get_params(resolved_params, logger=logger))
+        self.obj = self.estimator(**self.adapter.get_params(resolved_params, gpu_id_list=gpu_id_list, logger=logger))
 
-        fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=logger)
+        fit_params = self.adapter.get_fit_params(train_data, valid_data, params=resolved_params, logger=logger)
         if sampler is not None:
             fit_params = sampler.sample(fit_params)
         self.obj.fit(**fit_params)
@@ -256,24 +256,24 @@ class PredictProcessor():
             self.output_vars = [f"{self.name}__{y_name}_{i}" for i in self.obj.classes_]
         return self
 
-    def fit_process(self, data_dict, logger=None):
+    def fit_process(self, train_data, valid_data=None, gpu_id_list=None, logger=None):
         sampler = self.params.get('mllab_sampler') if self.params else None
         _params = {k: v for k, v in self.params.items() if k != 'mllab_sampler'} if self.params else {}
 
-        train_X, _ = data_dict['X']
+        train_X = train_data['X']
         self.X_ = train_X.get_columns()
         train_index = train_X.get_index()
 
-        if 'y' in data_dict:
-            train_y, _ = data_dict['y']
+        if 'y' in train_data:
+            train_y = train_data['y']
             self.y_columns = train_y.get_columns()
         else:
             self.y_columns = None
 
         resolved_params = _resolve_col_selectors(_params, train_X)
-        self.obj = self.estimator(**self.adapter.get_params(resolved_params, logger=logger))
+        self.obj = self.estimator(**self.adapter.get_params(resolved_params, gpu_id_list=gpu_id_list, logger=logger))
 
-        fit_params = self.adapter.get_fit_params(data_dict=data_dict, params=resolved_params, logger=logger)
+        fit_params = self.adapter.get_fit_params(train_data, valid_data, params=resolved_params, logger=logger)
         if sampler is not None:
             self.obj.fit(**sampler.sample(fit_params))
             predictions = self.obj.predict(fit_params['X'])

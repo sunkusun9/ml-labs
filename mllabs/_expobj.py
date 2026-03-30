@@ -1,21 +1,15 @@
 import uuid
 import json
 import os
-import shutil
 import time
 import pickle as pkl
 import traceback
 import warnings
-from multiprocessing import Process, Queue
+from multiprocessing import Process
+from multiprocessing.connection import wait
 
 
-def _get_process_inputs(data_dict):
-    key = 'X' if 'X' in data_dict else 'y'
-    (train, train_v), valid = data_dict[key]
-    return train, train_v, valid
-
-
-def _build_sub(node_attrs, data_dict, fit_process, logger):
+def _build(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list=None):
     from ._node_processor import TransformProcessor, PredictProcessor
     method = node_attrs['method']
     if method in ['transform', 'fit_transform']:
@@ -23,24 +17,44 @@ def _build_sub(node_attrs, data_dict, fit_process, logger):
     else:
         obj = PredictProcessor(node_attrs['name'], node_attrs['processor'], method, node_attrs['adapter'], node_attrs['params'])
 
-    fit_data = {key: val[0] for key, val in data_dict.items()}
-
     start_time = time.time()
-    if fit_process:
-        result = obj.fit_process(fit_data, logger=logger)
-    else:
-        result = None
-        obj.fit(fit_data, logger=logger)
-    elapsed_time = time.time() - start_time
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            if fit_process:
+                result = obj.fit_process(train_data, valid_data, gpu_id_list=gpu_id_list, logger=logger)
+            else:
+                result = None
+                obj.fit(train_data, valid_data, gpu_id_list=gpu_id_list, logger=logger)
+        except Exception as e:
+            warn_msgs = [f"{w.category.__name__}: {w.message}" for w in caught]
+            info = {
+                'build_id': str(uuid.uuid4()),
+                'fit_time': time.time() - start_time,
+                'train_shape': None,
+                'edges': node_attrs.get('edges'),
+                'error': {
+                    'type': type(e).__name__,
+                    'message': str(e),
+                    'traceback': traceback.format_exc(),
+                },
+            }
+            if warn_msgs:
+                info['warnings'] = warn_msgs
+            return None, 'error', info
 
-    _ref_key = 'X' if 'X' in data_dict else 'y'
-    train_, train_v_ = fit_data[_ref_key]
+    elapsed_time = time.time() - start_time
+    _ref_key = 'X' if 'X' in train_data else 'y'
+    ref_data = train_data[_ref_key]
     info = {
         'build_id': str(uuid.uuid4()),
         'fit_time': elapsed_time,
-        'train_shape': train_.get_shape() if train_ is not None else None,
-        'train_v_shape': train_v_.get_shape() if train_v_ is not None else None
+        'train_shape': ref_data.get_shape() if ref_data is not None else None,
+        'edges': node_attrs.get('edges'),
     }
+    warn_msgs = [f"{w.category.__name__}: {w.message}" for w in caught]
+    if warn_msgs:
+        info['warnings'] = warn_msgs
     return obj, result, info
 
 
@@ -57,165 +71,261 @@ def _safe_collect_call(collector, context, logger):
         return None
 
 
+def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data,
+                    idx, inner_idx, logger,
+                    include_input=True, include_output=True, include_train=True):
+    node_name = node_attrs['name']
+    matched = [c for c in collectors if c.connector.match(node_name, node_attrs)]
+    if not matched:
+        return {}
+    context = {
+        'node_attrs': node_attrs,
+        'processor': obj,
+        'spec': info,
+        'input': train_data if include_input else None,
+        'idx': idx,
+        'inner_idx': inner_idx,
+    }
+    if include_output:
+        context['output_valid'] = obj.process(valid_data) if valid_data else None
+        context['output_train'] = (result if result is not None else obj.process(train_data)) if include_train else None
+    return {c.name: _safe_collect_call(c, context, logger) for c in matched}
+
+
+class _PipeLogger:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def adhoc_progress(self, current, total, metrics=None):
+        self._conn.send(('progress', current, total, metrics))
+
+    def warning(self, msg):
+        self._conn.send(('warning', msg))
+
+    def info(self, msg):
+        self._conn.send(('info', msg))
+
+
 class BuildWorker(Process):
-    """Process-based worker that executes _build_sub jobs from a queue.
+    """Process-based worker. Receives jobs via Pipe, reports results/progress back.
 
-    Each job is a tuple ``(node_path, node_attrs, idx, no, data_dict)``.
-    A ``None`` sentinel stops the worker.
+    Job tuple: ``(node_path, file, node_attrs, idx, no, train_data, valid_data)``
+    Sentinel ``None`` stops the worker.
 
-    Saves processor pkls and per-inner-fold collector results to disk.
-
-    Args:
-        collectors: Pre-matched Collector list.
-        logger: Logger instance.
-        include_output (bool): Compute output_train/output_valid (head nodes).
-        include_train (bool): Include train output in collector context.
-        include_input (bool): Include input data_dict in collector context.
-        finalize (bool): Save obj as None in pkl (head finalize mode).
+    Messages sent to main via conn:
+        ('progress', current, total, metrics)
+        ('warning', msg)
+        ('info', msg)
+        ('done', info)
+        ('error', error_info)
     """
 
-    def __init__(self, collectors, logger,
-                 include_output=False, include_train=True, include_input=True, finalize=False):
+    def __init__(self, conn, collectors,
+                 include_output=False, include_train=True, include_input=True, finalize=False,
+                 gpu_id=None):
         super().__init__(daemon=True)
-        self.job_queue = Queue()
+        self.conn = conn
         self.collectors = collectors
-        self.logger = logger
         self.include_output = include_output
         self.include_train = include_train
         self.include_input = include_input
         self.finalize = finalize
+        self.gpu_id = gpu_id
 
     def run(self):
+        logger = _PipeLogger(self.conn)
+        gpu_id_list = [self.gpu_id] if self.gpu_id is not None else []
         while True:
-            job = self.job_queue.get()
+            job = self.conn.recv()
             if job is None:
                 break
-            node_path, node_attrs, idx, no, data_dict = job
+            node_path, file, node_attrs, idx, no, train_data, valid_data = job
+            node_name = node_attrs['name']
             method = node_attrs['method']
             fit_process = method in ['fit_transform', 'fit_predict']
             os.makedirs(node_path, exist_ok=True)
-            try:
-                obj, result, info = _build_sub(node_attrs, data_dict, fit_process, self.logger)
-            except Exception as e:
+            obj, result, info = _build(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
+            for w in info.get('warnings', []):
+                logger.warning(f"[{node_name}] fold {idx}: {w}")
+            if obj is None:
+                error_info = {**info['error'], 'fold': idx}
                 with open(node_path / 'error.txt', 'w') as f:
-                    json.dump({
-                        'type': type(e).__name__,
-                        'message': str(e),
-                        'traceback': traceback.format_exc(),
-                        'fold': idx,
-                    }, f, ensure_ascii=False, indent=2)
-                break
+                    json.dump(error_info, f, ensure_ascii=False, indent=2)
+                self.conn.send(('error', error_info))
+                continue
 
             save_obj = None if (self.include_output and self.finalize) else obj
-            with open(node_path / f'obj{idx}_{no}.pkl', 'wb') as f:
+            with open(file, 'wb') as f:
                 pkl.dump((save_obj, result, info), f)
 
-            if self.collectors:
-                context = {
-                    'node_attrs': node_attrs,
-                    'processor': obj,
-                    'spec': info,
-                    'input': data_dict if self.include_input else None,
-                    'idx': idx,
-                    'inner_idx': no,
-                }
-                if self.include_output:
-                    train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
-                    context['output_valid'] = obj.process(valid_X)
-                    if self.include_train:
-                        context['output_train'] = (
-                            result if result is not None else obj.process(train_X),
-                            obj.process(train_v_X) if train_v_X is not None else None,
-                        )
-                    else:
-                        context['output_train'] = None
-                coll_dict = {
-                    c.name: _safe_collect_call(c, context, self.logger)
-                    for c in self.collectors
-                }
+            coll_dict = _run_collectors(
+                self.collectors, node_attrs, obj, result, info, train_data, valid_data,
+                idx, no, logger,
+                include_input=self.include_input, include_output=self.include_output,
+                include_train=self.include_train,
+            )
+            if coll_dict:
                 with open(node_path / f'_collect_{idx}_{no}.pkl', 'wb') as f:
                     pkl.dump(coll_dict, f)
 
+            self.conn.send(('done', info))
 
-def _build_iter(node_path, node_attrs, idx, data_dict_it, collectors, logger,
-                include_output=False, include_train=True, include_input=True, finalize=False):
-    """Build one outer fold. Saves processor pkls to disk, yields per inner fold.
+# ---------------------------------------------------------------------------
+# Flow build
+# ---------------------------------------------------------------------------
 
-    Yields:
-        (obj, result, info, coll_dict) where coll_dict is {collector_name: collect_result}.
-    """
-    method = node_attrs['method']
-    fit_process = method in ['fit_transform', 'fit_predict']
-
-    for no, data_dict in enumerate(data_dict_it):
-        obj, result, info = _build_sub(node_attrs, data_dict, fit_process, logger)
-        save_obj = None if (include_output and finalize) else obj
-        with open(node_path / f'obj{idx}_{no}.pkl', 'wb') as f:
-            pkl.dump((save_obj, result, info), f)
-
-        coll_dict = {}
-        if collectors:
-            context = {
-                'node_attrs': node_attrs,
-                'processor': obj,
-                'spec': info,
-                'input': data_dict if include_input else None,
-                'idx': idx,
-                'inner_idx': no,
-            }
-            if include_output:
-                train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
-                context['output_valid'] = obj.process(valid_X)
-                if include_train:
-                    context['output_train'] = (
-                        result if result is not None else obj.process(train_X),
-                        obj.process(train_v_X) if train_v_X is not None else None,
-                    )
-                else:
-                    context['output_train'] = None
-            coll_dict = {c.name: _safe_collect_call(c, context, logger) for c in collectors}
-
-        yield obj, result, info, coll_dict
+def _is_stage_ready(flow, pipeline, node_name):
+    for edge_list in pipeline.get_node_attrs(node_name)['edges'].values():
+        for src_name, _ in edge_list:
+            if src_name is None:
+                continue
+            if pipeline.grps[pipeline.nodes[src_name].grp].role == 'stage':
+                if src_name not in flow.node_objs:
+                    return False
+    return True
 
 
-def _dispatch_iter_output(node_path, node_attrs, idx, data_dict_it, collectors, logger,
-                          include_train=True, include_input=True):
-    """Dispatch collectors over already-built head obj pkls for one outer fold."""
-    no = 0
-    for data_dict in data_dict_it:
-        filename = node_path / f'obj{idx}_{no}.pkl'
-        if not filename.exists():
+def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None, logger=None):
+    from ._flow import TrainDataFlow
+
+    gpu_id_list = gpu_id_list or []
+    collectors = collectors or []
+
+    errors = {}
+
+    while True:
+        ready = [
+            (fi, n) for fi, flow in enumerate(flows) for n in nodes
+            if n not in flow.node_objs and (fi, n) not in errors
+            and _is_stage_ready(flow, pipeline, n)
+        ]
+        if not ready:
             break
-        with open(filename, 'rb') as f:
-            obj, train_, spec = pkl.load(f)
-        if collectors:
-            train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
-            output_valid = obj.process(valid_X)
-            if include_train:
-                output_train = (
-                    train_ if train_ is not None else obj.process(train_X),
-                    obj.process(train_v_X) if train_v_X is not None else None,
-                )
-            else:
-                output_train = None
-            context = {
-                'node_attrs': node_attrs,
-                'processor': obj,
-                'spec': spec,
-                'input': data_dict if include_input else None,
-                'output_train': output_train,
-                'output_valid': output_valid,
-                'idx': idx,
-                'inner_idx': no,
-            }
-            for c in collectors:
-                coll_result = _safe_collect_call(c, context, logger)
-                coll_path = node_path / c.name
-                os.makedirs(coll_path, exist_ok=True)
-                with open(coll_path / f'_collect_{idx}_{no}.pkl', 'wb') as f:
-                    pkl.dump(coll_result, f)
-        no += 1
 
+        for fi, node_name in ready:
+            flow = flows[fi]
+            node_attrs = pipeline.get_node_attrs(node_name)
+            train_data = flow.get_train(node_attrs['edges'])
+            valid_data = flow.get_valid(node_attrs['edges'])
+            fit_process = node_attrs['method'] in ['fit_transform', 'fit_predict']
+
+            obj, result, info = _build(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
+            for w in info.get('warnings', []):
+                if logger:
+                    logger.warning(f"[{node_name}] fold {fi}: {w}")
+            if obj is None:
+                errors[(fi, node_name)] = info['error']
+                if logger:
+                    logger.info(f"[{node_name}] Build error at fold {fi}: {info['error']['type']}: {info['error']['message']}")
+                continue
+
+            TrainDataFlow.write_objs(flow.get_objs_file(node_name), (obj, result, info))
+            flow.set_objs(node_name, obj, result, info)
+
+            if collectors:
+                _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data,
+                                fi, 0, logger)
+
+    return errors
+
+
+def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collectors=None, logger=None):
+    from .adapter._base import GPU_NO
+
+    gpu_id_list = gpu_id_list or []
+    collectors = collectors or []
+    n_gpu = len(gpu_id_list)
+
+    def _needs_gpu(node_attrs):
+        if not gpu_id_list:
+            return False
+        adapter = node_attrs.get('adapter')
+        return adapter is not None and adapter.get_gpu_usage(node_attrs.get('params')) != GPU_NO
+
+    workers = []  # [(process, parent_conn)]
+    for i in range(n_jobs):
+        parent_conn, child_conn = Pipe()
+        w = BuildWorker(child_conn, collectors,
+                        include_output=True, include_train=True, include_input=True,
+                        gpu_id=gpu_id_list[i] if i < n_gpu else None)
+        w.start()
+        workers.append((w, parent_conn))
+
+    free_gpu = list(range(n_gpu))
+    free_cpu = list(range(n_gpu, n_jobs))
+    busy = {}   # parent_conn -> (fi, node_name)
+    errors = {}
+
+    remaining = {(fi, n) for fi, flow in enumerate(flows) for n in nodes if n not in flow.node_objs}
+    all_conns = [conn for _, conn in workers]
+
+    def _collect_ready():
+        in_flight = set(busy.values())
+        return [(fi, n) for fi, n in remaining
+                if (fi, n) not in in_flight and _is_stage_ready(flows[fi], pipeline, n)]
+
+    def _dispatch(fi, node_name, worker_idx):
+        flow = flows[fi]
+        node_attrs = pipeline.get_node_attrs(node_name)
+        train_data = flow.get_train(node_attrs['edges'])
+        valid_data = flow.get_valid(node_attrs['edges'])
+        _, conn = workers[worker_idx]
+        file = flow.get_objs_file(node_name)
+        conn.send((file.parent, file, node_attrs, fi, 0, train_data, valid_data))
+        busy[conn] = (fi, node_name)
+        (free_gpu if worker_idx < n_gpu else free_cpu).remove(worker_idx)
+
+    def _try_dispatch():
+        for fi, node_name in _collect_ready():
+            node_attrs = pipeline.get_node_attrs(node_name)
+            if _needs_gpu(node_attrs) and free_gpu:
+                _dispatch(fi, node_name, free_gpu[0])
+            elif free_cpu:
+                _dispatch(fi, node_name, free_cpu[0])
+            elif free_gpu:
+                _dispatch(fi, node_name, free_gpu[0])
+
+    _try_dispatch()
+
+    while busy:
+        for conn in wait(all_conns):
+            msg_type, *data = conn.recv()
+            worker_idx = next(i for i, (_, c) in enumerate(workers) if c is conn)
+            fi, node_name = busy[conn]
+
+            if msg_type == 'done':
+                flows[fi].load_objs(node_name)
+                remaining.discard((fi, node_name))
+                del busy[conn]
+                (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
+                _try_dispatch()
+
+            elif msg_type == 'error':
+                error_info = data[0]
+                errors[(fi, node_name)] = error_info
+                remaining.discard((fi, node_name))
+                del busy[conn]
+                (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
+                if logger:
+                    logger.info(f"[{node_name}] Build error at fold {fi}: {error_info['type']}: {error_info['message']}")
+                _try_dispatch()
+
+            elif msg_type == 'progress':
+                if logger:
+                    logger.adhoc_progress(*data)
+            elif msg_type == 'warning':
+                if logger:
+                    logger.warning(data[0])
+            elif msg_type == 'info':
+                if logger:
+                    logger.info(data[0])
+
+    for _, conn in workers:
+        conn.send(None)
+    for w, _ in workers:
+        w.join()
+
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -314,109 +424,3 @@ def get_head_objs(path, name, idx):
         no += 1
 
 
-# ---------------------------------------------------------------------------
-# Stage
-# ---------------------------------------------------------------------------
-
-class StageObj():
-    def __init__(self, path):
-        self.path = path
-        self.status = None
-        self.error = None
-
-    def set_error(self, error_info):
-        self.error = error_info
-        self.status = 'error'
-        if not os.path.isdir(self.path):
-            os.makedirs(self.path, exist_ok=True)
-        with open(self.path / 'error.txt', 'w') as f:
-            json.dump(error_info, f, ensure_ascii=False, indent=2)
-
-    def load(self):
-        if not os.path.isdir(self.path):
-            self.status = 'finalized'
-            self.objs_ = None
-            return
-
-        error_path = self.path / 'error.txt'
-        if error_path.exists():
-            with open(error_path, 'r') as f:
-                self.error = json.load(f)
-            self.status = 'error'
-            self.objs_ = None
-            return
-
-        self.objs_ = []
-        idx = 0
-        while True:
-            objs = []
-            no = 0
-            while True:
-                filename = self.path / ('obj' + str(idx) + '_' + str(no) + '.pkl')
-                if not os.path.isfile(filename):
-                    break
-                with open(filename, 'rb') as f:
-                    objs.append(pkl.load(f))
-                no += 1
-            if len(objs) == 0:
-                break
-            self.objs_.append(objs)
-            idx += 1
-
-        if len(self.objs_) == 0:
-            self.status = 'finalized'
-            self.objs_ = None
-        else:
-            self.status = 'built'
-
-    def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input=True, include_output=True):
-        if self.status == "built":
-            for data_dict, (obj, train_, spec) in zip(data_dict_it, self.objs_[idx]):
-                train_X, train_v_X, valid_X = _get_process_inputs(data_dict)
-                sub_result = {'spec': spec, 'object': obj}
-                if include_output:
-                    if train_ is None:
-                        train_result = obj.process(train_X)
-                    else:
-                        train_result = train_
-                    if train_v_X is not None:
-                        train_v_result = obj.process(train_v_X)
-                    else:
-                        train_v_result = None
-                    sub_result['output_train'] = (train_result, train_v_result)
-                    sub_result['output_valid'] = obj.process(valid_X)
-                if include_input:
-                    sub_result['input'] = data_dict
-                yield sub_result
-        elif self.status == "finalized":
-            raise RuntimeError(f"Node is finalized and cannot be re-experimented")
-        else:
-            raise RuntimeError(f"StageObj cannot be experimented unless built")
-
-    def start_build(self):
-        self.objs_ = list()
-        if not os.path.isdir(self.path):
-            os.makedirs(self.path, exist_ok=True)
-
-    def build_idx(self, idx, node_attrs, data_dict_it, collectors, logger):
-        if idx != len(self.objs_):
-            raise RuntimeError(f"Build sequence is not valid")
-        objs = [(obj, result, info) for obj, result, info, _ in
-                _build_iter(self.path, node_attrs, idx, data_dict_it, collectors, logger)]
-        self.objs_.append(objs)
-
-    def end_build(self):
-        self.status = 'built'
-        error_path = self.path / 'error.txt'
-        if error_path.exists():
-            error_path.unlink()
-
-    def get_objs(self, idx):
-        for obj, train_, spec in self.objs_[idx]:
-            yield obj, train_, spec
-
-    def finalize(self):
-        self.status = 'finalized'
-        if os.path.isdir(self.path):
-            shutil.rmtree(self.path)
-        self.objs_ = None

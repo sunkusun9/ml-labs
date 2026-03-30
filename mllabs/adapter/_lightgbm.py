@@ -47,8 +47,12 @@ class LightGBMAdapter(ModelAdapter):
         params['gpu_device_id'] = gpu_id
         return params
 
-    def get_params(self, params, logger=None):
+    def get_params(self, params, gpu_id_list=None, logger=None):
+        gpu = (params or {}).get('gpu', 'auto')
         params = {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric', 'gpu']}
+        if gpu is not None and gpu_id_list:
+            params['device'] = 'gpu'
+            params['gpu_device_id'] = gpu_id_list[0]
         return params
 
     def get_process_data(self, data):
@@ -58,11 +62,11 @@ class LightGBMAdapter(ModelAdapter):
             return x.to_pandas()
         return x
 
-    def get_fit_params(self, data_dict, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
         """LightGBM의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(data_dict, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, logger)
 
         def _to_pandas(x):
             if x is not None and 'polars' in type(x).__module__:
@@ -74,11 +78,8 @@ class LightGBMAdapter(ModelAdapter):
         if 'y' in fit_params:
             fit_params['y'] = _to_pandas(fit_params['y'])
 
-        train_X, train_v_X = data_dict['X']
-        if 'y' in data_dict:
-            train_y, train_v_y = data_dict['y']
-        else:
-            train_y, train_v_y = None, None
+        train_v_X = valid_data.get('X') if valid_data else None
+        train_v_y = valid_data.get('y') if valid_data else None
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
             train_v_X_native = _to_pandas(unwrap(train_v_X))

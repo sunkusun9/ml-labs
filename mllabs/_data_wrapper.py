@@ -6,6 +6,7 @@ Provides a unified interface for common DataFrame operations across different li
 
 from abc import ABC, abstractmethod
 import numpy as np
+import pickle as pkl
 
 try:
     import pandas as pd
@@ -816,3 +817,46 @@ def unwrap(wrapper):
     else:
         # Already native
         return wrapper
+
+
+from ._flow import DataSourceProvider
+
+
+class DataWrapperProvider(DataSourceProvider):
+    """DataSourceProvider backed by a DataWrapper and fold indices.
+
+    _data and _aug_data are transient — not serialized.
+    Only train_idx and valid_idx are persisted.
+
+    Call set_data(data) to re-inject DataWrapper after deserialization.
+    """
+
+    def __init__(self, data, train_idx, valid_idx=None, aug_data=None):
+        self._data = data
+        self._aug_data = aug_data
+        self.train_idx = train_idx
+        self.valid_idx = valid_idx
+
+    def set_data(self, data, aug_data=None):
+        self._data = data
+        self._aug_data = aug_data
+
+    def get_train(self):
+        train = self._data.iloc(self.train_idx)
+        if self._aug_data is not None:
+            train = type(train).concat([train, self._aug_data], axis=0)
+        return train
+
+    def get_valid(self):
+        if self.valid_idx is None:
+            return None
+        return self._data.iloc(self.valid_idx)
+
+    def __getstate__(self):
+        return {'train_idx': self.train_idx, 'valid_idx': self.valid_idx}
+
+    def __setstate__(self, state):
+        self.train_idx = state['train_idx']
+        self.valid_idx = state['valid_idx']
+        self._data = None
+        self._aug_data = None

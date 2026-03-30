@@ -4,18 +4,17 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from ._node_processor import resolve_columns
-from ._expobj import _build_sub
+# from ._expobj import _build_sub
 
 
 class DataSourceProvider(ABC):
     @abstractmethod
     def get_train(self):
-        """Returns (train_data, train_v_data) as DataWrapper pair."""
+        """Returns train_data as DataWrapper."""
 
     @abstractmethod
     def get_valid(self):
-        """Returns valid_data as DataWrapper."""
-
+        """Returns valid_data (train-time monitoring, e.g. early stopping) as DataWrapper or None."""
 
 class DataFlow:
     """Single-fold data transformation through stage nodes.
@@ -29,22 +28,30 @@ class DataFlow:
         self.path = Path(path)
         self.node_objs = {}    # {name: (obj, result, info)}
         self._node_edges = {}  # {name: edges dict}
-        self._load()
+        self.load()
 
-    def _load(self):
+    def get_objs_file(self, node_name):
+        return self.path / node_name / 'obj.pkl'
+
+    def set_objs(self, node_name, obj, result, info):
+        self.node_objs[node_name] = (obj, result, info)
+        if info.get('edges') is not None:
+            self._node_edges[node_name] = info['edges']
+
+    def load_objs(self, node_name):
+        with open(self.get_objs_file(node_name), 'rb') as f:
+            obj, result, info = pkl.load(f)
+        self.set_objs(node_name, obj, result, info)
+        return obj, result, info
+
+    def load(self):
         if not self.path.is_dir():
             return
         for node_dir in sorted(self.path.iterdir()):
             if not node_dir.is_dir():
                 continue
-            obj_file = node_dir / 'obj.pkl'
-            attrs_file = node_dir / 'attrs.pkl'
-            if obj_file.exists():
-                with open(obj_file, 'rb') as f:
-                    self.node_objs[node_dir.name] = pkl.load(f)
-            if attrs_file.exists():
-                with open(attrs_file, 'rb') as f:
-                    self._node_edges[node_dir.name] = pkl.load(f)
+            if self.get_objs_file(node_dir.name).exists():
+                self.load_objs(node_dir.name)
 
     def get_data(self, source_data, edges):
         """Transform source_data through stage nodes per edges.
@@ -100,7 +107,7 @@ class TrainDataFlow(DataFlow):
 
     Args:
         path: Per-fold storage directory
-        data_source: DataSourceProvider providing train/valid raw data
+        data_source: DataSourceProvider providing train/valid/test raw data
         cache: DataCache shared instance (optional)
         cache_key: Key for cache lookups, e.g. (outer_idx, inner_idx)
     """
@@ -111,92 +118,57 @@ class TrainDataFlow(DataFlow):
         self.cache_key = cache_key
         super().__init__(path)
 
-    def build_stage(self, node_attrs, logger):
-        """Build a stage node for this fold and persist to disk.
+    @staticmethod
+    def write_objs(file, obj_data):
+        os.makedirs(file.parent, exist_ok=True)
+        with open(file, 'wb') as f:
+            pkl.dump(obj_data, f)
 
-        Args:
-            node_attrs: dict with name, processor, method, adapter, params, edges
-            logger: Logger instance
-        """
-        name = node_attrs['name']
-        edges = node_attrs['edges']
-        fit_process = node_attrs['method'] in ['fit_transform', 'fit_predict']
+    def get_available_stages(self, pipeline):
+        """Returns stage node names that this DataFlow can produce output for."""
+        return [
+            n for n in pipeline._get_affected_nodes([None])
+            if n is not None
+            and n in self.node_objs
+            and pipeline.grps[pipeline.nodes[n].grp].role == 'stage'
+        ]
 
-        data_dict = self._make_data_dict(edges)
-        obj, result, info = _build_sub(node_attrs, data_dict, fit_process, logger)
-
-        node_path = self.path / name
-        os.makedirs(node_path, exist_ok=True)
-        with open(node_path / 'obj.pkl', 'wb') as f:
-            pkl.dump((obj, result, info), f)
-        with open(node_path / 'attrs.pkl', 'wb') as f:
-            pkl.dump(edges, f)
-
-        self.node_objs[name] = (obj, result, info)
-        self._node_edges[name] = edges
-
-    def _make_data_dict(self, edges):
-        """{key: ((train, train_v), valid)} for _build_sub."""
-        data_dict = {}
-        for key, edge_list in edges.items():
-            trains, train_vs, valids = [], [], []
-            for node_name, var in edge_list:
-                train, train_v = self._resolve_train(node_name)
-                valid = self._resolve_valid(node_name)
-                if var is not None:
-                    src_obj = self.node_objs.get(node_name, (None,))[0] if node_name in self.node_objs else None
-                    cols = resolve_columns(train, var, processor=src_obj)
-                    train = train.select_columns(cols)
-                    if train_v is not None:
-                        train_v = train_v.select_columns(cols)
-                    valid = valid.select_columns(cols)
-                trains.append(train)
-                if train_v is not None:
-                    train_vs.append(train_v)
-                valids.append(valid)
-            if trains:
-                T = type(trains[0])
-                data_dict[key] = (
-                    (T.concat(trains, axis=1) if len(trains) > 1 else trains[0],
-                     T.concat(train_vs, axis=1) if train_vs else None),
-                    T.concat(valids, axis=1) if len(valids) > 1 else valids[0],
-                )
-        return data_dict
+    def get_missing_stages(self, pipeline):
+        """Returns stage node names that are in the pipeline but not yet built in this DataFlow."""
+        return [
+            n for n in pipeline._get_affected_nodes([None])
+            if n is not None
+            and n not in self.node_objs
+            and pipeline.grps[pipeline.nodes[n].grp].role == 'stage'
+        ]
 
     def get_train(self, edges):
         """{key: data} train output resolved via edges."""
-        result = {}
-        for key, edge_list in edges.items():
-            parts = []
-            for node_name, var in edge_list:
-                train, _ = self._resolve_train(node_name)
-                if var is not None:
-                    obj = self.node_objs.get(node_name, (None,))[0] if node_name in self.node_objs else None
-                    cols = resolve_columns(train, var, processor=obj)
-                    train = train.select_columns(cols)
-                parts.append(train)
-            if parts:
-                result[key] = type(parts[0]).concat(parts, axis=1) if len(parts) > 1 else parts[0]
-        return result
+        return self._get_resolved_edges(edges, self._resolve_train)
 
     def get_valid(self, edges):
-        """{key: data} valid output resolved via edges."""
+        """{key: data} valid (train-time monitoring) output resolved via edges."""
+        return self._get_resolved_edges(
+            edges, lambda n: self._resolve_via_process(n, 'valid', self.data_source.get_valid)
+        )
+
+    def _get_resolved_edges(self, edges, resolve_fn):
         result = {}
         for key, edge_list in edges.items():
             parts = []
             for node_name, var in edge_list:
-                valid = self._resolve_valid(node_name)
+                data = resolve_fn(node_name)
                 if var is not None:
                     obj = self.node_objs.get(node_name, (None,))[0] if node_name in self.node_objs else None
-                    cols = resolve_columns(valid, var, processor=obj)
-                    valid = valid.select_columns(cols)
-                parts.append(valid)
+                    cols = resolve_columns(data, var, processor=obj)
+                    data = data.select_columns(cols)
+                parts.append(data)
             if parts:
                 result[key] = type(parts[0]).concat(parts, axis=1) if len(parts) > 1 else parts[0]
         return result
 
     def _resolve_train(self, node_name):
-        """Returns (train, train_v) for node_name."""
+        """Returns train data for node_name (fit_transform result)."""
         if node_name is None:
             return self.data_source.get_train()
         if node_name not in self.node_objs:
@@ -211,40 +183,33 @@ class TrainDataFlow(DataFlow):
         edges = self._node_edges[node_name]
         key = 'X' if 'X' in edges else next(iter(edges))
 
-        trains, train_vs = [], []
+        trains = []
         for src_node, var in edges[key]:
-            t, tv = self._resolve_train(src_node)
+            t = self._resolve_train(src_node)
             if var is not None:
                 src_obj = self.node_objs.get(src_node, (None,))[0] if src_node in self.node_objs else None
                 cols = resolve_columns(t, var, processor=src_obj)
                 t = t.select_columns(cols)
-                if tv is not None:
-                    tv = tv.select_columns(cols)
             trains.append(t)
-            if tv is not None:
-                train_vs.append(tv)
 
         T = type(trains[0])
         train_in = T.concat(trains, axis=1) if len(trains) > 1 else trains[0]
-        train_v_in = T.concat(train_vs, axis=1) if train_vs else None
-
         train_out = result if result is not None else obj.process(train_in)
-        train_v_out = obj.process(train_v_in) if train_v_in is not None else None
 
         if self.cache is not None and self.cache_key is not None:
-            self.cache.put_data(node_name, 'train', self.cache_key, (train_out, train_v_out))
+            self.cache.put_data(node_name, 'train', self.cache_key, train_out)
 
-        return train_out, train_v_out
+        return train_out
 
-    def _resolve_valid(self, node_name):
-        """Returns valid data for node_name."""
+    def _resolve_via_process(self, node_name, typ, source_fn):
+        """Returns data for node_name via cache check → process. Used for valid and test."""
         if node_name is None:
-            return self.data_source.get_valid()
+            return source_fn()
         if node_name not in self.node_objs:
             raise RuntimeError(f"Stage '{node_name}' not built in this flow")
 
         if self.cache is not None and self.cache_key is not None:
-            cached = self.cache.get_data(node_name, 'valid', self.cache_key)
+            cached = self.cache.get_data(node_name, typ, self.cache_key)
             if cached is not None:
                 return cached
 
@@ -252,20 +217,24 @@ class TrainDataFlow(DataFlow):
         edges = self._node_edges[node_name]
         key = 'X' if 'X' in edges else next(iter(edges))
 
-        valids = []
+        parts = []
         for src_node, var in edges[key]:
-            v = self._resolve_valid(src_node)
-            if var is not None:
+            d = self._resolve_via_process(src_node, typ, source_fn)
+            if d is not None and var is not None:
                 src_obj = self.node_objs.get(src_node, (None,))[0] if src_node in self.node_objs else None
-                cols = resolve_columns(v, var, processor=src_obj)
-                v = v.select_columns(cols)
-            valids.append(v)
+                cols = resolve_columns(d, var, processor=src_obj)
+                d = d.select_columns(cols)
+            if d is not None:
+                parts.append(d)
 
-        T = type(valids[0])
-        valid_in = T.concat(valids, axis=1) if len(valids) > 1 else valids[0]
-        valid_out = obj.process(valid_in)
+        if not parts:
+            return None
+
+        T = type(parts[0])
+        data_in = T.concat(parts, axis=1) if len(parts) > 1 else parts[0]
+        data_out = obj.process(data_in)
 
         if self.cache is not None and self.cache_key is not None:
-            self.cache.put_data(node_name, 'valid', self.cache_key, valid_out)
+            self.cache.put_data(node_name, typ, self.cache_key, data_out)
 
-        return valid_out
+        return data_out

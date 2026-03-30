@@ -12,9 +12,5 @@ class DefaultAdapter(ModelAdapter):
     eval_set을 지원하지 않으므로 일반 fit()만 수행
     """
 
-    def get_fit_params(self, data_dict, params=None, logger=None):
-        """기본 fit 파라미터 (추가 파라미터 없음)
-
-        eval_set 관련 파라미터는 무시합니다.
-        """
-        return super().get_fit_params(data_dict, params, logger)
+    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
+        return super().get_fit_params(train_data, valid_data, params, logger)

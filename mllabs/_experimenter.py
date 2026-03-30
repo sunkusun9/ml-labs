@@ -13,9 +13,9 @@ from cachetools import LRUCache
 
 from sklearn.model_selection import ShuffleSplit
 
-from ._data_wrapper import wrap, unwrap
+from ._data_wrapper import wrap, unwrap, DataWrapperProvider
+from ._flow import TrainDataFlow
 from ._expobj import (
-    StageObj,
     get_head_status, get_head_error, set_head_error, finalize_head,
     exp_node as _head_exp_node, get_head_objs,
 )
@@ -27,6 +27,52 @@ from ._node_processor import resolve_columns
 from ._connector import Connector
 from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
 from ._trainer import Trainer
+
+
+class OuterFold:
+    """One outer fold: test indices, base path, and per-inner-fold TrainDataFlows.
+
+    Serializes test_idx, path, and TrainDataFlow list.
+    DataWrapperProvider inside each TrainDataFlow persists only indices — DataWrapper is transient.
+
+    Call set_data(data) to re-inject DataWrapper and cache after load.
+    """
+
+    def __init__(self, path, data, test_idx, train_idx_list, cache=None, aug_data=None):
+        self.path = Path(path)
+        self.test_idx = test_idx
+        self.data = data
+        self.train_data_flows = [
+            TrainDataFlow(
+                path=self.path / str(j),
+                data_source=DataWrapperProvider(data, train_idx, valid_idx=valid_idx, aug_data=aug_data),
+                cache=cache,
+                cache_key=(int(self.path.name), j),
+            )
+            for j, (train_idx, valid_idx) in enumerate(train_idx_list)
+        ]
+
+    def set_data(self, data, cache=None, aug_data=None):
+        self.data = data
+        for flow in self.train_data_flows:
+            flow.data_source.set_data(data, aug_data)
+            if cache is not None:
+                flow.cache = cache
+
+    def get_data(self, data, edges, inner_idx=0):
+        return self.train_data_flows[inner_idx].get_data(data, edges)
+
+    def get_test_data(self, edges, inner_idx=0):
+        test_source = self.data.iloc(self.test_idx)
+        return self.get_data(test_source, edges, inner_idx)
+
+    def __getstate__(self):
+        return {'path': self.path, 'test_idx': self.test_idx, 'train_data_flows': self.train_data_flows}
+
+    def __setstate__(self, state):
+        self.path = state['path']
+        self.test_idx = state['test_idx']
+        self.train_data_flows = state['train_data_flows']
 
 
 def _get_data_size(data):
@@ -112,52 +158,52 @@ class Experimenter():
         if not os.path.exists(path):
             self.path.mkdir(parents=True, exist_ok=True)
             self.logger.info(f"📁 Created directory: {self.path}")
-        self.train_idx_list = list()
-        self.valid_idx_list = list()
         data_native = data
         self.data = wrap(data)
         self.aug_data = wrap(aug_data) if aug_data is not None else None
-        # 실험 타이틀 저장
         self.title = title
-
-        # data 식별자 (load 시 검증용)
         self.data_key = data_key
-
-        # splitter 설정 저장
         self.sp = sp
         self.sp_v = sp_v
         self.splitter_params = splitter_params if splitter_params is not None else {}
         self.exp_id = str(uuid.uuid4())
 
         split_params = {}
-
         if data_names is None:
             data_names = self.data.get_columns()
         for k, v in self.splitter_params.items():
             split_params[k] = unwrap(self.data.select_columns(v))
 
-        for train_idx, valid_idx in sp.split(data_native, **split_params):
+        raw_splits = []
+        for outer_train_idx, test_idx in sp.split(data_native, **split_params):
             if sp_v is not None:
-                train_data = self.data.iloc(train_idx)
+                train_data = self.data.iloc(outer_train_idx)
                 train_data_native = unwrap(train_data)
-
                 inner_split_params = {'X': train_data_native}
                 for k, v in self.splitter_params.items():
                     inner_split_params[k] = unwrap(train_data.select_columns(v))
-
-                self.train_idx_list.append([
-                    (train_idx[train_v_idx], train_idx[valid_v_idx])
-                    for train_v_idx, valid_v_idx in sp_v.split(**inner_split_params)
-                ])
+                inner_folds = [
+                    (outer_train_idx[train_idx], outer_train_idx[valid_idx])
+                    for train_idx, valid_idx in sp_v.split(**inner_split_params)
+                ]
             else:
-                self.train_idx_list.append([
-                    (train_idx, None)
-                ])
-            self.valid_idx_list.append(valid_idx)
+                inner_folds = [(train_idx, None)]
+            raw_splits.append((test_idx, inner_folds))
 
         self.pipeline = Pipeline()
-        self.node_objs = {}
         self.cache = DataCache(maxsize=cache_maxsize)
+
+        self.outer_folds = [
+            OuterFold(
+                path=self.path / '__folds' / str(i),
+                data=self.data,
+                test_idx=test_idx,
+                train_idx_list=inner_folds,
+                cache=self.cache,
+                aug_data=self.aug_data,
+            )
+            for i, (test_idx, inner_folds) in enumerate(raw_splits)
+        ]
         self.grps = {}
         self.collectors = {}
         self.trainers = {}
@@ -195,10 +241,10 @@ class Experimenter():
             aug_data=aug_data)
 
     def get_n_splits(self):
-        return len(self.train_idx_list)
+        return len(self.outer_folds)
 
     def get_n_splits_inner(self):
-        return len(self.train_idx_list[0])
+        return len(self.outer_folds[0].train_data_flows)
 
     def get_collector(self, name):
         return self.collectors.get(name)
@@ -765,310 +811,28 @@ class Experimenter():
 
         return collector
 
-    def get_data(self, idx, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_output(node_name, idx, var))
-            data_dict[key] = zip(*key_data_list)
+    def get_train_data(self, edges, o_idx=0, i_idx=0):
+        return self.outer_folds[o_idx].train_data_flows[i_idx].get_train(edges)
 
-        for _ in range(self.get_n_splits_inner()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                train_sub, valid_sub, outer_valid_sub = list(), list(), list()
-                for (train_data, train_v_data), outer_valid_data in z:
-                    train_sub.append(train_data)
-                    if train_v_data is not None:
-                        valid_sub.append(train_v_data)
-                    outer_valid_sub.append(outer_valid_data)
+    def get_valid_data(self, edges, o_idx=0, i_idx=0):
+        return self.outer_folds[o_idx].train_data_flows[i_idx].get_valid(edges)
 
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                if len(valid_sub) > 0:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    result[k] = ((train_concat, valid_concat), outer_concat)
-                else:
-                    result[k] = ((train_concat, None), outer_concat)
-            yield result
-    
-    def get_data_train(self, idx, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_train_output(node_name, idx, var))
-            data_dict[key] = zip(*key_data_list)
-        
-        for _ in range(self.get_n_splits_inner()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                train_sub, valid_sub = list(), list()
-                for train_data, train_v_data in z:
-                    train_sub.append(train_data)
-                    if train_v_data is not None:
-                        valid_sub.append(train_v_data)
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                if len(valid_sub) > 0:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    result[k] = (train_concat, valid_concat)
-                else:
-                    result[k] = (train_concat, None)
-            yield result
-    
-    def get_data_valid(self, idx, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_valid_output(node_name, idx, var))
-            data_dict[key] = zip(*key_data_list)
-        for _ in range(self.get_n_splits_inner()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                outer_valid_sub = list()
-                for outer_valid_data in z:
-                    outer_valid_sub.append(outer_valid_data)
-                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                result[k] = outer_concat
-            yield result
+    def get_test_data(self, edges, o_idx=0, i_idx=0):
+        return self.outer_folds[o_idx].get_test_data(edges, i_idx)
 
-    def get_node_data(self, node, idx):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data(idx, node_attrs['edges'])
-    
-    def get_node_data_train(self, node, idx):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data_train(idx, node_attrs['edges'])
+    def get_node_train_data(self, node, o_idx=0, i_idx=0):
+        edges = self.pipeline.get_node_attrs(node)['edges']
+        return self.get_train_data(edges, o_idx, i_idx)
 
-    def get_node_data_valid(self, node, idx):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data_valid(idx, node_attrs['edges'])
+    def get_node_valid_data(self, node, o_idx=0, i_idx=0):
+        edges = self.pipeline.get_node_attrs(node)['edges']
+        return self.get_valid_data(edges, o_idx, i_idx)
 
-    def split(self, edges):
-        for idx in range(len(self.train_idx_list)):
-            yield self.get_data(idx, edges)
+    def get_node_test_data(self, node, o_idx=0, i_idx=0):
+        edges = self.pipeline.get_node_attrs(node)['edges']
+        return self.get_test_data(edges, o_idx, i_idx)
 
-    def process_ext(self, data, node, idx):
-        data = wrap(data)
-        node_attrs = self.pipeline.get_node_attrs(node)
-        edges = node_attrs['edges']
 
-        all_ordered = self.pipeline._get_affected_nodes([None])
-        upstream_stages = []
-        for name in all_ordered:
-            if name == node:
-                break
-            if name is not None and name in self.node_objs:
-                grp = self.pipeline.get_grp(self.pipeline.get_node(name).grp)
-                if grp.role == 'stage':
-                    upstream_stages.append(name)
-
-        stage_objs = {name: list(self.node_objs[name].get_objs(idx)) for name in upstream_stages}
-        stage_edges = {name: self.pipeline.get_node_attrs(name)['edges'] for name in upstream_stages}
-
-        for inner_idx in range(self.get_n_splits_inner()):
-            data_dicts = {None: (data, None)}
-            for name in upstream_stages:
-                objs = stage_objs[name]
-                if inner_idx >= len(objs):
-                    continue
-                obj, _, _ = objs[inner_idx]
-                input_data = self._get_ext_process_data(data_dicts, stage_edges[name])
-                if input_data is not None:
-                    data_dicts[name] = (obj.process(input_data), obj)
-            yield self._get_ext_process_data(data_dicts, edges)
-
-    def _get_ext_process_data(self, data_dicts, edges):
-        if 'X' not in edges:
-            return None
-        parts = []
-        for src_node, var in edges['X']:
-            if src_node not in data_dicts:
-                continue
-            src, obj = data_dicts[src_node]
-            if var is not None:
-                cols = var if src_node is None else resolve_columns(src, var, processor=obj)
-                src = src.select_columns(cols)
-            parts.append(src)
-        if not parts:
-            return None
-        if len(parts) == 1:
-            return parts[0]
-        return type(parts[0]).concat(parts, axis=1)
-
-    def get_node_output(self, node, idx, v = None):
-        if node is None:
-            outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
-            if v is not None:
-                outer_valid_data = outer_valid_data.select_columns(v)
-            
-            for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
-                if v is None:
-                    train_data = self.data.iloc(train_v_idx)
-                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
-                else:
-                    train_data = self.data.iloc(train_v_idx).select_columns(v)
-                    if valid_v_idx is not None:
-                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                    else:
-                        train_v_data = None
-
-                if self.aug_data is not None:
-                    aug = self.aug_data if v is None else self.aug_data.select_columns(v)
-                    train_data = type(train_data).concat([train_data, aug], axis=0)
-
-                yield (train_data, train_v_data), outer_valid_data
-            return
-
-        cached = self.cache.get_data(node, "all", idx)
-        if cached is not None:
-            sub = self.node_objs[node].get_objs(idx)
-            for ((train_result, train_v_result), valid_result), (obj, _, _) in zip(cached, sub):
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-                valid_result = valid_result.select_columns(X)
-                yield (train_result, train_v_result), valid_result
-            return
-        it = self.get_node_data(node, idx)
-        sub = self.node_objs[node].get_objs(idx)
-        use_cache = self.cache_maxsize > 0
-        cache_data = list() if use_cache else None
-        
-        for data_dict, (obj, train_stored, info) in zip(it, sub):
-            if 'X' in data_dict:
-                # X key로 입력 데이터 가져오기
-                (train_, train_v_), valid_ = data_dict['X']
-            else:
-                (train_, train_v_), valid_ = data_dict['y']
-
-            # train data 처리
-            if train_stored is None:
-                train_result = obj.process(train_)
-            else:
-                train_result = train_stored
-
-            # train_v data 처리
-            if train_v_ is not None:
-                train_v_result = obj.process(train_v_)
-            else:
-                train_v_result = None
-
-            # valid data 처리 (외부 fold의 valid)
-            valid_result = obj.process(valid_)
-            if use_cache:
-                cache_data.append(((train_result, train_v_result), valid_result))
-            # 필요하면 컬럼 필터링
-            if v is not None:
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-                valid_result = valid_result.select_columns(X)
-
-            yield (train_result, train_v_result), valid_result
-        if use_cache:
-            self.cache.put_data(node, "all", idx, cache_data)
-
-    def get_node_train_output(self, node, idx, v=None):
-        if node is None:
-            for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
-                if v is None:
-                    train_data = self.data.iloc(train_v_idx)
-                    if self.aug_data is not None:
-                        train_data = type(train_data).concat([train_data, self.aug_data], axis=0)
-                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
-                else:
-                    train_data = self.data.iloc(train_v_idx).select_columns(v)
-                    if self.aug_data is not None:
-                        aug = self.aug_data.select_columns(v)
-                        train_data = type(train_data).concat([train_data, aug], axis=0)
-                    if valid_v_idx is not None:
-                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                    else:
-                        train_v_data = None
-
-                yield train_data, train_v_data
-            return
-        cached = self.cache.get_data(node, "train", idx)
-        if cached is not None:
-            sub = self.node_objs[node].get_objs(idx)
-            for (train_result, train_v_result), (obj, _, _) in zip(cached, sub):
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-                yield train_result, train_v_result
-            return
-
-        it = self.get_node_data_train(node, idx)
-        sub = self.node_objs[node].get_objs(idx)
-        cache_data = list()
-        for data_dict, (obj, train_stored, info) in zip(it, sub):
-            if 'X' in data_dict:
-                train_, train_v_ = data_dict['X']
-            else:
-                train_, train_v_ = data_dict['y']
-            train_result = obj.process(train_) if train_stored is None else train_stored
-            if train_v_ is not None:
-                train_v_result = obj.process(train_v_)
-            else:
-                train_v_result = None
-            cache_data.append((train_result, train_v_result))
-            if v is not None:
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-            yld = train_result, train_v_result
-            yield yld
-        self.cache.put_data(node, "train", idx, cache_data)
-    
-    def get_node_valid_output(self, node, idx, v=None):
-        if node is None:
-            outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
-            if v is not None:
-                outer_valid_data = outer_valid_data.select_columns(v)
-            
-            for _ in range(self.get_n_splits_inner()):
-                yield outer_valid_data
-
-        cached = self.cache.get_data(node, "valid", idx)
-        if cached is not None:
-            sub = self.node_objs[node].get_objs(idx)
-            for valid_result, (obj, _, _) in zip(cached, sub):
-                X = resolve_columns(valid_result, v, processor=obj)
-                valid_result = valid_result.select_columns(X)
-                yield valid_result
-
-        it = self.get_node_data_valid(node, idx)
-        sub = self.node_objs[node].get_objs(idx)
-        use_cache = self.cache_maxsize > 0
-        cache_data = list() if use_cache else None
-        for data_dict, (obj, train_stored, info) in zip(it, sub):
-            # X key로 valid 데이터 가져오기
-            if 'X' in data_dict:
-                valid_ = data_dict['X']
-            else:
-                valid_ = data_dict['y']
-            # valid data 처리 (외부 fold의 valid)
-            valid_result = obj.process(valid_)
-            if use_cache:
-                cache_data.append(valid_result)
-            # 필요하면 컬럼 필터링
-            if v is not None:
-                X = resolve_columns(valid_result, v, processor=obj)
-                valid_result = valid_result.select_columns(X)
-            yield valid_result
-        if use_cache:
-            self.cache.put_data(node, "valid", idx, cache_data)
-        return ret_func()
-    
     def get_node_info(self):
         lines = [f"# Experiment Pipeline Summary\n"]
         lines.append(f"- **DataSource**\n")
@@ -1149,7 +913,7 @@ class Experimenter():
         var_map = {}
 
         for idx in range(self.get_n_splits()):
-            n_inner = len(self.train_idx_list[idx])
+            n_inner = len(self.outer_folds[idx].train_data_flows)
             # edges는 dict: {key: [(node_name, var), ...], ...}
             edge_objs = {}
             for key, edge_list in edges.items():
@@ -1306,7 +1070,7 @@ class Experimenter():
                 )
                 exp.trainers[trainer_name] = trainer
 
-        exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.train_idx_list)} fold(s)")
+        exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.outer_folds)} fold(s)")
         return exp
     
     def export_pipeline(self):

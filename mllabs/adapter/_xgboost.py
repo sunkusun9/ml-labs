@@ -64,14 +64,16 @@ class XGBoostAdapter(ModelAdapter):
         params['device'] = f'cuda:{gpu_id}'
         return params
 
-    def get_params(self, params, logger=None):
+    def get_params(self, params, gpu_id_list=None, logger=None):
         """XGBoost 모델 생성자 파라미터 조정 (ProgressCallback 설정)"""
         if params is None:
             params = {}
         else:
             params = params.copy()
 
-        params.pop('gpu', None)
+        gpu = params.pop('gpu', 'auto')
+        if gpu is not None and gpu_id_list:
+            params['device'] = f'cuda:{gpu_id_list[0]}'
 
         if self.verbose > 0 and self.verbose < 1:
             n_estimators = params.get('n_estimators', 100)
@@ -82,22 +84,19 @@ class XGBoostAdapter(ModelAdapter):
 
         return params
 
-    def get_fit_params(self, data_dict, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
         """XGBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(data_dict, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, logger)
 
         if params is not None and params.get('verbosity', 0) > 0:
             fit_params['verbose'] = True
         else:
             fit_params['verbose'] = False
 
-        train_X, train_v_X = data_dict['X']
-        if 'y' in data_dict:
-            train_y, train_v_y = data_dict['y']
-        else:
-            train_y, train_v_y = None, None
+        train_v_X = valid_data.get('X') if valid_data else None
+        train_v_y = valid_data.get('y') if valid_data else None
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
             if self.eval_mode == 'valid':
