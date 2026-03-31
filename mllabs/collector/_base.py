@@ -1,16 +1,53 @@
+import pickle
+from pathlib import Path
+
+
 class Collector:
+    _SAVE_EXCLUDE = {'_buf': dict}  # {attr: factory} — load 시 factory()로 초기화
+
     def __init__(self, name, connector):
         self.name = name
         self.connector = connector
         self.path = None
         self.warnings = []
-        self._buf = {}  # {(node, idx): [result, ...]}
+        self._n_outer = None
+        self._n_inner = None
+        self._buf = {}  # {node: {outer_idx: {inner_idx: result}}}
+
+    def _setup(self, n_outer, n_inner):
+        self._n_outer = n_outer
+        self._n_inner = n_inner
 
     def collect(self, context):
         return None
 
-    def push(self, node, idx, no, result):
-        self._buf.setdefault((node, idx), []).append(result)
+    def push(self, node, outer_idx, inner_idx, result):
+        outer_buf = self._buf.setdefault(node, {}).setdefault(outer_idx, {})
+        outer_buf[inner_idx] = result
+        if self._n_inner is not None and len(outer_buf) == self._n_inner:
+            inner_list = [outer_buf.get(i) for i in range(self._n_inner)]
+            del self._buf[node][outer_idx]
+            self._flush_outer(node, outer_idx, inner_list)
 
-    def end_idx(self, node, idx):
+    def _flush_outer(self, node, outer_idx, inner_list):
         pass
+
+    def abort_node(self, node):
+        self._buf.pop(node, None)
+
+    def save(self):
+        self.path.mkdir(parents=True, exist_ok=True)
+        exclude = self._SAVE_EXCLUDE.keys()
+        state = {k: v for k, v in self.__dict__.items() if k not in exclude}
+        with open(self.path / '__config.pkl', 'wb') as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path):
+        with open(Path(path) / '__config.pkl', 'rb') as f:
+            state = pickle.load(f)
+        obj = cls.__new__(cls)
+        obj.__dict__.update(state)
+        for attr, factory in cls._SAVE_EXCLUDE.items():
+            setattr(obj, attr, factory())
+        return obj

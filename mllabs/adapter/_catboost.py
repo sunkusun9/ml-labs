@@ -34,7 +34,7 @@ class CatBoostAdapter(ModelAdapter):
         params['devices'] = str(gpu_id)
         return params
 
-    def get_params(self, params, gpu_id_list=None, logger=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None):
         if params is None:
             return {}
         gpu = params.get('gpu', 'auto')
@@ -52,11 +52,11 @@ class CatBoostAdapter(ModelAdapter):
             return x.to_pandas()
         return x
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
         """CatBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(train_data, valid_data, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, monitor)
 
         def _maybe_to_pandas(x):
             if not _catboost_supports_polars() and x is not None and 'polars' in type(x).__module__:

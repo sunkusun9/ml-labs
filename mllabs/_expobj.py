@@ -9,7 +9,7 @@ from multiprocessing import Process
 from multiprocessing.connection import wait
 
 
-def _build(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list=None):
+def _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list=None):
     from ._node_processor import TransformProcessor, PredictProcessor
     method = node_attrs['method']
     if method in ['transform', 'fit_transform']:
@@ -71,13 +71,18 @@ def _safe_collect_call(collector, context, logger):
         return None
 
 
+def _default_on_collect(collector, node_name, idx, inner_idx, result):
+    collector.push(node_name, idx, inner_idx, result)
+
+
 def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data,
                     idx, inner_idx, logger,
-                    include_input=True, include_output=True, include_train=True):
+                    include_input=True, include_output=True, include_train=True,
+                    on_collect=_default_on_collect):
     node_name = node_attrs['name']
     matched = [c for c in collectors if c.connector.match(node_name, node_attrs)]
     if not matched:
-        return {}
+        return
     context = {
         'node_attrs': node_attrs,
         'processor': obj,
@@ -89,7 +94,8 @@ def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid
     if include_output:
         context['output_valid'] = obj.process(valid_data) if valid_data else None
         context['output_train'] = (result if result is not None else obj.process(train_data)) if include_train else None
-    return {c.name: _safe_collect_call(c, context, logger) for c in matched}
+    for c in matched:
+        on_collect(c, node_name, idx, inner_idx, _safe_collect_call(c, context, logger))
 
 
 class _PipeLogger:
@@ -106,7 +112,7 @@ class _PipeLogger:
         self._conn.send(('info', msg))
 
 
-class BuildWorker(Process):
+class ProcessWorker(Process):
     """Process-based worker. Receives jobs via Pipe, reports results/progress back.
 
     Job tuple: ``(node_path, file, node_attrs, idx, no, train_data, valid_data)``
@@ -144,7 +150,7 @@ class BuildWorker(Process):
             method = node_attrs['method']
             fit_process = method in ['fit_transform', 'fit_predict']
             os.makedirs(node_path, exist_ok=True)
-            obj, result, info = _build(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
+            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
             for w in info.get('warnings', []):
                 logger.warning(f"[{node_name}] fold {idx}: {w}")
             if obj is None:
@@ -158,16 +164,16 @@ class BuildWorker(Process):
             with open(file, 'wb') as f:
                 pkl.dump((save_obj, result, info), f)
 
-            coll_dict = _run_collectors(
+            def _send_collect(collector, node_name, idx, inner_idx, res):
+                self.conn.send(('collect', collector.name, node_name, idx, inner_idx, res))
+
+            _run_collectors(
                 self.collectors, node_attrs, obj, result, info, train_data, valid_data,
                 idx, no, logger,
                 include_input=self.include_input, include_output=self.include_output,
                 include_train=self.include_train,
+                on_collect=_send_collect,
             )
-            if coll_dict:
-                with open(node_path / f'_collect_{idx}_{no}.pkl', 'wb') as f:
-                    pkl.dump(coll_dict, f)
-
             self.conn.send(('done', info))
 
 # ---------------------------------------------------------------------------
@@ -209,7 +215,7 @@ def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None
             valid_data = flow.get_valid(node_attrs['edges'])
             fit_process = node_attrs['method'] in ['fit_transform', 'fit_predict']
 
-            obj, result, info = _build(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
+            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
             for w in info.get('warnings', []):
                 if logger:
                     logger.warning(f"[{node_name}] fold {fi}: {w}")
@@ -245,7 +251,7 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
     workers = []  # [(process, parent_conn)]
     for i in range(n_jobs):
         parent_conn, child_conn = Pipe()
-        w = BuildWorker(child_conn, collectors,
+        w = ProcessWorker(child_conn, collectors,
                         include_output=True, include_train=True, include_input=True,
                         gpu_id=gpu_id_list[i] if i < n_gpu else None)
         w.start()
@@ -310,6 +316,13 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
                     logger.info(f"[{node_name}] Build error at fold {fi}: {error_info['type']}: {error_info['message']}")
                 _try_dispatch()
 
+            elif msg_type == 'collect':
+                coll_name, node_name, fi, no, res = data
+                for c in collectors:
+                    if c.name == coll_name:
+                        c.push(node_name, fi, no, res)
+                        break
+
             elif msg_type == 'progress':
                 if logger:
                     logger.adhoc_progress(*data)
@@ -331,49 +344,6 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
 # ---------------------------------------------------------------------------
 # Head node — function-based management
 # ---------------------------------------------------------------------------
-
-def get_head_status(path, name):
-    """Returns 'built'/'finalized'/'error'/None by checking disk."""
-    node_path = path / name
-    if not os.path.isdir(node_path):
-        return None
-    if (node_path / 'error.txt').exists():
-        return 'error'
-    if (node_path / 'finalized.pkl').exists():
-        return 'finalized'
-    if (node_path / 'obj0_0.pkl').exists():
-        return 'built'
-    return None
-
-
-def get_head_error(path, name):
-    error_path = path / name / 'error.txt'
-    if error_path.exists():
-        with open(error_path) as f:
-            return json.load(f)
-    return None
-
-
-def set_head_error(path, name, error_info):
-    node_path = path / name
-    os.makedirs(node_path, exist_ok=True)
-    with open(node_path / 'error.txt', 'w') as f:
-        json.dump(error_info, f, ensure_ascii=False, indent=2)
-
-
-def finalize_head(path, name):
-    """Read specs from saved pkls → save finalized.pkl → remove obj pkls."""
-    node_path = path / name
-    specs = {}
-    for fpath in sorted(node_path.glob('obj*.pkl')):
-        outer, inner = map(int, fpath.stem[3:].split('_'))
-        with open(fpath, 'rb') as f:
-            _, _, spec = pkl.load(f)
-        specs[(outer, inner)] = spec
-    with open(node_path / 'finalized.pkl', 'wb') as f:
-        pkl.dump(specs, f)
-    for fpath in node_path.glob('obj*.pkl'):
-        fpath.unlink()
 
 
 def exp_node(path, node_attrs, idx, data_dict_it, collectors, logger,
@@ -411,16 +381,5 @@ def exp_node(path, node_attrs, idx, data_dict_it, collectors, logger,
     return True
 
 
-def get_head_objs(path, name, idx):
-    node_path = path / name
-    no = 0
-    while True:
-        filename = node_path / f'obj{idx}_{no}.pkl'
-        if not os.path.isfile(filename):
-            break
-        with open(filename, 'rb') as f:
-            obj, train_, spec = pkl.load(f)
-        yield obj, train_, spec
-        no += 1
 
 

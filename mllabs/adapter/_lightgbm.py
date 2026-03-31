@@ -6,17 +6,13 @@ import pandas as pd
 from ._base import ModelAdapter, GPU_NO, GPU_YES
 from lightgbm import early_stopping
 
-def create_progress_callback(n_estimators, period_pct, logger):
-    last_printed = [-1]  # mutable object
+def create_progress_callback(n_estimators, period_pct, monitor):
+    last_printed = [-1]
     def callback(env):
         current = env.iteration + 1
         percentage = (current / n_estimators) * 100
-
-        # period_pct마다 출력
         if int(percentage / (period_pct * 100)) > last_printed[0]:
             last_printed[0] = int(percentage / (period_pct * 100))
-
-            # metric 정보 추출
             metrics_str = ""
             if env.evaluation_result_list:
                 last_metrics = []
@@ -24,22 +20,17 @@ def create_progress_callback(n_estimators, period_pct, logger):
                     dataset_name, metric_name, value, _ = item
                     last_metrics.append(f"{dataset_name}-{metric_name}: {value:.4f}")
                 metrics_str = ", ".join(last_metrics)
-            logger.adhoc_progress(current, n_estimators, metrics_str if metrics_str else None)
-
+            monitor.report(current, n_estimators, metrics_str if metrics_str else None)
     return callback
 
 class LightGBMAdapter(ModelAdapter):
-    """Adapter for LightGBM models (LGBMClassifier, LGBMRegressor)
-
-    LightGBM도 eval_set 파라미터를 사용하지만 약간 다른 방식입니다.
-    """
     def get_gpu_usage(self, params):
         gpu = (params or {}).get('gpu', 'auto')
         if gpu is None:
             return GPU_NO
         if gpu == 'auto':
             return GPU_YES if (params or {}).get('device') == 'gpu' else GPU_NO
-        return GPU_YES  # 'yes'
+        return GPU_YES
 
     def inject_gpu_id(self, params, gpu_id):
         params = params.copy()
@@ -47,7 +38,7 @@ class LightGBMAdapter(ModelAdapter):
         params['gpu_device_id'] = gpu_id
         return params
 
-    def get_params(self, params, gpu_id_list=None, logger=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None):
         gpu = (params or {}).get('gpu', 'auto')
         params = {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric', 'gpu']}
         if gpu is not None and gpu_id_list:
@@ -62,11 +53,10 @@ class LightGBMAdapter(ModelAdapter):
             return x.to_pandas()
         return x
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
-        """LightGBM의 fit 파라미터 구성"""
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(train_data, valid_data, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, monitor)
 
         def _to_pandas(x):
             if x is not None and 'polars' in type(x).__module__:
@@ -84,7 +74,6 @@ class LightGBMAdapter(ModelAdapter):
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
             train_v_X_native = _to_pandas(unwrap(train_v_X))
             train_v_y_native = _to_pandas(unwrap(train_v_y))
-
             if self.eval_mode == 'valid':
                 fit_params['eval_set'] = [(train_v_X_native, train_v_y_native)]
             elif self.eval_mode == 'both':
@@ -94,8 +83,8 @@ class LightGBMAdapter(ModelAdapter):
             if self.verbose < 1:
                 n_estimators = params.get('n_estimators', 100) if params else 100
                 callbacks = fit_params.get('callbacks', [])
-                if logger is not None:
-                    callbacks.append(create_progress_callback(n_estimators, self.verbose, logger))
+                if monitor is not None:
+                    callbacks.append(create_progress_callback(n_estimators, self.verbose, monitor))
                 fit_params['callbacks'] = callbacks
             else:
                 fit_params['verbose'] = int(self.verbose)
@@ -115,11 +104,7 @@ class LightGBMAdapter(ModelAdapter):
     def _get_feature_importances(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.n_features_in_))
-
-        return pd.Series(
-            obj.feature_importances_,
-            index=input_vars, name = 'importance'
-        )
+        return pd.Series(obj.feature_importances_, index=input_vars, name='importance')
 
     @staticmethod
     def _get_evals_result(processor):

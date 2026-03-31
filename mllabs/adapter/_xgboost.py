@@ -3,26 +3,22 @@ XGBoost adapter
 """
 
 import pandas as pd
-from ._base import ModelAdapter, GPU_NO, GPU_YES, GPU_NO, GPU_YES
+from ._base import ModelAdapter, GPU_NO, GPU_YES
 
 from xgboost.callback import TrainingCallback
 
 class ProgressCallback(TrainingCallback):
-    def __init__(self, n_estimators, period_pct, logger):
+    def __init__(self, n_estimators, period_pct, monitor):
         self.n_estimators = n_estimators
         self.period_pct = period_pct
         self.last_printed = -1
-        self.logger = logger
+        self.monitor = monitor
 
     def after_iteration(self, model, epoch, evals_log):
         current = epoch + 1
         percentage = (current / self.n_estimators) * 100
-
-        # period_pct마다 출력
         if int(percentage / (self.period_pct * 100)) > self.last_printed:
             self.last_printed = int(percentage / (self.period_pct * 100))
-
-            # metric 정보 추출
             metrics_str = ""
             if evals_log:
                 last_metrics = []
@@ -30,20 +26,15 @@ class ProgressCallback(TrainingCallback):
                     for metric_name, values in metrics.items():
                         last_metrics.append(f"{dataset}-{metric_name}: {values[-1]:.4f}")
                 metrics_str = ", ".join(last_metrics)
-            if self.logger is not None:
-                self.logger.adhoc_progress(current, self.n_estimators, metrics_str if metrics_str else None)
+            if self.monitor is not None:
+                self.monitor.report(current, self.n_estimators, metrics_str if metrics_str else None)
         return False
-    
+
     def after_training(self, model):
-        self.logger = None
+        self.monitor = None
         return model
 
 class XGBoostAdapter(ModelAdapter):
-    """Adapter for XGBoost models (XGBClassifier, XGBRegressor)
-
-    XGBoost는 eval_set 파라미터로 [(X, y), ...] 형태를 받습니다.
-    """
-
     result_objs = [
         'feature_importances_weight', 'feature_importances_gain', 'feature_importances_cover',
         'feature_importances_total_gain', 'feature_importances_total_cover',
@@ -57,15 +48,14 @@ class XGBoostAdapter(ModelAdapter):
         if gpu == 'auto':
             device = (params or {}).get('device', '')
             return GPU_YES if isinstance(device, str) and 'cuda' in device else GPU_NO
-        return GPU_YES  # 'yes'
+        return GPU_YES
 
     def inject_gpu_id(self, params, gpu_id):
         params = params.copy()
         params['device'] = f'cuda:{gpu_id}'
         return params
 
-    def get_params(self, params, gpu_id_list=None, logger=None):
-        """XGBoost 모델 생성자 파라미터 조정 (ProgressCallback 설정)"""
+    def get_params(self, params, gpu_id_list=None, monitor=None):
         if params is None:
             params = {}
         else:
@@ -78,17 +68,16 @@ class XGBoostAdapter(ModelAdapter):
         if self.verbose > 0 and self.verbose < 1:
             n_estimators = params.get('n_estimators', 100)
             callbacks = params.get('callbacks', [])
-            if logger is not None:
-                callbacks.append(ProgressCallback(n_estimators, self.verbose, logger))
+            if monitor is not None:
+                callbacks.append(ProgressCallback(n_estimators, self.verbose, monitor))
             params['callbacks'] = callbacks
 
         return params
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
-        """XGBoost의 fit 파라미터 구성"""
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(train_data, valid_data, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, monitor)
 
         if params is not None and params.get('verbosity', 0) > 0:
             fit_params['verbose'] = True
@@ -111,15 +100,11 @@ class XGBoostAdapter(ModelAdapter):
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.n_features_in_))
         booster = obj.get_booster()
         scores = booster.get_score(importance_type=importance_type)
-
-        return pd.Series(
-            [scores.get(f, 0) for f in input_vars],
-            index=input_vars, name = 'importance'
-        )
+        return pd.Series([scores.get(f, 0) for f in input_vars], index=input_vars, name='importance')
 
     def _get_evals_result(processor):
         obj = processor.obj
-        evals_result =  obj.evals_result() if hasattr(obj, 'evals_result') else {}
+        evals_result = obj.evals_result() if hasattr(obj, 'evals_result') else {}
         return pd.concat(
             [pd.DataFrame(v).stack().rename(k) for k, v in evals_result.items()], axis=1
         ).stack()
@@ -132,6 +117,6 @@ class XGBoostAdapter(ModelAdapter):
 
 XGBoostAdapter.result_objs = {
     'feature_importances': (XGBoostAdapter._get_feature_importances, True),
-    'evals_result': (XGBoostAdapter._get_evals_result, True), 
+    'evals_result': (XGBoostAdapter._get_evals_result, True),
     'trees': (XGBoostAdapter._get_trees, False)
 }

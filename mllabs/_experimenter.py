@@ -15,6 +15,7 @@ from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap, DataWrapperProvider
 from ._flow import TrainDataFlow
+from ._store import ArtifactStore
 from ._expobj import (
     get_head_status, get_head_error, set_head_error, finalize_head,
     exp_node as _head_exp_node, get_head_objs,
@@ -51,6 +52,10 @@ class OuterFold:
             )
             for j, (train_idx, valid_idx) in enumerate(train_idx_list)
         ]
+        self.artifact_stores = [
+            ArtifactStore(path=self.path / str(j))
+            for j in range(len(train_idx_list))
+        ]
 
     def set_data(self, data, cache=None, aug_data=None):
         self.data = data
@@ -66,13 +71,6 @@ class OuterFold:
         test_source = self.data.iloc(self.test_idx)
         return self.get_data(test_source, edges, inner_idx)
 
-    def __getstate__(self):
-        return {'path': self.path, 'test_idx': self.test_idx, 'train_data_flows': self.train_data_flows}
-
-    def __setstate__(self, state):
-        self.path = state['path']
-        self.test_idx = state['test_idx']
-        self.train_data_flows = state['train_data_flows']
 
 
 def _get_data_size(data):

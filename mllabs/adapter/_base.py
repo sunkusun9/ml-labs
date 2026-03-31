@@ -47,14 +47,14 @@ class ModelAdapter(ABC):
         self.eval_mode = eval_mode
         self.verbose = verbose
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
         """모델의 fit()에 전달할 파라미터를 구성
 
         Args:
             train_data: {key: data} 형태의 train 데이터 딕셔너리
             valid_data: {key: data} 형태의 valid 데이터 딕셔너리 (Optional)
             params (dict): Processor에서 전달된 추가 파라미터 (Optional, default=None)
-            logger: Logger 인스턴스
+            monitor: ProgressMonitor 인스턴스
 
         Returns:
             dict: fit()에 unpacking으로 전달할 파라미터
@@ -87,7 +87,7 @@ class ModelAdapter(ABC):
             return GPU_NO
         return GPU_YES
 
-    def get_params(self, params, gpu_id_list=None, logger=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None):
         """모델 생성자에 전달할 파라미터를 조정
 
         Args:

@@ -1,3 +1,6 @@
+import pickle
+import re
+
 import pandas as pd
 
 from ._base import Collector
@@ -5,6 +8,8 @@ from ..adapter import get_adapter
 
 
 class ModelAttrCollector(Collector):
+    _SAVE_EXCLUDE = {'_buf': dict, '_cache': dict}
+
     def __init__(self, name, connector, result_key, adapter=None, params=None):
         super().__init__(name, connector)
         self.result_key = result_key
@@ -15,6 +20,7 @@ class ModelAttrCollector(Collector):
             if self.result_key not in self.adapter.result_objs:
                 raise RuntimeError("")
         self.params = params or {}
+        self._cache = {}  # {node: {(outer_idx, inner_idx): result}}
 
     def collect(self, context):
         result_func = self.adapter.result_objs[self.result_key][0]
@@ -25,8 +31,54 @@ class ModelAttrCollector(Collector):
             return False
         return self.adapter.result_objs[self.result_key][1]
 
+    def _flush_outer(self, node, outer_idx, inner_list):
+        node_cache = self._cache.setdefault(node, {})
+        for inner_idx, r in enumerate(inner_list):
+            node_cache[(outer_idx, inner_idx)] = r
+        if self._n_outer is not None and len(node_cache) == self._n_outer * self._n_inner:
+            self.path.mkdir(parents=True, exist_ok=True)
+            with open(self.path / f'{node}.pkl', 'wb') as f:
+                pickle.dump(node_cache, f)
+
+    def _load_results(self, node):
+        if node in self._cache:
+            return self._cache[node]
+        with open(self.path / f'{node}.pkl', 'rb') as f:
+            result = pickle.load(f)
+        self._cache[node] = result
+        return result
+
+    def has_node(self, node):
+        if self.path is None:
+            return False
+        return (self.path / f'{node}.pkl').exists()
+
+    def has(self, node):
+        return self.has_node(node)
+
+    def reset_nodes(self, nodes):
+        node_set = set(nodes)
+        self._buf = {k: v for k, v in self._buf.items() if k not in node_set}
+        for node in nodes:
+            self._cache.pop(node, None)
+            p = self.path / f'{node}.pkl'
+            if p.exists():
+                p.unlink()
+
+    def _get_saved_nodes(self):
+        if self.path is None:
+            return []
+        return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
+
+    def _get_nodes(self, nodes, available):
+        if nodes is None:
+            return available
+        if isinstance(nodes, list):
+            return [n for n in nodes if n in set(available)]
+        return [n for n in available if re.search(nodes, n)]
+
     def get_attr(self, node, idx=None):
-        data = self._load_collect_results(node)
+        data = self._load_results(node)
         outer_idxs = sorted(set(k[0] for k in data.keys()))
         result = []
         for oi in outer_idxs:
