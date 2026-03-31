@@ -1,4 +1,3 @@
-import json
 import os
 import pickle as pkl
 
@@ -24,26 +23,24 @@ class ArtifactStore:
         node_path = self._node_path(name)
         if not os.path.isdir(node_path):
             return None
-        if (node_path / 'error.txt').exists():
-            return 'error'
         if (node_path / 'finalized.pkl').exists():
             return 'finalized'
         if (node_path / 'obj.pkl').exists():
             return 'built'
         return None
 
-    def get_error(self, name):
-        error_path = self._node_path(name) / 'error.txt'
-        if error_path.exists():
-            with open(error_path) as f:
-                return json.load(f)
-        return None
-
-    def set_error(self, name, error_info):
-        node_path = self._node_path(name)
+    @classmethod
+    def write_obj(cls, node_path, obj, result, info, finalize=False):
         os.makedirs(node_path, exist_ok=True)
-        with open(node_path / 'error.txt', 'w') as f:
-            json.dump(error_info, f, ensure_ascii=False, indent=2)
+        if finalize:
+            with open(node_path / 'finalized.pkl', 'wb') as f:
+                pkl.dump(info, f)
+        else:
+            with open(node_path / 'obj.pkl', 'wb') as f:
+                pkl.dump((obj, result, info), f)
+
+    def save_obj(self, name, obj, result, info, finalize=False):
+        self.write_obj(self._node_path(name), obj, result, info, finalize)
 
     def finalize(self, name):
         node_path = self._node_path(name)

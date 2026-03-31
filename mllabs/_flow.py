@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from ._node_processor import resolve_columns
-# from ._expobj import _build_sub
 
 
 class DataSourceProvider(ABC):
@@ -30,8 +29,11 @@ class DataFlow:
         self._node_edges = {}  # {name: edges dict}
         self.load()
 
+    def _node_path(self, node_name):
+        return self.path / node_name
+
     def get_objs_file(self, node_name):
-        return self.path / node_name / 'obj.pkl'
+        return self._node_path(node_name) / 'obj.pkl'
 
     def set_objs(self, node_name, obj, result, info):
         self.node_objs[node_name] = (obj, result, info)
@@ -119,10 +121,10 @@ class TrainDataFlow(DataFlow):
         super().__init__(path)
 
     @staticmethod
-    def write_objs(file, obj_data):
-        os.makedirs(file.parent, exist_ok=True)
-        with open(file, 'wb') as f:
-            pkl.dump(obj_data, f)
+    def write_objs(path, obj, result, info):
+        os.makedirs(path, exist_ok=True)
+        with open(path / 'obj.pkl', 'wb') as f:
+            pkl.dump((obj, result, info), f)
 
     def get_available_stages(self, pipeline):
         """Returns stage node names that this DataFlow can produce output for."""

@@ -16,10 +16,6 @@ from sklearn.model_selection import ShuffleSplit
 from ._data_wrapper import wrap, unwrap, DataWrapperProvider
 from ._flow import TrainDataFlow
 from ._store import ArtifactStore
-from ._expobj import (
-    get_head_status, get_head_error, set_head_error, finalize_head,
-    exp_node as _head_exp_node, get_head_objs,
-)
 from ._describer import desc_spec, desc_status, desc_obj_vars
 from ._logger import DefaultLogger
 
