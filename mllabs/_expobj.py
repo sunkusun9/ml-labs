@@ -201,15 +201,15 @@ def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None
 
     while True:
         ready = [
-            (fi, n) for fi, flow in enumerate(flows) for n in nodes
-            if n not in flow.node_objs and (fi, n) not in errors
+            (outer_idx, inner_idx, flow, n)
+            for outer_idx, inner_idx, flow in flows for n in nodes
+            if n not in flow.node_objs and (outer_idx, inner_idx, n) not in errors
             and _is_stage_ready(flow, pipeline, n)
         ]
         if not ready:
             break
 
-        for fi, node_name in ready:
-            flow = flows[fi]
+        for outer_idx, inner_idx, flow, node_name in ready:
             node_attrs = pipeline.get_node_attrs(node_name)
             train_data = flow.get_train(node_attrs['edges'])
             valid_data = flow.get_valid(node_attrs['edges'])
@@ -218,11 +218,11 @@ def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None
             obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
             for w in info.get('warnings', []):
                 if logger:
-                    logger.warning(f"[{node_name}] fold {fi}: {w}")
+                    logger.warning(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}")
             if obj is None:
-                errors[(fi, node_name)] = info['error']
+                errors[(outer_idx, inner_idx, node_name)] = info['error']
                 if logger:
-                    logger.info(f"[{node_name}] Build error at fold {fi}: {info['error']['type']}: {info['error']['message']}")
+                    logger.info(f"[{node_name}] Build error at fold {outer_idx}_{inner_idx}: {info['error']['type']}: {info['error']['message']}")
                 continue
 
             TrainDataFlow.write_objs(flow.get_objs_file(node_name), (obj, result, info))
@@ -230,17 +230,20 @@ def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None
 
             if collectors:
                 _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data,
-                                fi, 0, logger)
+                                outer_idx, inner_idx, logger)
 
     return errors
 
 
-def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collectors=None, logger=None):
+def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collectors=None, logger=None,
+                      gpu_fallback_cpu=True, cpu_fallback_gpu=True):
     from .adapter._base import GPU_NO
 
     gpu_id_list = gpu_id_list or []
     collectors = collectors or []
     n_gpu = len(gpu_id_list)
+
+    flow_map = {(outer_idx, inner_idx): flow for outer_idx, inner_idx, flow in flows}
 
     def _needs_gpu(node_attrs):
         if not gpu_id_list:
@@ -259,37 +262,47 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
 
     free_gpu = list(range(n_gpu))
     free_cpu = list(range(n_gpu, n_jobs))
-    busy = {}   # parent_conn -> (fi, node_name)
+    busy = {}   # parent_conn -> (outer_idx, inner_idx, node_name)
     errors = {}
-
-    remaining = {(fi, n) for fi, flow in enumerate(flows) for n in nodes if n not in flow.node_objs}
     all_conns = [conn for _, conn in workers]
 
     def _collect_ready():
         in_flight = set(busy.values())
-        return [(fi, n) for fi, n in remaining
-                if (fi, n) not in in_flight and _is_stage_ready(flows[fi], pipeline, n)]
+        gpu_ready, cpu_ready = [], []
+        for outer_idx, inner_idx, flow in flows:
+            for n in nodes:
+                key = (outer_idx, inner_idx, n)
+                if n in flow.node_objs or key in errors or key in in_flight:
+                    continue
+                if not _is_stage_ready(flow, pipeline, n):
+                    continue
+                node_attrs = pipeline.get_node_attrs(n)
+                (gpu_ready if _needs_gpu(node_attrs) else cpu_ready).append(key)
+        return gpu_ready, cpu_ready
 
-    def _dispatch(fi, node_name, worker_idx):
-        flow = flows[fi]
+    def _dispatch(outer_idx, inner_idx, node_name, worker_idx):
+        flow = flow_map[(outer_idx, inner_idx)]
         node_attrs = pipeline.get_node_attrs(node_name)
         train_data = flow.get_train(node_attrs['edges'])
         valid_data = flow.get_valid(node_attrs['edges'])
         _, conn = workers[worker_idx]
         file = flow.get_objs_file(node_name)
-        conn.send((file.parent, file, node_attrs, fi, 0, train_data, valid_data))
-        busy[conn] = (fi, node_name)
+        conn.send((file.parent, file, node_attrs, outer_idx, inner_idx, train_data, valid_data))
+        busy[conn] = (outer_idx, inner_idx, node_name)
         (free_gpu if worker_idx < n_gpu else free_cpu).remove(worker_idx)
 
     def _try_dispatch():
-        for fi, node_name in _collect_ready():
-            node_attrs = pipeline.get_node_attrs(node_name)
-            if _needs_gpu(node_attrs) and free_gpu:
-                _dispatch(fi, node_name, free_gpu[0])
-            elif free_cpu:
-                _dispatch(fi, node_name, free_cpu[0])
-            elif free_gpu:
-                _dispatch(fi, node_name, free_gpu[0])
+        gpu_ready, cpu_ready = _collect_ready()
+        for outer_idx, inner_idx, node_name in gpu_ready:
+            if free_gpu:
+                _dispatch(outer_idx, inner_idx, node_name, free_gpu[0])
+            elif free_cpu and gpu_fallback_cpu:
+                _dispatch(outer_idx, inner_idx, node_name, free_cpu[0])
+        for outer_idx, inner_idx, node_name in cpu_ready:
+            if free_cpu:
+                _dispatch(outer_idx, inner_idx, node_name, free_cpu[0])
+            elif free_gpu and cpu_fallback_gpu:
+                _dispatch(outer_idx, inner_idx, node_name, free_gpu[0])
 
     _try_dispatch()
 
@@ -297,23 +310,21 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
         for conn in wait(all_conns):
             msg_type, *data = conn.recv()
             worker_idx = next(i for i, (_, c) in enumerate(workers) if c is conn)
-            fi, node_name = busy[conn]
+            outer_idx, inner_idx, node_name = busy[conn]
 
             if msg_type == 'done':
-                flows[fi].load_objs(node_name)
-                remaining.discard((fi, node_name))
+                flow_map[(outer_idx, inner_idx)].load_objs(node_name)
                 del busy[conn]
                 (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
                 _try_dispatch()
 
             elif msg_type == 'error':
                 error_info = data[0]
-                errors[(fi, node_name)] = error_info
-                remaining.discard((fi, node_name))
+                errors[(outer_idx, inner_idx, node_name)] = error_info
                 del busy[conn]
                 (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
                 if logger:
-                    logger.info(f"[{node_name}] Build error at fold {fi}: {error_info['type']}: {error_info['message']}")
+                    logger.info(f"[{node_name}] Build error at fold {outer_idx}_{inner_idx}: {error_info['type']}: {error_info['message']}")
                 _try_dispatch()
 
             elif msg_type == 'collect':
