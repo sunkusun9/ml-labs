@@ -1,5 +1,4 @@
 import os
-import pickle as pkl
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -31,8 +30,7 @@ class DataFlow(NodeStore):
         self.load()
 
     def load_objs(self, node_name):
-        with open(self.get_objs_file(node_name), 'rb') as f:
-            obj, result, info = pkl.load(f)
+        obj, result, info = self.get_objs(node_name)
         self.set_objs(node_name, obj, result, info)
         return obj, result, info
 
@@ -42,7 +40,7 @@ class DataFlow(NodeStore):
         for node_dir in sorted(self.path.iterdir()):
             if not node_dir.is_dir():
                 continue
-            if self.get_objs_file(node_dir.name).exists():
+            if (node_dir / 'obj.pkl').exists():
                 self.load_objs(node_dir.name)
 
     def get_data(self, source_data, edges):

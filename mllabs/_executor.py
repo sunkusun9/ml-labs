@@ -6,6 +6,7 @@ import warnings
 from multiprocessing import Process
 from multiprocessing.connection import wait
 from ._node_processor import ProgressMonitor
+from ._store import NodeStore
 
 
 def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list=None):
@@ -32,6 +33,7 @@ def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_li
                 'fit_time': time.time() - start_time,
                 'train_shape': None,
                 'edges': node_attrs.get('edges'),
+                'status': 'error',
                 'error': {
                     'type': type(e).__name__,
                     'message': str(e),
@@ -99,20 +101,6 @@ def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid
         on_collect(c, node_attrs['name'], outer_idx, inner_idx, _safe_collect_call(c, context, monitor))
 
 
-def _save_flow(path, obj, result, info):
-    from ._store import NodeStore
-    NodeStore.write_obj(path, obj, result, info)
-
-
-def _save_artifact(path, obj, result, info):
-    from ._store import NodeStore
-    NodeStore.write_obj(path, obj, result, info)
-
-
-def _save_artifact_finalize(path, obj, result, info):
-    from ._store import NodeStore
-    NodeStore.write_obj(path, obj, result, info, finalize=True)
-
 
 class _PipeLogger:
     def __init__(self, conn):
@@ -152,13 +140,13 @@ class ProcessWorker(Process):
         ('error', error_info)
     """
 
-    def __init__(self, conn, collectors, save_fn,
-                 include_output=False, include_train=True, include_input=True,
+    def __init__(self, conn, collectors,
+                 finalize=False, include_output=False, include_train=True, include_input=True,
                  gpu_id=None):
         super().__init__(daemon=True)
         self.conn = conn
         self.collectors = collectors
-        self.save_fn = save_fn
+        self.finalize = finalize
         self.include_output = include_output
         self.include_train = include_train
         self.include_input = include_input
@@ -180,10 +168,14 @@ class ProcessWorker(Process):
             for w in info.get('warnings', []):
                 logger.warning(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}")
             if obj is None:
+                NodeStore.write_info(node_path, info)
                 self.conn.send(('error', {**info['error'], 'fold': (outer_idx, inner_idx)}))
                 continue
 
-            self.save_fn(node_path, obj, result, info)
+            if self.finalize:
+                NodeStore.write_info(node_path, {**info, 'status': 'finalized'})
+            else:
+                NodeStore.write_objs(node_path, obj, result, info)
 
             def _send_collect(collector, node_name, outer_idx, inner_idx, res):
                 self.conn.send(('collect', collector.name, node_name, outer_idx, inner_idx, res))
@@ -259,11 +251,12 @@ def _build_flow_single(outer_folds, pipeline, nodes, gpu_id_list=None, collector
                     tracker.message(0, f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}", typ='warning')
             if obj is None:
                 errors[(outer_idx, inner_idx, node_name)] = info['error']
+                NodeStore.write_info(flow._node_path(node_name), info)
                 if tracker:
                     tracker.error(0, node_name, outer_idx, inner_idx, info['error'])
                 continue
 
-            flow.save_obj(node_name, obj, result, info)
+            NodeStore.write_objs(flow._node_path(node_name), obj, result, info)
             flow.set_objs(node_name, obj, result, info)
             if tracker:
                 tracker.done(0, node_name, outer_idx, inner_idx, info)
@@ -298,7 +291,7 @@ def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, co
     workers = []  # [(process, parent_conn)]
     for i in range(n_jobs):
         parent_conn, child_conn = Pipe()
-        w = ProcessWorker(child_conn, collectors, _save_flow,
+        w = ProcessWorker(child_conn, collectors,
                         include_output=True, include_train=True, include_input=True,
                         gpu_id=gpu_id_list[i] if i < n_gpu else None)
         w.start()
@@ -434,7 +427,7 @@ def _experiment_single(outer_folds, pipeline, nodes,
                 test_data = outer_fold.get_test_data(edges)
 
                 if status == 'built':
-                    obj, result, info = artifact_store.get_obj(node_name)
+                    obj, result, info = artifact_store.get_objs(node_name)
                     if tracker:
                         tracker.done(0, node_name, outer_idx, inner_idx, info)
                 else:
@@ -445,12 +438,16 @@ def _experiment_single(outer_folds, pipeline, nodes,
                         monitor.message(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}", typ='warning')
                     if obj is None:
                         errors[(outer_idx, node_name)] = {**info['error'], 'fold': (outer_idx, inner_idx)}
+                        NodeStore.write_info(artifact_store._node_path(node_name), info)
                         if tracker:
                             tracker.error(0, node_name, outer_idx, inner_idx, info['error'])
                         for c in matched:
                             c.abort_node(node_name)
                         continue
-                    artifact_store.save_obj(node_name, obj, result, info, finalize=finalize)
+                    if finalize:
+                        NodeStore.write_info(artifact_store._node_path(node_name), {**info, 'status': 'finalized'})
+                    else:
+                        NodeStore.write_objs(artifact_store._node_path(node_name), obj, result, info)
                     if tracker:
                         tracker.done(0, node_name, outer_idx, inner_idx, info)
 
@@ -483,8 +480,8 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
     workers = []
     for i in range(n_jobs):
         parent_conn, child_conn = Pipe()
-        save_fn = _save_artifact_finalize if finalize else _save_artifact
-        w = ProcessWorker(child_conn, collectors, save_fn,
+        w = ProcessWorker(child_conn, collectors,
+                          finalize=finalize,
                           include_output=True, include_train=include_train,
                           include_input=include_input,
                           gpu_id=gpu_id_list[i] if i < n_gpu else None)

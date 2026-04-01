@@ -56,11 +56,16 @@ class TrainStageObj:
         self.objs_ = {}
         split_idx = 0
         while True:
-            filename = self.path / f'obj{split_idx}.pkl'
-            if not os.path.isfile(filename):
+            obj_file = self.path / f'obj{split_idx}.pkl'
+            if not os.path.isfile(obj_file):
                 break
-            with open(filename, 'rb') as f:
-                self.objs_[split_idx] = pkl.load(f)
+            with open(obj_file, 'rb') as f:
+                obj = pkl.load(f)
+            with open(self.path / f'result{split_idx}.pkl', 'rb') as f:
+                result = pkl.load(f)
+            with open(self.path / f'info{split_idx}.pkl', 'rb') as f:
+                info = pkl.load(f)
+            self.objs_[split_idx] = (obj, result, info)
             split_idx += 1
         if self.objs_:
             self.status = 'built'
@@ -71,10 +76,14 @@ class TrainStageObj:
 
     def build_split(self, split_idx, node_attrs, data_dict, logger):
         obj, result, info = _train_build(node_attrs, data_dict, logger)
-        filename = self.path / f'obj{split_idx}.pkl'
-        with open(filename, 'wb') as f:
-            pkl.dump((obj, result, info), f)
-        self.objs_[split_idx] = (obj, result, info)
+        info_with_status = {**info, 'status': 'built'}
+        with open(self.path / f'obj{split_idx}.pkl', 'wb') as f:
+            pkl.dump(obj, f)
+        with open(self.path / f'result{split_idx}.pkl', 'wb') as f:
+            pkl.dump(result, f)
+        with open(self.path / f'info{split_idx}.pkl', 'wb') as f:
+            pkl.dump(info_with_status, f)
+        self.objs_[split_idx] = (obj, result, info_with_status)
 
     def end_build(self):
         self.status = 'built'
@@ -101,9 +110,13 @@ class TrainHeadObj:
 
     def build_split(self, split_idx, node_attrs, data_dict, logger):
         obj, result, info = _train_build(node_attrs, data_dict, logger)
-        filename = self.path / f'obj{split_idx}.pkl'
-        with open(filename, 'wb') as f:
-            pkl.dump((obj, result, info), f)
+        info_with_status = {**info, 'status': 'built'}
+        with open(self.path / f'obj{split_idx}.pkl', 'wb') as f:
+            pkl.dump(obj, f)
+        with open(self.path / f'result{split_idx}.pkl', 'wb') as f:
+            pkl.dump(result, f)
+        with open(self.path / f'info{split_idx}.pkl', 'wb') as f:
+            pkl.dump(info_with_status, f)
 
     def end_build(self):
         self.status = 'built'
@@ -111,9 +124,14 @@ class TrainHeadObj:
     def get_obj(self):
         no = 0
         while True:
-            filename = self.path / f'obj{no}.pkl'
-            if not os.path.isfile(filename):
+            obj_file = self.path / f'obj{no}.pkl'
+            if not os.path.isfile(obj_file):
                 break
-            with open(filename, 'rb') as f:
-                yield pkl.load(f)
+            with open(obj_file, 'rb') as f:
+                obj = pkl.load(f)
+            with open(self.path / f'result{no}.pkl', 'rb') as f:
+                result = pkl.load(f)
+            with open(self.path / f'info{no}.pkl', 'rb') as f:
+                info = pkl.load(f)
+            yield obj, result, info
             no += 1

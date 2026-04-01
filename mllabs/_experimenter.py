@@ -136,7 +136,7 @@ class Experimenter():
 
     Attributes:
         pipeline (Pipeline): The pipeline being experimented on.
-        node_objs (dict): ``{node_name: StageObj}`` — stage nodes only; head node state is checked on-demand via :func:`get_head_status`.
+        node_objs (dict): ``{node_name: StageObj}`` — stage nodes only; head node state is checked on-demand via :meth:`get_status`.
         cache (DataCache): Shared LRU cache.
         collectors (dict): Registered :class:`~mllabs.collector.Collector` instances.
         trainers (dict): Registered :class:`~mllabs._trainer.Trainer` instances.
@@ -439,6 +439,24 @@ class Experimenter():
         self.logger.info(f"Node '{name}' removed")
         self._save()
 
+    def get_status(self, node_name):
+        """Return the disk status of a head node across all folds.
+
+        Reads info.pkl from every artifact_store (outer × inner folds).
+        Returns the common status if all folds agree, or ``'inconsistent'``
+        if they differ.
+
+        Returns:
+            ``'built'``, ``'finalized'``, ``'error'``, ``None`` (init),
+            or ``'inconsistent'``.
+        """
+        statuses = {
+            artifact_store.status(node_name)
+            for outer_fold in self.outer_folds
+            for artifact_store in outer_fold.artifact_stores
+        }
+        return statuses.pop() if len(statuses) == 1 else 'inconsistent'
+
     def finalize(self, nodes):
         """Release memory for built Head nodes (``built`` → ``finalized``).
 
@@ -455,10 +473,11 @@ class Experimenter():
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'head':
-                grp_path = self.get_grp_path(node.grp)
-                if get_head_status(grp_path, i) == 'built':
+                if self.get_status(i) == 'built':
                     self.logger.info(f"Finalize '{i}'")
-                    finalize_head(grp_path, i)
+                    for outer_fold in self.outer_folds:
+                        for artifact_store in outer_fold.artifact_stores:
+                            artifact_store.finalize(i)
 
     def reinitialize(self, nodes):
         self._check_open()
@@ -473,10 +492,13 @@ class Experimenter():
                     self.logger.info(f"reinitialize '{i}'")
                     del self.node_objs[i]
             else:
-                grp_path = self.get_grp_path(node.grp)
-                finalized_pkl = grp_path / i / 'finalized.pkl'
-                if finalized_pkl.exists():
-                    finalized_pkl.unlink()
+                reinitialized = False
+                for outer_fold in self.outer_folds:
+                    for artifact_store in outer_fold.artifact_stores:
+                        if artifact_store.status(i) == 'finalized':
+                            artifact_store.reset_node(i)
+                            reinitialized = True
+                if reinitialized:
                     self.logger.info(f"reinitialize '{i}'")
 
     def close_exp(self):
@@ -590,22 +612,27 @@ class Experimenter():
                 continue
             node = self.pipeline.get_node(n)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                if n in self.node_objs and self.node_objs[n].status == 'error':
-                    error_nodes.append(n)
-            else:
-                if get_head_status(self.get_node_path(n).parent, n) == 'error':
-                    error_nodes.append(n)
+            stores = (
+                [flow for of in self.outer_folds for flow in of.train_data_flows]
+                if grp.role == 'stage' else
+                [store for of in self.outer_folds for store in of.artifact_stores]
+            )
+            if any(s.status(n) == 'error' for s in stores):
+                error_nodes.append(n)
         if not error_nodes:
             self.logger.info("No error nodes found")
             return
         for n in error_nodes:
             node = self.pipeline.get_node(n)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                err = self.node_objs[n].error
-            else:
-                err = get_head_error(self.get_node_path(n).parent, n)
+            stores = (
+                [flow for of in self.outer_folds for flow in of.train_data_flows]
+                if grp.role == 'stage' else
+                [store for of in self.outer_folds for store in of.artifact_stores]
+            )
+            err = next((s.get_info(n)['error'] for s in stores if s.status(n) == 'error'), None)
+            if err is None:
+                continue
             if traceback:
                 self.logger.info(f"[{n}] {err['type']}: {err['message']}\n{err['traceback']}")
             else:
@@ -741,7 +768,7 @@ class Experimenter():
             if exist == 'skip' and collector.has(name):
                 continue
             grp_path = self.get_grp_path(node.grp)
-            if get_head_status(grp_path, name) != 'built':
+            if self.get_status(name) != 'built':
                 continue
             node_attrs = self.pipeline.get_node_attrs(name)
             node_attrs['path'] = grp_path
