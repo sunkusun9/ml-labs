@@ -7,7 +7,7 @@ class ProgressMonitor:
     def report(self, current, total, metrics=None):
         pass
 
-    def message(self, msg):
+    def message(self, msg, typ='info'):
         pass
 
 
@@ -206,8 +206,13 @@ class TransformProcessor():
         return train_wrapper_class.from_output(result, self.output_vars, train_index)
 
     def process(self, data):
+        if 'X' in data:
+            data = data['X']
+        else:
+            data = data['y']
         data_index = data.get_index()
-        data_wrapper_class = type(data)
+        wrapper_class = type(data)
+        data = self.adapter.get_process_data(data)
 
         data_input = data if self.X_ else data.squeeze()
         data_native = self.adapter.get_process_data(data_input)
@@ -221,7 +226,7 @@ class TransformProcessor():
                 cols = [result.columns]
                 
             output_vars = [f"{self.name}__{col}" for col in cols]
-        return data_wrapper_class.from_output(result, output_vars, data_index)
+        return wrapper_class.from_output(result, output_vars, data_index)
 
 class PredictProcessor():
     def __init__(self, name, estimator, method='predict', adapter = None, params = {}):
@@ -298,11 +303,16 @@ class PredictProcessor():
         return train_wrapper_class.from_output(predictions, column_names, train_index)
 
     def process(self, data):
-        data_X = self.adapter.get_process_data(data)
+        if 'X' in data:
+            data = data['X']
+        else:
+            data = data['y']
+        wrapper_class = type(data)
         data_index = data.get_index()
+        data = self.adapter.get_process_data(data)
 
         if self.method == 'predict':
-            predictions = self.obj.predict(data_X)
+            predictions = self.obj.predict(data)
             # 컬럼명은 fit에서 이미 결정됨
             column_names = self.output_vars
 
@@ -310,7 +320,7 @@ class PredictProcessor():
             if not hasattr(self.obj, 'predict_proba'):
                 raise Exception(f"Model {self.estimator.__name__} does not support predict_proba")
 
-            predictions = self.obj.predict_proba(data_X)
+            predictions = self.obj.predict_proba(data)
             # 컬럼명은 fit에서 이미 결정됨
             column_names = self.output_vars
 
@@ -318,5 +328,4 @@ class PredictProcessor():
             raise ValueError(f"Unknown method: {self.method}. Use 'predict' or 'predict_proba'")
 
         # data의 Wrapper 타입으로 변환
-        data_wrapper_class = type(data)
-        return data_wrapper_class.from_output(predictions, column_names, data_index)
+        return wrapper_class.from_output(predictions, column_names, data_index)

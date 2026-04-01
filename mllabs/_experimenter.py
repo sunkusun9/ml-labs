@@ -15,7 +15,7 @@ from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap, DataWrapperProvider
 from ._flow import TrainDataFlow
-from ._store import ArtifactStore
+from ._store import NodeStore
 from ._describer import desc_spec, desc_status, desc_obj_vars
 from ._logger import DefaultLogger
 
@@ -35,7 +35,8 @@ class OuterFold:
     Call set_data(data) to re-inject DataWrapper and cache after load.
     """
 
-    def __init__(self, path, data, test_idx, train_idx_list, cache=None, aug_data=None):
+    def __init__(self, outer_idx, path, data, test_idx, train_idx_list, cache=None, aug_data=None):
+        self.outer_idx = outer_idx
         self.path = Path(path)
         self.test_idx = test_idx
         self.data = data
@@ -44,12 +45,13 @@ class OuterFold:
                 path=self.path / str(j),
                 data_source=DataWrapperProvider(data, train_idx, valid_idx=valid_idx, aug_data=aug_data),
                 cache=cache,
-                cache_key=(int(self.path.name), j),
+                outer_idx=outer_idx,
+                inner_idx=j,
             )
             for j, (train_idx, valid_idx) in enumerate(train_idx_list)
         ]
         self.artifact_stores = [
-            ArtifactStore(path=self.path / str(j))
+            NodeStore(path=self.path / str(j))
             for j in range(len(train_idx_list))
         ]
 
@@ -94,12 +96,12 @@ class DataCache():
     def __init__(self, maxsize=4 * 1024 ** 3):  # 4GB 기본값
         self.cache_dic = LRUCache(maxsize=maxsize, getsizeof=_get_data_size)
 
-    def get_data(self, node, typ, idx):
-        key = (node, typ, idx)
+    def get_data(self, node, outer_idx, inner_idx, typ):
+        key = (node, outer_idx, inner_idx, typ)
         return self.cache_dic.get(key, None)
 
-    def put_data(self, node, typ, idx, data):
-        key = (node, typ, idx)
+    def put_data(self, node, outer_idx, inner_idx, typ, data):
+        key = (node, outer_idx, inner_idx, typ)
         self.cache_dic[key] = data
 
     def clear(self):
@@ -181,7 +183,7 @@ class Experimenter():
                     for train_idx, valid_idx in sp_v.split(**inner_split_params)
                 ]
             else:
-                inner_folds = [(train_idx, None)]
+                inner_folds = [(outer_train_idx, None)]
             raw_splits.append((test_idx, inner_folds))
 
         self.pipeline = Pipeline()
@@ -189,6 +191,7 @@ class Experimenter():
 
         self.outer_folds = [
             OuterFold(
+                outer_idx=i,
                 path=self.path / '__folds' / str(i),
                 data=self.data,
                 test_idx=test_idx,
@@ -198,7 +201,6 @@ class Experimenter():
             )
             for i, (test_idx, inner_folds) in enumerate(raw_splits)
         ]
-        self.grps = {}
         self.collectors = {}
         self.trainers = {}
         self.status = "open"
@@ -267,6 +269,9 @@ class Experimenter():
 
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
+        collector._setup(
+            len(self.outer_folds), len(self.outer_folds[0].train_data_flows)
+        )
         collector.save()
         self.collectors[collector.name] = collector
         self.collect(collector)
@@ -488,11 +493,15 @@ class Experimenter():
                 continue
             node = self.pipeline.get_node(name)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'head':
-                grp_path = self.get_grp_path(node.grp)
-                if get_head_status(grp_path, name) == 'built':
-                    self.logger.info(f"Finalize '{name}'")
-                    finalize_head(grp_path, name)
+            logged = False
+            for outer_fold in self.outer_folds:
+                stores = outer_fold.train_data_flows if grp.role == 'stage' else outer_fold.artifact_stores
+                for store in stores:
+                    if store.status(name) == 'built':
+                        if not logged:
+                            self.logger.info(f"Finalize '{name}'")
+                            logged = True
+                        store.finalize(name)
         self.status = "closed"
         self._save()
 
@@ -504,9 +513,15 @@ class Experimenter():
         """
         if self.status != "closed":
             raise RuntimeError("")
-        for k in list(self.node_objs.keys()):
-            self.logger.info(f"Initialize '{k}'")
-            del self.node_objs[k]
+        for name in list(self.pipeline.nodes):
+            if name is None:
+                continue
+            node = self.pipeline.get_node(name)
+            grp = self.pipeline.get_grp(node.grp)
+            for outer_fold in self.outer_folds:
+                if grp.role == 'stage':
+                    for store in outer_fold.train_data_flows:
+                        store.reset_nodes(name)
         self.status = "open"
         self.build()
         self._save()
@@ -540,20 +555,18 @@ class Experimenter():
         Args:
             nodes (list[str]): Node names to reset.
         """
-        for i in nodes:
-            if i in self.node_objs:
-                node_obj = self.node_objs[i]
-                if node_obj.status == 'built':
-                    node_obj.finalize()
-                del self.node_objs[i]
-            else:
-                node = self.pipeline.get_node(i)
-                if node is not None:
-                    grp = self.pipeline.get_grp(node.grp)
-                    if grp.role == 'head':
-                        node_path = self.get_node_path(i)
-                        if os.path.isdir(node_path):
-                            shutil.rmtree(node_path)
+        for name in nodes:
+            node = self.pipeline.get_node(name)
+            if node is None:
+                continue
+            grp = self.pipeline.get_grp(node.grp)
+            for outer_fold in self.outer_folds:
+                if grp.role == 'stage':
+                    for flow in outer_fold.train_data_flows:
+                        flow.reset_node(name)
+                else:
+                    for store in outer_fold.artifact_stores:
+                        store.reset_node(name)
 
         self.cache.clear_nodes(nodes)
 
@@ -598,155 +611,109 @@ class Experimenter():
             else:
                 self.logger.info(f"[{n}] {err['type']}: {err['message']}")
 
-    def build(self, nodes = None, rebuild = False):
+    def build(self, nodes=None, rebuild=False, n_jobs=1, gpu_id_list=None):
         """Build Stage nodes.
 
         Args:
             nodes: Node query — ``None`` (all stages), ``list``, or regex ``str``.
             rebuild (bool): If ``True``, rebuild already-built nodes.
+            n_jobs (int): Number of parallel workers. Default 1 (sequential).
+            gpu_id_list (list, optional): GPU IDs to use for GPU-enabled nodes.
         """
+        from ._executor import _build_flow_single, _build_flow_multi
+        from ._tracker import LoggerExecuteTracker
         self._check_open()
-        node_names = self.pipeline.get_node_names(nodes)
-        target_nodes = list()
-        for i in self.pipeline._get_affected_nodes([None]):
-            node = self.pipeline.get_node(i)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                if i not in self.node_objs:
-                    target_nodes.append(i)
-                elif rebuild or self.node_objs[i].status != 'built':
-                    target_nodes.append(i)
+        node_names = set(self.pipeline.get_node_names(nodes))
+        target_nodes = [
+            i for i in self.pipeline._get_affected_nodes([None])
+            if i is not None
+            and i in node_names
+            and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'stage'
+        ]
+        if not target_nodes:
+            self.logger.info("No stage nodes to build")
+            return
+
+        if rebuild:
+            self.cache.clear_nodes(target_nodes)
+            for outer_fold in self.outer_folds:
+                for flow in outer_fold.train_data_flows:
+                    for name in target_nodes:
+                        flow.node_objs.pop(name, None)
 
         self.logger.info(f"Building {len(target_nodes)} node(s)")
-        for node in target_nodes:
-            if node in self.node_objs:
-                node_obj = self.node_objs[node]
-            else:
-                node_obj = StageObj(self.get_node_path(node))
-                self.node_objs[node] = node_obj
-            node_obj.start_build()
-        
-        n_splits = self.get_n_splits()
-        self.logger.clear_progress()
-        self.logger.start_progress("Build", n_splits)
-        for i in range(n_splits):
-            self.logger.update_progress(i)
-            self.logger.start_progress("Node", len(target_nodes))
-            for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(ni)
-                self.logger.rename_progress(node)
-                node_obj = self.node_objs[node]
-                if node_obj.status == 'error':
-                    continue
-                try:
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always")
-                        node_attrs = self.pipeline.get_node_attrs(node)
-                        node_obj.build_idx(
-                            i, node_attrs, self.get_node_data(node, i), [], self.logger
-                        )
-                        for w in caught:
-                            self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
-                except Exception as e:
-                    node_obj.set_error({
-                        'type': type(e).__name__,
-                        'message': str(e),
-                        'traceback': traceback.format_exc(),
-                        'fold': i,
-                    })
-                    self.logger.info(f"[{node}] Build error at fold {i}: {type(e).__name__}: {e}")
-                    self.logger.info(traceback.format_exc())
-            self.logger.end_progress(len(target_nodes))
-        self.logger.end_progress(n_splits)
+        collectors = list(self.collectors.values())
+        total = sum(len(of.train_data_flows) for of in self.outer_folds) * len(target_nodes)
+        tracker = LoggerExecuteTracker(total, n_jobs, self.logger)
 
-        error_nodes = [n for n in target_nodes if self.node_objs[n].status == 'error']
-        for node in target_nodes:
-            node_obj = self.node_objs[node]
-            if node_obj.status != 'error':
-                node_obj.end_build()
+        try:
+            if n_jobs > 1:
+                errors = _build_flow_multi(self.outer_folds, self.pipeline, target_nodes, n_jobs,
+                                           gpu_id_list=gpu_id_list, collectors=collectors,
+                                           tracker=tracker)
+            else:
+                errors = _build_flow_single(self.outer_folds, self.pipeline, target_nodes,
+                                            gpu_id_list=gpu_id_list, collectors=collectors,
+                                            tracker=tracker)
+        finally:
+            tracker.close()
+
+        error_nodes = list({n for _, _, n in errors})
+        n_ok = len(target_nodes) - len(error_nodes)
         if error_nodes:
-            self.logger.info(f"Build complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+            self.logger.info(f"Build complete: {n_ok}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
             self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
-    def exp(self, nodes=None, finalize=False, include_train=True):
+    def exp(self, nodes=None, finalize=False, include_train=True, n_jobs=1, gpu_id_list=None):
         """Run Head nodes and invoke all matching Collectors.
 
         Args:
             nodes: Node query — ``None`` (all heads), ``list``, or regex ``str``.
-            finalize (bool): If ``True``, save ``finalized.pkl`` with specs after
-                all folds complete and remove per-fold pkl files.
-            include_train (bool): If ``False``, skip computing train output
-                (``output_train`` will be absent from collector context).
+            finalize (bool): If ``True``, finalize after all folds complete.
+            include_train (bool): If ``False``, skip computing train output.
+            n_jobs (int): Number of parallel workers. Default 1 (sequential).
+            gpu_id_list (list, optional): GPU IDs to use for GPU-enabled nodes.
         """
+        from ._executor import _experiment_single, _experiment_multi
+        from ._tracker import LoggerExecuteTracker
         self._check_open()
         node_names = set(self.pipeline.get_node_names(nodes))
-        target_nodes = list()
-        for i in self.pipeline._get_affected_nodes([None]):
-            node = self.pipeline.get_node(i)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'head' and i in node_names:
-                grp_path = self.get_grp_path(node.grp)
-                if get_head_status(grp_path, i) not in ['built', 'finalized']:
-                    target_nodes.append(i)
+        target_nodes = [
+            i for i in self.pipeline._get_affected_nodes([None])
+            if i is not None
+            and i in node_names
+            and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'head'
+        ]
+        if not target_nodes:
+            self.logger.info("No head nodes to experiment")
+            return
 
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
+        collectors = list(self.collectors.values())
+        total = sum(len(of.train_data_flows) for of in self.outer_folds) * len(target_nodes)
+        tracker = LoggerExecuteTracker(total, n_jobs, self.logger)
 
-        # node_attrs with path injected
-        node_attrs_cache = {}
-        for n in target_nodes:
-            attrs = self.pipeline.get_node_attrs(n)
-            attrs['path'] = self.get_grp_path(self.pipeline.get_node(n).grp)
-            node_attrs_cache[n] = attrs
+        try:
+            if n_jobs > 1:
+                errors = _experiment_multi(self.outer_folds, self.pipeline, target_nodes, n_jobs,
+                                           gpu_id_list=gpu_id_list, collectors=collectors,
+                                           tracker=tracker, finalize=finalize,
+                                           include_train=include_train)
+            else:
+                errors = _experiment_single(self.outer_folds, self.pipeline, target_nodes,
+                                            gpu_id_list=gpu_id_list, collectors=collectors,
+                                            tracker=tracker, finalize=finalize,
+                                            include_train=include_train)
+        finally:
+            tracker.close()
 
-        # matched collectors per node
-        node_matched = {
-            node: [c for c in self.collectors.values()
-                   if c.connector.match(node, node_attrs_cache[node])]
-            for node in target_nodes
-        }
-
-        error_nodes_set = set()
-        n_splits = self.get_n_splits()
-        self.logger.clear_progress()
-        self.logger.start_progress("Exp", n_splits)
-        for i in range(n_splits):
-            self.logger.update_progress(i)
-            self.logger.start_progress("Node", len(target_nodes))
-            for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(ni)
-                self.logger.rename_progress(node)
-                if node in error_nodes_set:
-                    continue
-                success = _head_exp_node(
-                    node_attrs_cache[node]['path'], node_attrs_cache[node],
-                    i, self.get_node_data(node, i),
-                    list(self.collectors.values()),
-                    self.logger,
-                    finalize=finalize, include_train=include_train,
-                )
-                if not success:
-                    error_nodes_set.add(node)
-                    for collector in node_matched[node]:
-                        collector.reset_nodes([node])
-
-            self.logger.end_progress(len(target_nodes))
-        self.logger.end_progress(n_splits)
-
-        error_nodes = list(error_nodes_set)
-        for node in target_nodes:
-            if node not in error_nodes_set:
-                if finalize:
-                    grp_path = node_attrs_cache[node]['path']
-                    finalize_head(grp_path, node)
-                node_path = self.get_node_path(node)
-                for c in node_matched[node]:
-                    c._node_paths[node] = node_path
-
+        error_nodes = list({n for _, n in errors})
+        n_ok = len(target_nodes) - len(error_nodes)
         if error_nodes:
-            self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+            self.logger.info(f"Exp complete: {n_ok}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
-            self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
+            self.logger.info(f"Exp complete: {len(target_nodes)} node(s)")
         self._save()
 
     def collect(self, collector, nodes=None, exist='skip'):
@@ -783,21 +750,22 @@ class Experimenter():
                 node_attrs_cache[name] = node_attrs
 
         n_splits = self.get_n_splits()
-
-        self.logger.start_progress("Collect", n_splits)
+        self.logger.create_session(0)
+        self.logger.create_session(1)
+        self.logger.start_progress(0, "Collect", n_splits)
         for idx in range(n_splits):
-            self.logger.update_progress(idx)
-            self.logger.start_progress("Node", len(target_nodes))
+            self.logger.update_progress(0, idx)
+            self.logger.start_progress(1, "Node", len(target_nodes))
             for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(ni)
-                self.logger.rename_progress(node)
+                self.logger.update_progress(1, ni)
+                self.logger.rename_progress(1, node)
                 _head_exp_node(
                     node_attrs_cache[node]['path'], node_attrs_cache[node],
                     idx, self.get_node_data(node, idx),
                     [collector], self.logger,
                 )
-            self.logger.end_progress(len(target_nodes))
-        self.logger.end_progress(n_splits)
+            self.logger.end_progress(1, len(target_nodes))
+        self.logger.end_progress(0, n_splits)
 
         for node in target_nodes:
             node_path = self.get_node_path(node)
@@ -966,7 +934,6 @@ class Experimenter():
             'cache_maxsize': self.cache_maxsize,
             'exp_id': self.exp_id,
             'pipeline': self.pipeline,
-            'node_obj_keys': list(self.node_objs.keys()),
             'collector_keys': {name: type(c).__name__ for name, c in self.collectors.items()},
             'trainer_keys': list(self.trainers.keys()),
             'status': self.status
@@ -1027,17 +994,6 @@ class Experimenter():
         exp.exp_id = save_data['exp_id']
         exp.pipeline = save_data['pipeline']
         exp.status = save_data['status']
-
-        # node_objs 복원 (stage 노드만)
-        for node_name in save_data['node_obj_keys']:
-            node = exp.pipeline.get_node(node_name)
-            grp = exp.pipeline.get_grp(node.grp)
-            node_path = exp.get_node_path(node_name)
-
-            if grp.role == 'stage':
-                node_obj = StageObj(node_path)
-                node_obj.load()
-                exp.node_objs[node_name] = node_obj
 
         # Collector 복원
         collector_keys = save_data.get('collector_keys', {})

@@ -58,22 +58,22 @@ class LightGBMAdapter(ModelAdapter):
 
         fit_params = super().get_fit_params(train_data, valid_data, params, monitor)
 
-        def _to_pandas(x):
+        def _not_polars(x):
             if x is not None and 'polars' in type(x).__module__:
                 return x.to_pandas()
             return x
 
         if 'X' in fit_params:
-            fit_params['X'] = _to_pandas(fit_params['X'])
+            fit_params['X'] = _not_polars(fit_params['X'])
         if 'y' in fit_params:
-            fit_params['y'] = _to_pandas(fit_params['y'])
+            fit_params['y'] = _not_polars(fit_params['y'].squeeze())
 
         train_v_X = valid_data.get('X') if valid_data else None
         train_v_y = valid_data.get('y') if valid_data else None
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
-            train_v_X_native = _to_pandas(unwrap(train_v_X))
-            train_v_y_native = _to_pandas(unwrap(train_v_y))
+            train_v_X_native = _not_polars(unwrap(train_v_X))
+            train_v_y_native = _not_polars(unwrap(train_v_y).squeeze())
             if self.eval_mode == 'valid':
                 fit_params['eval_set'] = [(train_v_X_native, train_v_y_native)]
             elif self.eval_mode == 'both':

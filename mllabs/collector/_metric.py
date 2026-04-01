@@ -18,23 +18,21 @@ class MetricCollector(Collector):
         self._cache = {}  # {node: {(outer_idx, inner_idx): result}}
 
     def collect(self, context):
-        if context['input'] is None or 'y' not in context['input']:
-            return None
-
-        (true_t, true_tv), true_v = context['input']['y']
-        cols = resolve_columns(context['output_valid'], self.output_var)
+        cols = resolve_columns(context['output_test'], self.output_var)
         if len(cols) == 0:
             return None
 
-        prd_v = context['output_valid'].select_columns(cols)
-        result = {'valid': self.metric_func(true_v.data, prd_v.data)}
+        prd_test = context['output_test'].select_columns(cols)
+        result = {'test': self.metric_func(context['input'][2]['y'].data, prd_test.data)}
 
         if self.include_train and context.get('output_train') is not None:
-            prd_t = context['output_train'][0].select_columns(cols)
-            result['train_sub'] = self.metric_func(true_t.data, prd_t.data)
-            if true_tv is not None:
-                prd_tv = context['output_train'][1].select_columns(cols)
-                result['valid_sub'] = self.metric_func(true_tv.data, prd_tv.data)
+            result['train'] = self.metric_func(
+                context['input'][0]['y'].data, context['output_train'].select_columns(cols).data
+            )
+            if context['output_valid'] is not None:
+                result['valid'] = self.metric_func(
+                    context['input'][1]['y'].data, context['output_valid'].select_columns(cols).data
+                )
 
         return result
 
@@ -72,17 +70,17 @@ class MetricCollector(Collector):
             if p.exists():
                 p.unlink()
 
-    def _get_saved_nodes(self):
-        if self.path is None:
-            return []
-        return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
-
     def _get_nodes(self, nodes, available):
         if nodes is None:
             return available
         if isinstance(nodes, list):
             return [n for n in nodes if n in set(available)]
         return [n for n in available if re.search(nodes, n)]
+
+    def _get_saved_nodes(self):
+        if self.path is None:
+            return []
+        return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
 
     def get_metric(self, node):
         data = self._load_results(node)
@@ -117,3 +115,4 @@ class MetricCollector(Collector):
                 df_agg_mean = df_agg_mean.stack(level=0, future_stack=True).groupby(level=0).mean()
             return df_agg_mean, df_agg_std
         return df
+

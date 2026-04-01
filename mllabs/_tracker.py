@@ -35,8 +35,8 @@ class ExecuteTracker:
         self._on_update('error', worker_idx=worker_idx, node_name=node_name,
                         outer_idx=outer_idx, inner_idx=inner_idx, error_info=error_info)
 
-    def message(self, worker_idx, msg):
-        self._on_update('message', worker_idx=worker_idx, msg=msg)
+    def message(self, worker_idx, msg, typ='info'):
+        self._on_update('message', worker_idx=worker_idx, msg=msg, typ=typ)
 
     def block(self, node_name, outer_idx, inner_idx):
         self.records[(node_name, outer_idx, inner_idx)] = {'status': 'blocked'}

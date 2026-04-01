@@ -244,7 +244,7 @@ class Trainer:
                     yield train_data, valid_data
             return
 
-        cached = self.cache.get_data(node, "train_all", 0)
+        cached = self.cache.get_data(node, -1, 0, 'train')
         if cached is not None:
             for (train_result, valid_result), (obj, _, _) in zip(cached, self.node_objs[node].get_obj()):
                 if v is not None:
@@ -279,7 +279,7 @@ class Trainer:
                     valid_result = valid_result.select_columns(X)
 
             yield train_result, valid_result
-        self.cache.put_data(node, "train_all", 0, cache_data)
+        self.cache.put_data(node, -1, 0, 'train', cache_data)
 
     def get_node_data(self, node):
         node_attrs = self.pipeline.get_node_attrs(node)

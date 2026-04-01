@@ -5,9 +5,10 @@ import traceback
 import warnings
 from multiprocessing import Process
 from multiprocessing.connection import wait
+from ._node_processor import ProgressMonitor
 
 
-def _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list=None):
+def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list=None):
     from ._node_processor import TransformProcessor, PredictProcessor
     method = node_attrs['method']
     if method in ['transform', 'fit_transform']:
@@ -20,10 +21,10 @@ def _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_lis
         warnings.simplefilter("always")
         try:
             if fit_process:
-                result = obj.fit_process(train_data, valid_data, gpu_id_list=gpu_id_list, logger=logger)
+                result = obj.fit_process(train_data, valid_data, gpu_id_list=gpu_id_list, monitor=monitor)
             else:
                 result = None
-                obj.fit(train_data, valid_data, gpu_id_list=gpu_id_list, logger=logger)
+                obj.fit(train_data, valid_data, gpu_id_list=gpu_id_list, monitor=monitor)
         except Exception as e:
             warn_msgs = [f"{w.category.__name__}: {w.message}" for w in caught]
             info = {
@@ -56,59 +57,61 @@ def _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_lis
     return obj, result, info
 
 
-def _safe_collect_call(collector, context, logger):
+def _safe_collect_call(collector, context, monitor):
     try:
         return collector.collect(context)
     except Exception as e:
         tb = traceback.format_exc()
         msg = f"[Collector:{collector.name}] collect failed: {type(e).__name__}: {e}\n{tb}"
-        logger.warning(msg)
+        monitor.message(msg, typ = 'warning')
         collector.warnings.append({
             'method': 'collect', 'type': type(e).__name__, 'message': str(e), 'traceback': tb,
         })
         return None
 
 
-def _default_on_collect(collector, node_name, idx, inner_idx, result):
-    collector.push(node_name, idx, inner_idx, result)
+def _default_on_collect(collector, node_name, outer_idx, inner_idx, result):
+    collector.push(node_name, outer_idx, inner_idx, result)
 
 
-def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data,
-                    idx, inner_idx, logger,
+def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data, test_data,
+                    outer_idx, inner_idx, monitor,
                     include_input=True, include_output=True, include_train=True,
                     on_collect=_default_on_collect):
-    node_name = node_attrs['name']
-    matched = [c for c in collectors if c.connector.match(node_name, node_attrs)]
+    print(node_attrs)
+    matched = [c for c in collectors if c.connector.match(node_attrs)]
+    print(matched)
     if not matched:
         return
     context = {
         'node_attrs': node_attrs,
         'processor': obj,
         'spec': info,
-        'input': train_data if include_input else None,
-        'idx': idx,
+        'input': (train_data, valid_data, test_data) if include_input else None,
+        'outer_idx': outer_idx,
         'inner_idx': inner_idx,
     }
     if include_output:
+        context['output_test'] = obj.process(test_data) if test_data else None
         context['output_valid'] = obj.process(valid_data) if valid_data else None
         context['output_train'] = (result if result is not None else obj.process(train_data)) if include_train else None
     for c in matched:
-        on_collect(c, node_name, idx, inner_idx, _safe_collect_call(c, context, logger))
+        on_collect(c, node_attrs['name'], outer_idx, inner_idx, _safe_collect_call(c, context, monitor))
 
 
 def _save_flow(path, obj, result, info):
-    from ._flow import TrainDataFlow
-    TrainDataFlow.write_objs(path, obj, result, info)
+    from ._store import NodeStore
+    NodeStore.write_obj(path, obj, result, info)
 
 
 def _save_artifact(path, obj, result, info):
-    from ._store import ArtifactStore
-    ArtifactStore.write_obj(path, obj, result, info)
+    from ._store import NodeStore
+    NodeStore.write_obj(path, obj, result, info)
 
 
 def _save_artifact_finalize(path, obj, result, info):
-    from ._store import ArtifactStore
-    ArtifactStore.write_obj(path, obj, result, info, finalize=True)
+    from ._store import NodeStore
+    NodeStore.write_obj(path, obj, result, info, finalize=True)
 
 
 class _PipeLogger:
@@ -123,6 +126,16 @@ class _PipeLogger:
 
     def info(self, msg):
         self._conn.send(('info', msg))
+
+class _ProgressRouter(ProgressMonitor):
+    def __init__(self, conn):
+        self._conn = conn
+    
+    def report(self, current, total, metrics=None):
+        self._conn.send(('progress', current, total, metrics))
+
+    def message(self, msg, typ='info'):
+        pass
 
 
 class ProcessWorker(Process):
@@ -153,6 +166,7 @@ class ProcessWorker(Process):
 
     def run(self):
         logger = _PipeLogger(self.conn)
+        monitor = _ProgressRouter(self.conn)
         gpu_id_list = [self.gpu_id] if self.gpu_id is not None else []
         while True:
             job = self.conn.recv()
@@ -162,7 +176,7 @@ class ProcessWorker(Process):
             node_name = node_attrs['name']
             method = node_attrs['method']
             fit_process = method in ['fit_transform', 'fit_predict']
-            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
+            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list)
             for w in info.get('warnings', []):
                 logger.warning(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}")
             if obj is None:
@@ -177,7 +191,7 @@ class ProcessWorker(Process):
             coll_valid = test_data if test_data is not None else valid_data
             _run_collectors(
                 self.collectors, node_attrs, obj, result, info, train_data, coll_valid,
-                outer_idx, inner_idx, logger,
+                outer_idx, inner_idx, monitor,
                 include_input=self.include_input, include_output=self.include_output,
                 include_train=self.include_train,
                 on_collect=_send_collect,
@@ -199,18 +213,31 @@ def _is_stage_ready(flow, pipeline, node_name):
     return True
 
 
-def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None, logger=None):
-    from ._flow import TrainDataFlow
+class _TrackerRouter(ProgressMonitor):
+    def __init__(self, worker_idx, tracker):
+        self.worker_idx = worker_idx
+        self._tracker = tracker
+    
+    def report(self, current, total, metrics=None):
+        if self._tracker is not None:
+            self._tracker.progress(self.worker_idx, current, total, metrics)
 
+    def message(self, msg, typ='info'):
+        if self._tracker is not None:
+            self._tracker.message(self.worker_idx, msg, typ)
+
+def _build_flow_single(outer_folds, pipeline, nodes, gpu_id_list=None, collectors=None, tracker=None):
     gpu_id_list = gpu_id_list or []
     collectors = collectors or []
 
     errors = {}
-
+    router = _TrackerRouter(0, tracker)
     while True:
         ready = [
             (outer_idx, inner_idx, flow, n)
-            for outer_idx, inner_idx, flow in flows for n in nodes
+            for outer_idx, outer_fold in enumerate(outer_folds)
+            for inner_idx, flow in enumerate(outer_fold.train_data_flows)
+            for n in nodes
             if n not in flow.node_objs and (outer_idx, inner_idx, n) not in errors
             and _is_stage_ready(flow, pipeline, n)
         ]
@@ -221,29 +248,34 @@ def _build_flow_single(flows, pipeline, nodes, gpu_id_list=None, collectors=None
             node_attrs = pipeline.get_node_attrs(node_name)
             train_data = flow.get_train(node_attrs['edges'])
             valid_data = flow.get_valid(node_attrs['edges'])
+            test_data = outer_folds[outer_idx].get_test_data(node_attrs['edges'])
             fit_process = node_attrs['method'] in ['fit_transform', 'fit_predict']
 
-            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, logger, gpu_id_list)
+            if tracker:
+                tracker.start(0, node_name, outer_idx, inner_idx)
+            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, router, gpu_id_list)
             for w in info.get('warnings', []):
-                if logger:
-                    logger.warning(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}")
+                if tracker:
+                    tracker.message(0, f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}", typ='warning')
             if obj is None:
                 errors[(outer_idx, inner_idx, node_name)] = info['error']
-                if logger:
-                    logger.info(f"[{node_name}] Build error at fold {outer_idx}_{inner_idx}: {info['error']['type']}: {info['error']['message']}")
+                if tracker:
+                    tracker.error(0, node_name, outer_idx, inner_idx, info['error'])
                 continue
 
-            TrainDataFlow.write_objs(flow._node_path(node_name), obj, result, info)
+            flow.save_obj(node_name, obj, result, info)
             flow.set_objs(node_name, obj, result, info)
+            if tracker:
+                tracker.done(0, node_name, outer_idx, inner_idx, info)
 
             if collectors:
-                _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data,
-                                outer_idx, inner_idx, logger)
+                _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data, test_data,
+                                outer_idx, inner_idx, router)
 
     return errors
 
 
-def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collectors=None, logger=None,
+def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, collectors=None, tracker=None,
                       gpu_fallback_cpu=True, cpu_fallback_gpu=True):
     from .adapter._base import GPU_NO
 
@@ -251,7 +283,11 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
     collectors = collectors or []
     n_gpu = len(gpu_id_list)
 
-    flow_map = {(outer_idx, inner_idx): flow for outer_idx, inner_idx, flow in flows}
+    flow_map = {
+        (outer_idx, inner_idx): flow
+        for outer_idx, outer_fold in enumerate(outer_folds)
+        for inner_idx, flow in enumerate(outer_fold.train_data_flows)
+    }
 
     def _needs_gpu(node_attrs):
         if not gpu_id_list:
@@ -277,15 +313,16 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
     def _collect_ready():
         in_flight = set(busy.values())
         gpu_ready, cpu_ready = [], []
-        for outer_idx, inner_idx, flow in flows:
-            for n in nodes:
-                key = (outer_idx, inner_idx, n)
-                if n in flow.node_objs or key in errors or key in in_flight:
-                    continue
-                if not _is_stage_ready(flow, pipeline, n):
-                    continue
-                node_attrs = pipeline.get_node_attrs(n)
-                (gpu_ready if _needs_gpu(node_attrs) else cpu_ready).append(key)
+        for outer_idx, outer_fold in enumerate(outer_folds):
+            for inner_idx, flow in enumerate(outer_fold.train_data_flows):
+                for n in nodes:
+                    key = (outer_idx, inner_idx, n)
+                    if n in flow.node_objs or key in errors or key in in_flight:
+                        continue
+                    if not _is_stage_ready(flow, pipeline, n):
+                        continue
+                    node_attrs = pipeline.get_node_attrs(n)
+                    (gpu_ready if _needs_gpu(node_attrs) else cpu_ready).append(key)
         return gpu_ready, cpu_ready
 
     def _dispatch(outer_idx, inner_idx, node_name, worker_idx):
@@ -293,10 +330,13 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
         node_attrs = pipeline.get_node_attrs(node_name)
         train_data = flow.get_train(node_attrs['edges'])
         valid_data = flow.get_valid(node_attrs['edges'])
+        test_data = outer_folds[outer_idx].get_test_data(node_attrs['edges'], inner_idx)
         _, conn = workers[worker_idx]
-        conn.send((flow._node_path(node_name), node_attrs, outer_idx, inner_idx, train_data, valid_data, None))
+        conn.send((flow._node_path(node_name), node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data))
         busy[conn] = (outer_idx, inner_idx, node_name)
         (free_gpu if worker_idx < n_gpu else free_cpu).remove(worker_idx)
+        if tracker:
+            tracker.start(worker_idx, node_name, outer_idx, inner_idx)
 
     def _try_dispatch():
         gpu_ready, cpu_ready = _collect_ready()
@@ -320,9 +360,12 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
             outer_idx, inner_idx, node_name = busy[conn]
 
             if msg_type == 'done':
+                info = data[0]
                 flow_map[(outer_idx, inner_idx)].load_objs(node_name)
                 del busy[conn]
                 (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
+                if tracker:
+                    tracker.done(worker_idx, node_name, outer_idx, inner_idx, info)
                 _try_dispatch()
 
             elif msg_type == 'error':
@@ -330,8 +373,8 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
                 errors[(outer_idx, inner_idx, node_name)] = error_info
                 del busy[conn]
                 (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
-                if logger:
-                    logger.info(f"[{node_name}] Build error at fold {outer_idx}_{inner_idx}: {error_info['type']}: {error_info['message']}")
+                if tracker:
+                    tracker.error(worker_idx, node_name, outer_idx, inner_idx, error_info)
                 _try_dispatch()
 
             elif msg_type == 'collect':
@@ -342,14 +385,14 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
                         break
 
             elif msg_type == 'progress':
-                if logger:
-                    logger.adhoc_progress(*data)
+                if tracker:
+                    tracker.progress(worker_idx, *data)
             elif msg_type == 'warning':
-                if logger:
-                    logger.warning(data[0])
+                if tracker:
+                    tracker.message(worker_idx, data[0], typ = 'warning')
             elif msg_type == 'info':
-                if logger:
-                    logger.info(data[0])
+                if tracker:
+                    tracker.message(worker_idx, data[0])
 
     for _, conn in workers:
         conn.send(None)
@@ -364,12 +407,12 @@ def _build_flow_multi(flows, pipeline, nodes, n_jobs, gpu_id_list=None, collecto
 # ---------------------------------------------------------------------------
 
 def _experiment_single(outer_folds, pipeline, nodes,
-                        gpu_id_list=None, collectors=None, logger=None,
+                        gpu_id_list=None, collectors=None, tracker=None,
                         finalize=False, include_train=True, include_input=True):
     gpu_id_list = gpu_id_list or []
     collectors = collectors or []
     errors = {}  # {(outer_idx, node_name): error_info}
-    monitor = LoggerProgressMonitor(logger)
+    monitor = _TrackerRouter(0, tracker)
 
     for node_name in nodes:
         node_attrs = pipeline.get_node_attrs(node_name)
@@ -383,31 +426,38 @@ def _experiment_single(outer_folds, pipeline, nodes,
             ):
                 if (outer_idx, node_name) in errors:
                     continue
+                status = artifact_store.status(node_name)
+                if status == 'finalized':
+                    continue
                 train_data = train_flow.get_train(edges)
                 valid_data = train_flow.get_valid(edges)
-                test_data = outer_fold.get_test_data(edges, inner_idx)
-                status = artifact_store.status(node_name)
+                test_data = outer_fold.get_test_data(edges)
 
-                if status in ('built', 'finalized'):
+                if status == 'built':
                     obj, result, info = artifact_store.get_obj(node_name)
+                    if tracker:
+                        tracker.done(0, node_name, outer_idx, inner_idx, info)
                 else:
+                    if tracker:
+                        tracker.start(0, node_name, outer_idx, inner_idx)
                     obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list)
                     for w in info.get('warnings', []):
-                        if logger:
-                            logger.warning(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}")
+                        monitor.message(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}", typ='warning')
                     if obj is None:
                         errors[(outer_idx, node_name)] = {**info['error'], 'fold': (outer_idx, inner_idx)}
-                        if logger:
-                            logger.info(f"[{node_name}] Exp error at fold {outer_idx}_{inner_idx}: {info['error']['type']}: {info['error']['message']}")
+                        if tracker:
+                            tracker.error(0, node_name, outer_idx, inner_idx, info['error'])
                         for c in matched:
                             c.abort_node(node_name)
                         continue
                     artifact_store.save_obj(node_name, obj, result, info, finalize=finalize)
+                    if tracker:
+                        tracker.done(0, node_name, outer_idx, inner_idx, info)
 
                 if matched:
                     _run_collectors(matched, node_attrs, obj, result, info,
-                                    train_data, test_data,
-                                    outer_idx, inner_idx, logger,
+                                    train_data, valid_data, test_data,
+                                    outer_idx, inner_idx, monitor,
                                     include_input=include_input, include_output=True,
                                     include_train=include_train)
 
@@ -415,7 +465,7 @@ def _experiment_single(outer_folds, pipeline, nodes,
 
 
 def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
-                       gpu_id_list=None, collectors=None, logger=None,
+                       gpu_id_list=None, collectors=None, tracker=None,
                        finalize=False, include_train=True, include_input=True,
                        gpu_fallback_cpu=True, cpu_fallback_gpu=True):
     from .adapter._base import GPU_NO
@@ -456,6 +506,8 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
                 for node_name in nodes:
                     if (outer_idx, node_name) in errors:
                         continue
+                    if artifact_store.status(node_name) in ('built', 'finalized'):
+                        continue
                     node_attrs = pipeline.get_node_attrs(node_name)
                     job = (outer_idx, inner_idx, node_name, outer_fold, train_flow, artifact_store)
                     (gpu_jobs if _needs_gpu(node_attrs) else cpu_jobs).append(job)
@@ -469,11 +521,14 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
         edges = node_attrs['edges']
         train_data = train_flow.get_train(edges)
         valid_data = train_flow.get_valid(edges)
-        test_data = outer_fold.get_test_data(edges, inner_idx)
+        test_data = outer_fold.get_test_data(edges)
+        node_path = artifact_store._node_path(node_name)
         _, conn = workers[worker_idx]
-        conn.send((artifact_store._node_path(node_name), node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data))
+        conn.send((node_path, node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data))
         busy[conn] = job
         (free_gpu if worker_idx < n_gpu else free_cpu).remove(worker_idx)
+        if tracker:
+            tracker.start(worker_idx, node_name, outer_idx, inner_idx)
 
     def _try_dispatch():
         for job in list(gpu_jobs):
@@ -500,8 +555,11 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
             outer_idx, inner_idx, node_name, *_ = busy[conn]
 
             if msg_type == 'done':
+                info = data[0]
                 del busy[conn]
                 (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
+                if tracker:
+                    tracker.done(worker_idx, node_name, outer_idx, inner_idx, info)
                 _try_dispatch()
 
             elif msg_type == 'error':
@@ -509,8 +567,8 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
                 errors[(outer_idx, node_name)] = error_info
                 del busy[conn]
                 (free_gpu if worker_idx < n_gpu else free_cpu).append(worker_idx)
-                if logger:
-                    logger.info(f"[{node_name}] Exp error at fold {outer_idx}_{inner_idx}: {error_info['type']}: {error_info['message']}")
+                if tracker:
+                    tracker.error(worker_idx, node_name, outer_idx, inner_idx, error_info)
                 node_attrs = pipeline.get_node_attrs(node_name)
                 for c in collectors:
                     if c.connector.match(node_name, node_attrs):
@@ -527,14 +585,14 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
                         break
 
             elif msg_type == 'progress':
-                if logger:
-                    logger.adhoc_progress(*data)
+                if tracker:
+                    tracker.progress(worker_idx, *data)
             elif msg_type == 'warning':
-                if logger:
-                    logger.warning(data[0])
+                if tracker:
+                    tracker.message(worker_idx, data[0], typ='warning')
             elif msg_type == 'info':
-                if logger:
-                    logger.info(data[0])
+                if tracker:
+                    tracker.message(worker_idx, data[0])
 
     for _, conn in workers:
         conn.send(None)

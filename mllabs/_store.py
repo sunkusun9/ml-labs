@@ -1,23 +1,27 @@
 import os
+import shutil
 import pickle as pkl
+from pathlib import Path
 
 
-class ArtifactStore:
-    """On-demand artifact manager for Head nodes in one (outer, inner) fold.
+class NodeStore:
+    """On-disk artifact manager for one (outer, inner) fold.
 
-    Uses the same path structure as TrainDataFlow: {outer_path}/{inner_idx}/.
     Node artifacts are stored at {path}/{node_name}/obj.pkl.
     No in-memory caching.
 
     Args:
-        path: (outer, inner) fold path — same as TrainDataFlow path.
+        path: (outer, inner) fold path.
     """
 
     def __init__(self, path):
-        self.path = path
+        self.path = Path(path)
 
     def _node_path(self, name):
         return self.path / name
+
+    def get_objs_file(self, name):
+        return self._node_path(name) / 'obj.pkl'
 
     def status(self, name):
         node_path = self._node_path(name)
@@ -50,6 +54,11 @@ class ArtifactStore:
         with open(node_path / 'finalized.pkl', 'wb') as f:
             pkl.dump(spec, f)
         obj_file.unlink()
+
+    def reset_node(self, name):
+        node_path = self._node_path(name)
+        if os.path.isdir(node_path):
+            shutil.rmtree(node_path)
 
     def get_obj(self, name):
         with open(self._node_path(name) / 'obj.pkl', 'rb') as f:

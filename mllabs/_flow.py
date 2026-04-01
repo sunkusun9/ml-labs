@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from ._node_processor import resolve_columns
+from ._store import NodeStore
 
 
 class DataSourceProvider(ABC):
@@ -15,7 +16,7 @@ class DataSourceProvider(ABC):
     def get_valid(self):
         """Returns valid_data (train-time monitoring, e.g. early stopping) as DataWrapper or None."""
 
-class DataFlow:
+class DataFlow(NodeStore):
     """Single-fold data transformation through stage nodes.
 
     Loads one processor per stage node from disk at ``path``.
@@ -24,21 +25,10 @@ class DataFlow:
     """
 
     def __init__(self, path):
-        self.path = Path(path)
+        super().__init__(path)
         self.node_objs = {}    # {name: (obj, result, info)}
         self._node_edges = {}  # {name: edges dict}
         self.load()
-
-    def _node_path(self, node_name):
-        return self.path / node_name
-
-    def get_objs_file(self, node_name):
-        return self._node_path(node_name) / 'obj.pkl'
-
-    def set_objs(self, node_name, obj, result, info):
-        self.node_objs[node_name] = (obj, result, info)
-        if info.get('edges') is not None:
-            self._node_edges[node_name] = info['edges']
 
     def load_objs(self, node_name):
         with open(self.get_objs_file(node_name), 'rb') as f:
@@ -88,20 +78,8 @@ class DataFlow:
             return None
         obj, result, info = self.node_objs[node_name]
         edges = self._node_edges[node_name]
-        key = 'X' if 'X' in edges else next(iter(edges))
-        parts = []
-        for src_node, var in edges[key]:
-            data = self._resolve(source_data, src_node)
-            if data is not None and var is not None:
-                src_obj = self.node_objs.get(src_node, (None,))[0] if src_node in self.node_objs else None
-                cols = resolve_columns(data, var, processor=src_obj)
-                data = data.select_columns(cols)
-            if data is not None:
-                parts.append(data)
-        if not parts:
-            return None
-        T = type(parts[0])
-        return obj.process(T.concat(parts, axis=1) if len(parts) > 1 else parts[0])
+        
+        return obj.process(self.get_data(source_data, self._node_edges[node_name]))
 
 
 class TrainDataFlow(DataFlow):
@@ -114,17 +92,17 @@ class TrainDataFlow(DataFlow):
         cache_key: Key for cache lookups, e.g. (outer_idx, inner_idx)
     """
 
-    def __init__(self, path, data_source, cache=None, cache_key=None):
+    def __init__(self, path, data_source, cache=None, outer_idx=0, inner_idx=0):
         self.data_source = data_source
         self.cache = cache
-        self.cache_key = cache_key
+        self.outer_idx = outer_idx
+        self.inner_idx = inner_idx
         super().__init__(path)
 
-    @staticmethod
-    def write_objs(path, obj, result, info):
-        os.makedirs(path, exist_ok=True)
-        with open(path / 'obj.pkl', 'wb') as f:
-            pkl.dump((obj, result, info), f)
+    def set_objs(self, node_name, obj, result, info):
+        self.node_objs[node_name] = (obj, result, info)
+        if info.get('edges') is not None:
+            self._node_edges[node_name] = info['edges']
 
     def get_available_stages(self, pipeline):
         """Returns stage node names that this DataFlow can produce output for."""
@@ -146,97 +124,45 @@ class TrainDataFlow(DataFlow):
 
     def get_train(self, edges):
         """{key: data} train output resolved via edges."""
-        return self._get_resolved_edges(edges, self._resolve_train)
+        return self._get_data_typ(edges, 'train')
 
     def get_valid(self, edges):
         """{key: data} valid (train-time monitoring) output resolved via edges."""
-        return self._get_resolved_edges(
-            edges, lambda n: self._resolve_via_process(n, 'valid', self.data_source.get_valid)
-        )
-
-    def _get_resolved_edges(self, edges, resolve_fn):
+        return self._get_data_typ(edges, 'valid')
+    
+    def _get_data_typ(self, edges, typ):
         result = {}
         for key, edge_list in edges.items():
             parts = []
             for node_name, var in edge_list:
-                data = resolve_fn(node_name)
+                data = self._resolve_typ(node_name, typ)
+                if data is None:
+                    continue
                 if var is not None:
-                    obj = self.node_objs.get(node_name, (None,))[0] if node_name in self.node_objs else None
+                    obj = self.node_objs[node_name][0] if node_name in self.node_objs else None
                     cols = resolve_columns(data, var, processor=obj)
                     data = data.select_columns(cols)
                 parts.append(data)
             if parts:
                 result[key] = type(parts[0]).concat(parts, axis=1) if len(parts) > 1 else parts[0]
         return result
-
-    def _resolve_train(self, node_name):
-        """Returns train data for node_name (fit_transform result)."""
-        if node_name is None:
-            return self.data_source.get_train()
-        if node_name not in self.node_objs:
-            raise RuntimeError(f"Stage '{node_name}' not built in this flow")
-
-        if self.cache is not None and self.cache_key is not None:
-            cached = self.cache.get_data(node_name, 'train', self.cache_key)
-            if cached is not None:
-                return cached
-
-        obj, result, info = self.node_objs[node_name]
-        edges = self._node_edges[node_name]
-        key = 'X' if 'X' in edges else next(iter(edges))
-
-        trains = []
-        for src_node, var in edges[key]:
-            t = self._resolve_train(src_node)
-            if var is not None:
-                src_obj = self.node_objs.get(src_node, (None,))[0] if src_node in self.node_objs else None
-                cols = resolve_columns(t, var, processor=src_obj)
-                t = t.select_columns(cols)
-            trains.append(t)
-
-        T = type(trains[0])
-        train_in = T.concat(trains, axis=1) if len(trains) > 1 else trains[0]
-        train_out = result if result is not None else obj.process(train_in)
-
-        if self.cache is not None and self.cache_key is not None:
-            self.cache.put_data(node_name, 'train', self.cache_key, train_out)
-
-        return train_out
-
-    def _resolve_via_process(self, node_name, typ, source_fn):
+    
+    def _resolve_typ(self, node_name, typ):
         """Returns data for node_name via cache check → process. Used for valid and test."""
         if node_name is None:
-            return source_fn()
-        if node_name not in self.node_objs:
-            raise RuntimeError(f"Stage '{node_name}' not built in this flow")
-
-        if self.cache is not None and self.cache_key is not None:
-            cached = self.cache.get_data(node_name, typ, self.cache_key)
+            if typ == 'train':
+                return self.data_source.get_train()
+            else:
+                return self.data_source.get_valid()
+        if typ == 'train':
+            obj, result, info = self.node_objs[node_name]
+            if result is not None:
+                return result
+        if self.cache is not None:
+            cached = self.cache.get_data(node_name, self.outer_idx, self.inner_idx, typ)
             if cached is not None:
-                return cached
-
-        obj, result, info = self.node_objs[node_name]
-        edges = self._node_edges[node_name]
-        key = 'X' if 'X' in edges else next(iter(edges))
-
-        parts = []
-        for src_node, var in edges[key]:
-            d = self._resolve_via_process(src_node, typ, source_fn)
-            if d is not None and var is not None:
-                src_obj = self.node_objs.get(src_node, (None,))[0] if src_node in self.node_objs else None
-                cols = resolve_columns(d, var, processor=src_obj)
-                d = d.select_columns(cols)
-            if d is not None:
-                parts.append(d)
-
-        if not parts:
-            return None
-
-        T = type(parts[0])
-        data_in = T.concat(parts, axis=1) if len(parts) > 1 else parts[0]
-        data_out = obj.process(data_in)
-
-        if self.cache is not None and self.cache_key is not None:
-            self.cache.put_data(node_name, typ, self.cache_key, data_out)
-
+                return cached 
+        data_out = super()._resolve(self.data_source.get_train(), node_name)
+        if self.cache is not None:
+            self.cache.put_data(node_name, self.outer_idx, self.inner_idx, typ, data_out)
         return data_out

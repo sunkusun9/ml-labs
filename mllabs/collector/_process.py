@@ -27,7 +27,7 @@ class ProcessCollector(Collector):
 
     def collect(self, context):
         node = context['node_attrs']['name']
-        idx = context['idx']
+        idx = context['outer_idx']
         inner_idx = context['inner_idx']
 
         cache_key = (node, idx)
