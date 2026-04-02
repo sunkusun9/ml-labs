@@ -656,6 +656,7 @@ class Experimenter():
             if i is not None
             and i in node_names
             and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'stage'
+            and self.get_status(i) not in ['built', 'finalized']
         ]
         if not target_nodes:
             self.logger.info("No stage nodes to build")
@@ -663,10 +664,7 @@ class Experimenter():
 
         if rebuild:
             self.cache.clear_nodes(target_nodes)
-            for outer_fold in self.outer_folds:
-                for flow in outer_fold.train_data_flows:
-                    for name in target_nodes:
-                        flow.node_objs.pop(name, None)
+            self.reset_nodes(target_nodes)
 
         self.logger.info(f"Building {len(target_nodes)} node(s)")
         collectors = list(self.collectors.values())
@@ -711,6 +709,7 @@ class Experimenter():
             if i is not None
             and i in node_names
             and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'head'
+            and self.get_status(i) not in ['built', 'finalized']
         ]
         if not target_nodes:
             self.logger.info("No head nodes to experiment")
@@ -754,51 +753,65 @@ class Experimenter():
         Returns:
             Collector: The same collector after collection.
         """
+        from ._executor import _run_collectors
+        from ._node_processor import ProgressMonitor
+
         node_names = set(self.pipeline.get_node_names(nodes))
-        # built head 노드 중 connector 매칭
-        target_nodes = []
-        node_attrs_cache = {}
-        for name in self.pipeline._get_affected_nodes([None]):
-            node = self.pipeline.get_node(name)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role != 'head':
-                continue
-            if name not in node_names:
-                continue
-            if exist == 'skip' and collector.has(name):
-                continue
-            grp_path = self.get_grp_path(node.grp)
-            if self.get_status(name) != 'built':
-                continue
-            node_attrs = self.pipeline.get_node_attrs(name)
-            node_attrs['path'] = grp_path
-            if collector.connector.match(name, node_attrs) and not collector.has_node(name):
-                target_nodes.append(name)
-                node_attrs_cache[name] = node_attrs
+        target_nodes = [
+            name for name in self.pipeline._get_affected_nodes([None])
+            if name is not None
+            and name in node_names
+            and self.pipeline.grps[self.pipeline.nodes[name].grp].role == 'head'
+            and not (exist == 'skip' and collector.has(name))
+            and self.get_status(name) == 'built'
+            and collector.connector.match(self.pipeline.get_node_attrs(name))
+        ]
 
-        n_splits = self.get_n_splits()
-        self.logger.create_session(0)
-        self.logger.create_session(1)
-        self.logger.start_progress(0, "Collect", n_splits)
-        for idx in range(n_splits):
-            self.logger.update_progress(0, idx)
-            self.logger.start_progress(1, "Node", len(target_nodes))
-            for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(1, ni)
-                self.logger.rename_progress(1, node)
-                _head_exp_node(
-                    node_attrs_cache[node]['path'], node_attrs_cache[node],
-                    idx, self.get_node_data(node, idx),
-                    [collector], self.logger,
-                )
-            self.logger.end_progress(1, len(target_nodes))
-        self.logger.end_progress(0, n_splits)
+        if not target_nodes:
+            return collector
 
-        for node in target_nodes:
-            node_path = self.get_node_path(node)
-            collector._node_paths[node] = node_path
-
+        monitor = ProgressMonitor()
+        n_total = self.get_n_splits() * len(target_nodes)
+        try:
+            self.logger.create_session(0)
+            self.logger.create_session(1)
+            self.logger.start_progress(0, 'Collect', n_total)
+            n_done = 0
+            for name in target_nodes:
+                node_attrs = self.pipeline.get_node_attrs(name)
+                edges = node_attrs['edges']
+                self.logger.start_progress(1, name)
+                for outer_idx, outer_fold in enumerate(self.outer_folds):
+                    for inner_idx, (train_flow, artifact_store) in enumerate(
+                        zip(outer_fold.train_data_flows, outer_fold.artifact_stores)
+                    ):
+                        if artifact_store.status(name) != 'built':
+                            continue
+                        obj, result, info = artifact_store.get_objs(name)
+                        train_data = train_flow.get_train(edges)
+                        valid_data = train_flow.get_valid(edges)
+                        test_data = outer_fold.get_test_data(edges)
+                        _run_collectors(
+                            [collector], node_attrs, obj, result, info,
+                            train_data, valid_data, test_data,
+                            outer_idx, inner_idx, monitor,
+                            include_input=True, include_output=True, include_train=True,
+                        )
+                    n_done += 1
+                    self.logger.update_progress(0, n_done)
+                self.logger.end_progress(1)
+            self.logger.end_progress(0, n_total)
+        finally:
+            self.logger.remove_session(1)
+            self.logger.remove_session(0)
         return collector
+
+    def process_ext(self, data, node_name, outer_idx):
+        node_attrs = self.pipeline.get_node_attrs(node_name)
+        edges = node_attrs['edges']
+        ext_wrapped = wrap(data)
+        for train_flow in self.outer_folds[outer_idx].train_data_flows:
+            yield train_flow.get_data(ext_wrapped, edges)
 
     def get_train_data(self, edges, o_idx=0, i_idx=0):
         return self.outer_folds[o_idx].train_data_flows[i_idx].get_train(edges)

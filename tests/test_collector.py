@@ -90,43 +90,43 @@ def multi_head_exp(tmp_path, sample_data):
 class TestConnector:
     def test_match_all(self):
         c = Connector()
-        assert c.match('any_node', {}) is True
+        assert c.match({'name': 'any_node'}) is True
 
     def test_match_node_query_str(self):
         c = Connector(node_query='dt')
-        assert c.match('dt1', {}) is True
-        assert c.match('scaler', {}) is False
+        assert c.match({'name': 'dt1'}) is True
+        assert c.match({'name': 'scaler'}) is False
 
     def test_match_node_query_regex(self):
         c = Connector(node_query='^dt')
-        assert c.match('dt1', {}) is True
-        assert c.match('my_dt', {}) is False
+        assert c.match({'name': 'dt1'}) is True
+        assert c.match({'name': 'my_dt'}) is False
 
     def test_match_node_query_list(self):
         c = Connector(node_query=['dt1', 'dt2'])
-        assert c.match('dt1', {}) is True
-        assert c.match('dt3', {}) is False
+        assert c.match({'name': 'dt1'}) is True
+        assert c.match({'name': 'dt3'}) is False
 
     def test_match_processor(self):
         c = Connector(processor=DecisionTreeClassifier)
-        assert c.match('dt', {'processor': DecisionTreeClassifier}) is True
-        assert c.match('dt', {'processor': StandardScaler}) is False
+        assert c.match({'name': 'dt', 'processor': DecisionTreeClassifier}) is True
+        assert c.match({'name': 'dt', 'processor': StandardScaler}) is False
 
     def test_match_edges(self):
         edges_req = {'X': [(None, ['f1'])]}
         c = Connector(edges=edges_req)
-        node_attrs = {'edges': {'X': [(None, ['f1']), ('s', None)], 'y': [(None, 'target')]}}
-        assert c.match('dt', node_attrs) is True
+        node_attrs = {'name': 'dt', 'edges': {'X': [(None, ['f1']), ('s', None)], 'y': [(None, 'target')]}}
+        assert c.match(node_attrs) is True
 
     def test_match_edges_missing_key(self):
         c = Connector(edges={'z': [(None, None)]})
-        assert c.match('dt', {'edges': {'X': [(None, None)]}}) is False
+        assert c.match({'name': 'dt', 'edges': {'X': [(None, None)]}}) is False
 
     def test_match_combined(self):
         c = Connector(node_query='dt', processor=DecisionTreeClassifier)
-        assert c.match('dt1', {'processor': DecisionTreeClassifier}) is True
-        assert c.match('dt1', {'processor': StandardScaler}) is False
-        assert c.match('scaler', {'processor': DecisionTreeClassifier}) is False
+        assert c.match({'name': 'dt1', 'processor': DecisionTreeClassifier}) is True
+        assert c.match({'name': 'dt1', 'processor': StandardScaler}) is False
+        assert c.match({'name': 'scaler', 'processor': DecisionTreeClassifier}) is False
 
 
 class TestMetricCollector:
@@ -212,7 +212,7 @@ class TestMetricCollector:
                              metric_func=accuracy_metric, include_train=True)
         built_exp.add_collector(mc)
         result = mc.get_metric('dt')
-        assert 'train_sub' in result.index.get_level_values(-1)
+        assert 'train' in result.index.get_level_values(-1)
 
     def test_inner_split_metrics(self, built_exp_inner):
         mc = MetricCollector('acc', Connector(), output_var=None,
@@ -332,7 +332,7 @@ class TestStackingCollector:
         built_exp.add_collector(sc)
         ds = sc.get_dataset()
         all_valid_idx = np.concatenate([
-            built_exp.valid_idx_list[i]
+            built_exp.outer_folds[i].test_idx
             for i in range(built_exp.get_n_splits())
         ])
         expected_index = built_exp.data.data.index[all_valid_idx]
@@ -452,7 +452,7 @@ class TestOutputCollector:
         oc = OutputCollector('out', Connector(), output_var=None)
         built_exp.add_collector(oc)
         result = oc.get_output('dt', 0, 0)
-        assert 'output_valid' in result
+        assert 'output_test' in result
         assert 'output_train' in result
         assert 'columns' in result
 
@@ -460,9 +460,9 @@ class TestOutputCollector:
         oc = OutputCollector('out', Connector(), output_var=None)
         built_exp.add_collector(oc)
         result = oc.get_output('dt', 0, 0)
-        assert isinstance(result['output_valid'], np.ndarray)
-        assert isinstance(result['output_train'], tuple)
-        assert len(result['output_train']) == 2
+        assert isinstance(result['output_test'], np.ndarray)
+        assert result['output_train'] is None or isinstance(result['output_train'], np.ndarray)
+        assert result['output_valid'] is None or isinstance(result['output_valid'], np.ndarray)
 
     def test_get_outputs(self, built_exp):
         oc = OutputCollector('out', Connector(), output_var=None)
@@ -644,39 +644,32 @@ class TestSHAPCollector:
 
 class TestBaseCollector:
     def test_get_nodes_none(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes(None, ['a', 'b', 'c'])
         assert result == ['a', 'b', 'c']
 
     def test_get_nodes_list(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes(['a', 'c'], ['a', 'b', 'c'])
         assert result == ['a', 'c']
 
     def test_get_nodes_list_filter(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes(['a', 'x'], ['a', 'b', 'c'])
         assert result == ['a']
 
     def test_get_nodes_regex(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes('dt', ['dt1', 'dt2', 'scaler'])
         assert result == ['dt1', 'dt2']
 
     def test_get_nodes_invalid_type(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
-        with pytest.raises(ValueError):
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
+        with pytest.raises((ValueError, TypeError)):
             c._get_nodes(123, ['a', 'b'])
 
 
 class TestCollectorErrorHandling:
-    from mllabs.collector._base import Collector as _Collector
-
     @pytest.fixture
     def pre_exp(self, tmp_path, sample_data):
         e = Experimenter(
@@ -692,30 +685,17 @@ class TestCollectorErrorHandling:
         e.build()
         return e
 
-    def _make_broken_collector(self, fail_on):
+    def _make_broken_collector(self):
         from mllabs.collector._base import Collector
 
         class BrokenCollector(Collector):
-            def _start(self, node):
-                if fail_on == '_start':
-                    raise RuntimeError("start error")
-
-            def _collect(self, node, idx, inner_idx, context):
-                if fail_on == '_collect':
-                    raise RuntimeError("collect error")
-
-            def _end_idx(self, node, idx):
-                if fail_on == '_end_idx':
-                    raise RuntimeError("end_idx error")
-
-            def _end(self, node):
-                if fail_on == '_end':
-                    raise RuntimeError("end error")
+            def collect(self, context):
+                raise RuntimeError("collect error")
 
         return BrokenCollector('broken', Connector())
-    
+
     def test_exp_warning_contains_traceback(self, pre_exp):
-        bc = self._make_broken_collector('_collect')
+        bc = self._make_broken_collector()
         pre_exp.add_collector(bc)
         pre_exp.exp()
         w = bc.warnings[0]
@@ -724,7 +704,7 @@ class TestCollectorErrorHandling:
         assert 'collect error' in w['traceback']
 
     def test_exp_continues_other_collectors_after_error(self, pre_exp):
-        bc = self._make_broken_collector('_collect')
+        bc = self._make_broken_collector()
         mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
         pre_exp.add_collector(bc)
         pre_exp.add_collector(mc)

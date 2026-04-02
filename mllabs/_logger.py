@@ -62,7 +62,7 @@ class BaseProgressSession:
         pass
     def rename_progress(self, title):
         pass
-    def clear_progress(self):
+    def clear(self):
         pass
 
 class DefaultProgressSession(BaseProgressSession):
@@ -81,34 +81,40 @@ class TqdmProgressSession(BaseProgressSession):
         super().__init__(position)
         from tqdm.auto import tqdm as _tqdm_cls
         self._tqdm_cls = _tqdm_cls
-        self._bar= self._tqdm_cls(position=self._position, leave=False)
+        self._bar= self._tqdm_cls(position=self._position, leave=False, total=100)
 
     def _format_line(self):
         return ''
 
     def start_progress(self, title, total=100):
         self._bar.n = 0
-        self._bar.total = total
+        self._bar.set_description(title)
+        self._bar.reset(total)
+        self._bar.refresh()
 
-    def update_progress(self, current, total=None):
+    def update_progress(self, current):
         self._bar.n = current
         self._bar.refresh()
 
     def end_progress(self, current=None):
         if current is not None:
             self._bar.n = current
-        self._bar.close()
+        else:
+            self._bar.n = self._bar.total
+        self._bar.refresh()
 
     def adhoc_progress(self, current, total, msg=None):
+        if self._bar.total != total:
+            self._bar.reset(total)
         self._bar.n = current
-        self._bar.total = total
         self._bar.set_description(msg if msg is not None else '')
         self._bar.refresh()
     
     def rename_progress(self, title):
         self._bar.set_description(title)
 
-    def clear_progress(self):
+    def clear(self):
+        self._bar.clear()
         self._bar.close()
 
 class DefaultLogger(BaseLogger):
@@ -157,13 +163,16 @@ class DefaultLogger(BaseLogger):
 
     def clear_progress(self, session_id):
         if session_id in self._sessions:
-            self._sessions[session_id].clear_progress()
+            self._sessions[session_id].update_progress(0)
 
-    def create_session(self, position, **session_kwargs):
-        session = self.session_cls(position, **session_kwargs)
-        self._sessions[position] = session
+    def create_session(self, session_id, **session_kwargs):
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+        session = self.session_cls(session_id, **session_kwargs)
+        self._sessions[session_id] = session
         return session
 
-    def remove_session(self, position):
-        self._sessions[position].clear_progress()
-        del self._sessions[position]
+    def remove_session(self, session_id):
+        if session_id in self._sessions:
+            self._sessions[session_id].clear()
+            del self._sessions[session_id]

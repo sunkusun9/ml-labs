@@ -82,11 +82,11 @@ class LoggerExecuteTracker(ExecuteTracker):
     def __init__(self, total, n_workers, logger):
         super().__init__(total, n_workers)
         self.logger = logger
-        self._overall = logger.create_session(0)
-        self._overall.start_progress('tasks', total=total)
-        self._worker_sessions = {
-            i: logger.create_session(i + 1) for i in range(n_workers)
-        }
+        self.logger.create_session(0)
+        self.logger.start_progress(0, 'tasks', total=total)
+        for i in range(n_workers):
+            logger.create_session(i + 1) 
+        self.n_workers = n_workers
 
     def _on_update(self, event, **kwargs):
         if event == 'message':
@@ -96,27 +96,23 @@ class LoggerExecuteTracker(ExecuteTracker):
         if event == 'start':
             wi = kwargs['worker_idx']
             label = f"[{wi}] {kwargs['node_name']} {kwargs['outer_idx']}_{kwargs['inner_idx']}"
-            session = self._worker_sessions[wi]
-            session.clear_progress()
-            session.start_progress(label)
+            self.logger.start_progress(wi + 1, label)
 
         elif event == 'progress':
             wi = kwargs['worker_idx']
-            self._worker_sessions[wi].adhoc_progress(
-                kwargs['current'], kwargs['total'], kwargs.get('metrics')
+            self.logger.adhoc_progress(
+                wi + 1, kwargs['current'], kwargs['total'], kwargs.get('metrics')
             )
 
         elif event in ('done', 'error'):
-            self._worker_sessions[kwargs['worker_idx']].clear_progress()
-            self._overall.update_progress(self.n_done + self.n_error + self.n_blocked)
+            self.logger.end_progress(kwargs['worker_idx'] + 1)
+            self.logger.update_progress(0, self.n_done + self.n_error + self.n_blocked)
 
         elif event == 'block':
-            self._overall.update_progress(self.n_done + self.n_error + self.n_blocked)
+            self.logger.update_progress(0, self.n_done + self.n_error + self.n_blocked)
 
     def close(self):
-        self._overall.end_progress()
-        for session in self._worker_sessions.values():
-            session.clear_progress()
         self.logger.remove_session(0)
-        for i in self._worker_sessions:
-            self.logger.remove_session(i + 1)
+        for session in range(self.n_workers):
+            self.logger.remove_session(session + 1)
+            

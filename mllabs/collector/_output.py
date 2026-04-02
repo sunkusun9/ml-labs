@@ -15,23 +15,23 @@ class OutputCollector(Collector):
         self.include_target = include_target
 
     def collect(self, context):
-        cols = resolve_columns(context['output_valid'], self.output_var)
+        cols = resolve_columns(context['output_test'], self.output_var)
         if len(cols) == 0:
             return None
 
-        output_valid = context['output_valid'].select_columns(cols)
-        train_sub = context['output_train'][0].select_columns(cols)
-        valid_sub = context['output_train'][1]
-        if valid_sub is not None:
-            valid_sub = valid_sub.select_columns(cols)
+        output_test = context['output_test'].select_columns(cols)
+        output_train = context['output_train']
+        if output_train is not None:
+            output_train = output_train.select_columns(cols)
+        output_valid = context['output_valid']
+        if output_valid is not None:
+            output_valid = output_valid.select_columns(cols)
 
         return {
-            'output_train': (
-                train_sub.to_array(),
-                valid_sub.to_array() if valid_sub is not None else None
-            ),
-            'output_valid': output_valid.to_array(),
-            'columns': output_valid.get_columns(),
+            'output_test': output_test.to_array(),
+            'output_train': output_train.to_array() if output_train is not None else None,
+            'output_valid': output_valid.to_array() if output_valid is not None else None,
+            'columns': output_test.get_columns(),
         }
 
     def push(self, node, outer_idx, inner_idx, result):
@@ -74,6 +74,8 @@ class OutputCollector(Collector):
 
     def get_outputs(self, node):
         p = self.path / node
+        if not p.is_dir():
+            raise FileNotFoundError(f"No outputs found for node '{node}'")
         result = {}
         for f in p.glob('*.pkl'):
             outer_idx, inner_idx = map(int, f.stem.split('_'))

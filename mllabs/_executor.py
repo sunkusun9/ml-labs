@@ -3,8 +3,11 @@ import os
 import time
 import traceback
 import warnings
-from multiprocessing import Process
+import multiprocessing
 from multiprocessing.connection import wait
+
+_mp_ctx = multiprocessing.get_context('spawn')
+
 from ._node_processor import ProgressMonitor
 from ._store import NodeStore
 
@@ -80,9 +83,7 @@ def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid
                     outer_idx, inner_idx, monitor,
                     include_input=True, include_output=True, include_train=True,
                     on_collect=_default_on_collect):
-    print(node_attrs)
     matched = [c for c in collectors if c.connector.match(node_attrs)]
-    print(matched)
     if not matched:
         return
     context = {
@@ -126,7 +127,7 @@ class _ProgressRouter(ProgressMonitor):
         pass
 
 
-class ProcessWorker(Process):
+class ProcessWorker(_mp_ctx.Process):
     """Process-based worker. Receives jobs via Pipe, reports results/progress back.
 
     Job tuple: ``(node_path, file, node_attrs, idx, no, train_data, valid_data)``
@@ -156,6 +157,7 @@ class ProcessWorker(Process):
         logger = _PipeLogger(self.conn)
         monitor = _ProgressRouter(self.conn)
         gpu_id_list = [self.gpu_id] if self.gpu_id is not None else []
+        self.conn.send(('ready',))
         while True:
             job = self.conn.recv()
             if job is None:
@@ -180,9 +182,8 @@ class ProcessWorker(Process):
             def _send_collect(collector, node_name, outer_idx, inner_idx, res):
                 self.conn.send(('collect', collector.name, node_name, outer_idx, inner_idx, res))
 
-            coll_valid = test_data if test_data is not None else valid_data
             _run_collectors(
-                self.collectors, node_attrs, obj, result, info, train_data, coll_valid,
+                self.collectors, node_attrs, obj, result, info, train_data, valid_data, test_data,
                 outer_idx, inner_idx, monitor,
                 include_input=self.include_input, include_output=self.include_output,
                 include_train=self.include_train,
@@ -223,7 +224,7 @@ def _build_flow_single(outer_folds, pipeline, nodes, gpu_id_list=None, collector
     collectors = collectors or []
 
     errors = {}
-    router = _TrackerRouter(0, tracker)
+    router = _TrackerRouter(1, tracker)
     while True:
         ready = [
             (outer_idx, inner_idx, flow, n)
@@ -290,12 +291,16 @@ def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, co
 
     workers = []  # [(process, parent_conn)]
     for i in range(n_jobs):
-        parent_conn, child_conn = Pipe()
+        parent_conn, child_conn = _mp_ctx.Pipe()
         w = ProcessWorker(child_conn, collectors,
                         include_output=True, include_train=True, include_input=True,
                         gpu_id=gpu_id_list[i] if i < n_gpu else None)
         w.start()
+        child_conn.close()
         workers.append((w, parent_conn))
+
+    for _, conn in workers:
+        conn.recv()  # wait for 'ready'
 
     free_gpu = list(range(n_gpu))
     free_cpu = list(range(n_gpu, n_jobs))
@@ -391,6 +396,8 @@ def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, co
         conn.send(None)
     for w, _ in workers:
         w.join()
+    for _, conn in workers:
+        conn.close()
 
     return errors
 
@@ -410,7 +417,7 @@ def _experiment_single(outer_folds, pipeline, nodes,
     for node_name in nodes:
         node_attrs = pipeline.get_node_attrs(node_name)
         fit_process = node_attrs['method'] in ['fit_transform', 'fit_predict']
-        matched = [c for c in collectors if c.connector.match(node_name, node_attrs)]
+        matched = [c for c in collectors if c.connector.match(node_attrs)]
         edges = node_attrs['edges']
 
         for outer_idx, outer_fold in enumerate(outer_folds):
@@ -479,14 +486,18 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
 
     workers = []
     for i in range(n_jobs):
-        parent_conn, child_conn = Pipe()
+        parent_conn, child_conn = _mp_ctx.Pipe()
         w = ProcessWorker(child_conn, collectors,
                           finalize=finalize,
                           include_output=True, include_train=include_train,
                           include_input=include_input,
                           gpu_id=gpu_id_list[i] if i < n_gpu else None)
         w.start()
+        child_conn.close()
         workers.append((w, parent_conn))
+
+    for _, conn in workers:
+        conn.recv()  # wait for 'ready'
 
     free_gpu = list(range(n_gpu))
     free_cpu = list(range(n_gpu, n_jobs))
@@ -568,7 +579,7 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
                     tracker.error(worker_idx, node_name, outer_idx, inner_idx, error_info)
                 node_attrs = pipeline.get_node_attrs(node_name)
                 for c in collectors:
-                    if c.connector.match(node_name, node_attrs):
+                    if c.connector.match(node_attrs):
                         c.abort_node(node_name)
                 gpu_jobs[:] = [j for j in gpu_jobs if not (j[0] == outer_idx and j[2] == node_name)]
                 cpu_jobs[:] = [j for j in cpu_jobs if not (j[0] == outer_idx and j[2] == node_name)]
@@ -595,6 +606,8 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
         conn.send(None)
     for w, _ in workers:
         w.join()
+    for _, conn in workers:
+        conn.close()
 
     return errors
 

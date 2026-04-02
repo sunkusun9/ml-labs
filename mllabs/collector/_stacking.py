@@ -48,10 +48,10 @@ class StackingCollector(Collector):
         return np.concatenate(target_list, axis=0), target_columns
 
     def collect(self, context):
-        cols = resolve_columns(context['output_valid'], self.output_var)
+        cols = resolve_columns(context['output_test'], self.output_var)
         if len(cols) == 0:
             return None
-        return context['output_valid'].select_columns(cols)
+        return context['output_test'].select_columns(cols)
 
     def _aggregate(self, iterator):
         if self.method == 'simple':

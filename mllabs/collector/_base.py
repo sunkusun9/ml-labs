@@ -32,6 +32,12 @@ class Collector:
     def _flush_outer(self, node, outer_idx, inner_list):
         pass
 
+    def has_node(self, node):
+        return False
+
+    def has(self, node):
+        return self.has_node(node)
+
     def abort_node(self, node):
         self._buf.pop(node, None)
 

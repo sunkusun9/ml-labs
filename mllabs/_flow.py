@@ -70,6 +70,8 @@ class DataFlow(NodeStore):
         return result
 
     def _resolve(self, source_data, node_name):
+        if source_data is None:
+            return None
         if node_name is None:
             return source_data
         if node_name not in self.node_objs or node_name not in self._node_edges:
@@ -77,7 +79,7 @@ class DataFlow(NodeStore):
         obj, result, info = self.node_objs[node_name]
         edges = self._node_edges[node_name]
         
-        return obj.process(self.get_data(source_data, self._node_edges[node_name]))
+        return obj.process(self.get_data(source_data, edges))
 
 
 class TrainDataFlow(DataFlow):
@@ -159,8 +161,10 @@ class TrainDataFlow(DataFlow):
         if self.cache is not None:
             cached = self.cache.get_data(node_name, self.outer_idx, self.inner_idx, typ)
             if cached is not None:
-                return cached 
-        data_out = super()._resolve(self.data_source.get_train(), node_name)
+                return cached
+        data_out = super()._resolve(
+            self.data_source.get_train() if typ == 'train' else self.data_source.get_valid(), node_name
+        )
         if self.cache is not None:
             self.cache.put_data(node_name, self.outer_idx, self.inner_idx, typ, data_out)
         return data_out
