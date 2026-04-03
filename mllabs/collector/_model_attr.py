@@ -109,3 +109,10 @@ class ModelAttrCollector(Collector):
             if agg_outer:
                 return df.mean(axis=1)
         return df
+    
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': False,
+            'need_process_data': False,
+        }

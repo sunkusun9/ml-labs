@@ -55,7 +55,7 @@ class XGBoostAdapter(ModelAdapter):
         params['device'] = f'cuda:{gpu_id}'
         return params
 
-    def get_params(self, params, gpu_id_list=None, monitor=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None, single_worker=False):
         if params is None:
             params = {}
         else:
@@ -72,9 +72,12 @@ class XGBoostAdapter(ModelAdapter):
                 callbacks.append(ProgressCallback(n_estimators, self.verbose, monitor))
             params['callbacks'] = callbacks
 
+        if not single_worker:
+            params['n_jobs'] = 1
+
         return params
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):
         from .._data_wrapper import unwrap
 
         fit_params = super().get_fit_params(train_data, valid_data, params, monitor)

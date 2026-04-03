@@ -6,45 +6,33 @@ import numpy as np
 
 from ._base import Collector
 from .._node_processor import resolve_columns
-
+from .._data_wrapper import wrap
 
 class ProcessCollector(Collector):
     _SAVE_EXCLUDE = {
         '_buf': dict,
         '_input_cache': dict,
-        '_ext_data': lambda: None,
-        '_experimenter': lambda: None,
     }
 
-    def __init__(self, name, connector, ext_data, experimenter, output_var=None, method='mean'):
+    def __init__(self, name, connector, ext_data, output_var=None, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
         self.method = method
-        self._data_cls = type(experimenter.data)
-        self._ext_data = ext_data
-        self._experimenter = experimenter
+        self._ext_data = wrap(ext_data)
+        self._data_cls = type(self._ext_data)
         self._input_cache = {}  # {(node, outer_idx): [inner0_input, ...]} transient
 
+    def __getstate__(self):
+        exclude = list(self._SAVE_EXCLUDE.keys()) + ['_ext_data']
+        return {k: v for k, v in self.__dict__.items() if k not in exclude}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        for attr, factory in self._SAVE_EXCLUDE.items():
+            setattr(self, attr, factory())
+    
     def collect(self, context):
-        node = context['node_attrs']['name']
-        idx = context['outer_idx']
-        inner_idx = context['inner_idx']
-
-        cache_key = (node, idx)
-        if cache_key not in self._input_cache:
-            self._input_cache[cache_key] = list(
-                self._experimenter.process_ext(self._ext_data, node, idx)
-            )
-        inputs = self._input_cache[cache_key]
-
-        if inner_idx >= len(inputs) or inputs[inner_idx] is None:
-            return None
-
-        output = context['processor'].process(inputs[inner_idx])
-        if self.output_var is not None:
-            cols = resolve_columns(output, self.output_var, processor=context['processor'])
-            output = output.select_columns(cols)
-        return output
+        return context['output_ext']
 
     def _aggregate(self, iterator):
         if self.method == 'mean':
@@ -127,3 +115,13 @@ class ProcessCollector(Collector):
             columns.extend(cols if cols is not None else [])
         all_data = np.concatenate(arrays, axis=1)
         return self._data_cls.from_output(all_data, columns).to_native()
+
+    def get_ext_data(self):
+        return self._ext_data
+    
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': False,
+            'need_process_data': True,
+        }

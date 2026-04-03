@@ -12,7 +12,7 @@ from ._node_processor import ProgressMonitor
 from ._store import NodeStore
 
 
-def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list=None):
+def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list=None, single_worker = True):
     from ._node_processor import TransformProcessor, PredictProcessor
     method = node_attrs['method']
     if method in ['transform', 'fit_transform']:
@@ -25,10 +25,10 @@ def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_li
         warnings.simplefilter("always")
         try:
             if fit_process:
-                result = obj.fit_process(train_data, valid_data, gpu_id_list=gpu_id_list, monitor=monitor)
+                result = obj.fit_process(train_data, valid_data, gpu_id_list=gpu_id_list, monitor=monitor, single_worker = single_worker)
             else:
                 result = None
-                obj.fit(train_data, valid_data, gpu_id_list=gpu_id_list, monitor=monitor)
+                obj.fit(train_data, valid_data, gpu_id_list=gpu_id_list, monitor=monitor, single_worker = single_worker)
         except Exception as e:
             warn_msgs = [f"{w.category.__name__}: {w.message}" for w in caught]
             info = {
@@ -79,26 +79,35 @@ def _default_on_collect(collector, node_name, outer_idx, inner_idx, result):
     collector.push(node_name, outer_idx, inner_idx, result)
 
 
-def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data, test_data,
-                    outer_idx, inner_idx, monitor,
-                    include_input=True, include_output=True, include_train=True,
-                    on_collect=_default_on_collect):
+def _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data, test_data, ext_data,
+                    outer_idx, inner_idx, monitor, on_collect=_default_on_collect):
     matched = [c for c in collectors if c.connector.match(node_attrs)]
     if not matched:
         return
+    proc_test = False
+    proc_train = False
+    for c in matched:
+        prop = c.get_properties()
+        if prop['need_output_train']:
+            proc_train = True
+        if prop['need_output_test']:
+            proc_test = True
     context = {
         'node_attrs': node_attrs,
         'processor': obj,
         'spec': info,
-        'input': (train_data, valid_data, test_data) if include_input else None,
+        'input': (train_data, valid_data, test_data),
         'outer_idx': outer_idx,
         'inner_idx': inner_idx,
     }
-    if include_output:
+    if proc_test:
         context['output_test'] = obj.process(test_data) if test_data else None
+    if proc_train:
         context['output_valid'] = obj.process(valid_data) if valid_data else None
-        context['output_train'] = (result if result is not None else obj.process(train_data)) if include_train else None
+        context['output_train'] = (result if result is not None else obj.process(train_data))
     for c in matched:
+        if ext_data is not None and c.name in ext_data:
+            context['output_ext'] = obj.process(ext_data[c.name])
         on_collect(c, node_attrs['name'], outer_idx, inner_idx, _safe_collect_call(c, context, monitor))
 
 
@@ -141,16 +150,11 @@ class ProcessWorker(_mp_ctx.Process):
         ('error', error_info)
     """
 
-    def __init__(self, conn, collectors,
-                 finalize=False, include_output=False, include_train=True, include_input=True,
-                 gpu_id=None):
+    def __init__(self, conn, collectors, finalize=False, gpu_id=None):
         super().__init__(daemon=True)
         self.conn = conn
         self.collectors = collectors
         self.finalize = finalize
-        self.include_output = include_output
-        self.include_train = include_train
-        self.include_input = include_input
         self.gpu_id = gpu_id
 
     def run(self):
@@ -162,11 +166,11 @@ class ProcessWorker(_mp_ctx.Process):
             job = self.conn.recv()
             if job is None:
                 break
-            node_path, node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data = job
+            node_path, node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data, ext_data = job
             node_name = node_attrs['name']
             method = node_attrs['method']
             fit_process = method in ['fit_transform', 'fit_predict']
-            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list)
+            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list, single_worker = False)
             for w in info.get('warnings', []):
                 logger.warning(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}")
             if obj is None:
@@ -183,11 +187,8 @@ class ProcessWorker(_mp_ctx.Process):
                 self.conn.send(('collect', collector.name, node_name, outer_idx, inner_idx, res))
 
             _run_collectors(
-                self.collectors, node_attrs, obj, result, info, train_data, valid_data, test_data,
-                outer_idx, inner_idx, monitor,
-                include_input=self.include_input, include_output=self.include_output,
-                include_train=self.include_train,
-                on_collect=_send_collect,
+                self.collectors, node_attrs, obj, result, info, train_data, valid_data, test_data, ext_data,
+                outer_idx, inner_idx, monitor, on_collect=_send_collect,
             )
             self.conn.send(('done', info))
 
@@ -242,11 +243,15 @@ def _build_flow_single(outer_folds, pipeline, nodes, gpu_id_list=None, collector
             train_data = flow.get_train(node_attrs['edges'])
             valid_data = flow.get_valid(node_attrs['edges'])
             test_data = outer_folds[outer_idx].get_test_data(node_attrs['edges'])
+            ext_data = {}
+            for i in [c for c in collectors if c.connector.match(node_attrs)]:
+                if i.get_properties().get('need_process_data', False):
+                    ext_data[i.name] = flow.get_data(i.get_ext_data(), node_attrs['edges'])
             fit_process = node_attrs['method'] in ['fit_transform', 'fit_predict']
 
             if tracker:
                 tracker.start(0, node_name, outer_idx, inner_idx)
-            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, router, gpu_id_list)
+            obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, router, gpu_id_list, single_worker = True)
             for w in info.get('warnings', []):
                 if tracker:
                     tracker.message(0, f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}", typ='warning')
@@ -263,7 +268,7 @@ def _build_flow_single(outer_folds, pipeline, nodes, gpu_id_list=None, collector
                 tracker.done(0, node_name, outer_idx, inner_idx, info)
 
             if collectors:
-                _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data, test_data,
+                _run_collectors(collectors, node_attrs, obj, result, info, train_data, valid_data, test_data, ext_data,
                                 outer_idx, inner_idx, router)
 
     return errors
@@ -292,9 +297,7 @@ def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, co
     workers = []  # [(process, parent_conn)]
     for i in range(n_jobs):
         parent_conn, child_conn = _mp_ctx.Pipe()
-        w = ProcessWorker(child_conn, collectors,
-                        include_output=True, include_train=True, include_input=True,
-                        gpu_id=gpu_id_list[i] if i < n_gpu else None)
+        w = ProcessWorker(child_conn, collectors, gpu_id=gpu_id_list[i] if i < n_gpu else None)
         w.start()
         child_conn.close()
         workers.append((w, parent_conn))
@@ -330,7 +333,11 @@ def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, co
         valid_data = flow.get_valid(node_attrs['edges'])
         test_data = outer_folds[outer_idx].get_test_data(node_attrs['edges'], inner_idx)
         _, conn = workers[worker_idx]
-        conn.send((flow._node_path(node_name), node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data))
+        ext_data = {}
+        for i in [c for c in collectors if c.connector.match(node_attrs)]:
+            if i.get_properties().get('need_process_data', False):
+                ext_data[i.name] = flow.get_data(i.get_ext_data(), node_attrs['edges'])
+        conn.send((flow._node_path(node_name), node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data, ext_data))
         busy[conn] = (outer_idx, inner_idx, node_name)
         (free_gpu if worker_idx < n_gpu else free_cpu).remove(worker_idx)
         if tracker:
@@ -440,7 +447,7 @@ def _experiment_single(outer_folds, pipeline, nodes,
                 else:
                     if tracker:
                         tracker.start(0, node_name, outer_idx, inner_idx)
-                    obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list)
+                    obj, result, info = _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_list, single_worker = True)
                     for w in info.get('warnings', []):
                         monitor.message(f"[{node_name}] fold {outer_idx}_{inner_idx}: {w}", typ='warning')
                     if obj is None:
@@ -459,19 +466,20 @@ def _experiment_single(outer_folds, pipeline, nodes,
                         tracker.done(0, node_name, outer_idx, inner_idx, info)
 
                 if matched:
+                    ext_data = {}
+                    for i in [c for c in collectors if c.connector.match(node_attrs)]:
+                        if i.get_properties().get('need_process_data', False):
+                            ext_data[i.name] = train_flow.get_data(i.get_ext_data(), node_attrs['edges'])
                     _run_collectors(matched, node_attrs, obj, result, info,
-                                    train_data, valid_data, test_data,
-                                    outer_idx, inner_idx, monitor,
-                                    include_input=include_input, include_output=True,
-                                    include_train=include_train)
+                                    train_data, valid_data, test_data, ext_data,
+                                    outer_idx, inner_idx, monitor)
 
     return errors
 
 
 def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
                        gpu_id_list=None, collectors=None, tracker=None,
-                       finalize=False, include_train=True, include_input=True,
-                       gpu_fallback_cpu=True, cpu_fallback_gpu=True):
+                       finalize=False, gpu_fallback_cpu=True, cpu_fallback_gpu=True):
     from .adapter._base import GPU_NO
 
     gpu_id_list = gpu_id_list or []
@@ -489,8 +497,6 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
         parent_conn, child_conn = _mp_ctx.Pipe()
         w = ProcessWorker(child_conn, collectors,
                           finalize=finalize,
-                          include_output=True, include_train=include_train,
-                          include_input=include_input,
                           gpu_id=gpu_id_list[i] if i < n_gpu else None)
         w.start()
         child_conn.close()
@@ -530,9 +536,13 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
         train_data = train_flow.get_train(edges)
         valid_data = train_flow.get_valid(edges)
         test_data = outer_fold.get_test_data(edges)
+        ext_data = {}
+        for i in [c for c in collectors if c.connector.match(node_attrs)]:
+            if i.get_properties().get('need_process_data', False):
+                ext_data[i.name] = train_flow.get_data(i.get_ext_data(), node_attrs['edges'])
         node_path = artifact_store._node_path(node_name)
         _, conn = workers[worker_idx]
-        conn.send((node_path, node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data))
+        conn.send((node_path, node_attrs, outer_idx, inner_idx, train_data, valid_data, test_data, ext_data))
         busy[conn] = job
         (free_gpu if worker_idx < n_gpu else free_cpu).remove(worker_idx)
         if tracker:
@@ -542,7 +552,7 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
         for job in list(gpu_jobs):
             if free_gpu:
                 _dispatch(job, free_gpu[0]); gpu_jobs.remove(job)
-            elif free_cpu and gpu_fallback_cpu:
+            elif free_cpu and len(cpu_jobs) == 0 and gpu_fallback_cpu:
                 _dispatch(job, free_cpu[0]); gpu_jobs.remove(job)
             else:
                 break

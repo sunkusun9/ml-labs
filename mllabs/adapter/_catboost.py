@@ -34,7 +34,7 @@ class CatBoostAdapter(ModelAdapter):
         params['devices'] = str(gpu_id)
         return params
 
-    def get_params(self, params, gpu_id_list=None, monitor=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None, single_worker=False):
         if params is None:
             return {}
         gpu = params.get('gpu', 'auto')
@@ -52,7 +52,7 @@ class CatBoostAdapter(ModelAdapter):
             return x.to_pandas()
         return x
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):
         """CatBoost의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 

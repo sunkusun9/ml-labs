@@ -19,24 +19,21 @@ class SHAPCollector(Collector):
         self.data_filter = data_filter
 
     def collect(self, context):
-        (train_X, _), valid_X = context['input']['X']
+        train_data, valid_data, test_data = context['input']
 
         model = context['processor'].obj
         explainer = self.explainer_cls(model)
 
-        train_dict = {'X': train_X}
         if self.data_filter is not None:
-            train_dict = self.data_filter(train_dict)
+            train_data = self.data_filter(train_data)
 
-        valid_dict = {'X': valid_X}
         if self.data_filter is not None:
-            valid_dict = self.data_filter(valid_dict)
-
+            train_data = self.data_filter(valid_data)
         return {
-            'train': explainer.shap_values(unwrap(train_dict['X'])),
-            'valid': explainer.shap_values(unwrap(valid_dict['X'])),
-            'train_index': train_dict['X'].get_index(),
-            'valid_index': valid_dict['X'].get_index(),
+            'train': explainer.shap_values(unwrap(train_data['X'])),
+            'valid': explainer.shap_values(unwrap(train_data['X'])),
+            'train_index': train_data['X'].get_index(),
+            'valid_index': train_data['X'].get_index(),
             'columns': list(context['processor'].X_),
         }
 
@@ -93,6 +90,7 @@ class SHAPCollector(Collector):
         for f in inner_files:
             with open(f, 'rb') as fp:
                 data = pickle.load(fp)
+            print(data)
             inner_idx = int(f.stem.split('_')[1])
             result.append(self._shap_to_importance(data['valid'], data['columns']).rename(inner_idx))
         return result
@@ -115,3 +113,10 @@ class SHAPCollector(Collector):
         if agg_outer is not None and agg_inner is not None:
             result = result.agg(agg_outer, axis=1)
         return result
+
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': False,
+            'need_process_data': False,
+        }

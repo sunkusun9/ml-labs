@@ -136,3 +136,10 @@ class StackingCollector(Collector):
             ], axis=1)
 
         return wrapped.to_native()
+
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': True,
+            'need_process_data': False,
+        }

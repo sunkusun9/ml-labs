@@ -107,7 +107,8 @@ class TqdmProgressSession(BaseProgressSession):
         if self._bar.total != total:
             self._bar.reset(total)
         self._bar.n = current
-        self._bar.set_description(msg if msg is not None else '')
+        if msg is not None:
+            self._bar.set_description(msg)
         self._bar.refresh()
     
     def rename_progress(self, title):

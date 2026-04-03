@@ -116,3 +116,9 @@ class MetricCollector(Collector):
             return df_agg_mean, df_agg_std
         return df
 
+    def get_properties(self):
+        return {
+            'need_output_train': self.include_train,
+            'need_output_test': True,
+            'need_process_data': False,
+        }

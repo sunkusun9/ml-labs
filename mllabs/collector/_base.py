@@ -41,6 +41,15 @@ class Collector:
     def abort_node(self, node):
         self._buf.pop(node, None)
 
+    def __getstate__(self):
+        exclude = self._SAVE_EXCLUDE.keys()
+        return {k: v for k, v in self.__dict__.items() if k not in exclude}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        for attr, factory in self._SAVE_EXCLUDE.items():
+            setattr(self, attr, factory())
+
     def save(self):
         self.path.mkdir(parents=True, exist_ok=True)
         exclude = self._SAVE_EXCLUDE.keys()
@@ -57,3 +66,10 @@ class Collector:
         for attr, factory in cls._SAVE_EXCLUDE.items():
             setattr(obj, attr, factory())
         return obj
+
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': False,
+            'need_process_data': False,
+        }

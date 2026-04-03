@@ -45,7 +45,7 @@ class NNAdapter(ModelAdapter):
     def inject_gpu_id(self, params, gpu_id):
         params['device'] = f'/GPU:{gpu_id}'
 
-    def get_params(self, params, gpu_id_list=None, monitor=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None, single_worker=False):
         if params is None:
             return {}
         gpu = params.get('gpu', 'auto')
@@ -55,7 +55,7 @@ class NNAdapter(ModelAdapter):
             params['device'] = f'/GPU:{gpu_id_list[0]}'
         return params
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):
         from .._data_wrapper import unwrap
 
         fit_params = super().get_fit_params(train_data, valid_data, params, monitor)

@@ -543,7 +543,7 @@ class Experimenter():
             for outer_fold in self.outer_folds:
                 if grp.role == 'stage':
                     for store in outer_fold.train_data_flows:
-                        store.reset_nodes(name)
+                        store.reset_node(name)
         self.status = "open"
         self.build()
         self._save()
@@ -562,7 +562,6 @@ class Experimenter():
             affected_nodes = result_obj['affected_nodes']
             self.logger.info(f"Affected {len(affected_nodes)} dependent node(s): {sorted(affected_nodes)}")
             self.reset_nodes(affected_nodes)
-
         if result_obj['result'] == 'update':
             self.reset_nodes([name])
         self._save()
@@ -582,6 +581,8 @@ class Experimenter():
             if node is None:
                 continue
             grp = self.pipeline.get_grp(node.grp)
+            if grp is None:
+                 continue
             for outer_fold in self.outer_folds:
                 if grp.role == 'stage':
                     for flow in outer_fold.train_data_flows:
@@ -656,15 +657,17 @@ class Experimenter():
             if i is not None
             and i in node_names
             and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'stage'
-            and self.get_status(i) not in ['built', 'finalized']
         ]
+        if rebuild:
+            self.reset_nodes(target_nodes)
+        else:
+            target_nodes = [
+                i for i in target_nodes
+                if self.get_status(i) not in ['built', 'finalized']
+            ]
         if not target_nodes:
             self.logger.info("No stage nodes to build")
             return
-
-        if rebuild:
-            self.cache.clear_nodes(target_nodes)
-            self.reset_nodes(target_nodes)
 
         self.logger.info(f"Building {len(target_nodes)} node(s)")
         collectors = list(self.collectors.values())
@@ -690,13 +693,12 @@ class Experimenter():
         else:
             self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
-    def exp(self, nodes=None, finalize=False, include_train=True, n_jobs=1, gpu_id_list=None):
+    def exp(self, nodes=None, finalize=False, n_jobs=1, gpu_id_list=None):
         """Run Head nodes and invoke all matching Collectors.
 
         Args:
             nodes: Node query — ``None`` (all heads), ``list``, or regex ``str``.
             finalize (bool): If ``True``, finalize after all folds complete.
-            include_train (bool): If ``False``, skip computing train output.
             n_jobs (int): Number of parallel workers. Default 1 (sequential).
             gpu_id_list (list, optional): GPU IDs to use for GPU-enabled nodes.
         """
@@ -724,13 +726,11 @@ class Experimenter():
             if n_jobs > 1:
                 errors = _experiment_multi(self.outer_folds, self.pipeline, target_nodes, n_jobs,
                                            gpu_id_list=gpu_id_list, collectors=collectors,
-                                           tracker=tracker, finalize=finalize,
-                                           include_train=include_train)
+                                           tracker=tracker, finalize=finalize)
             else:
                 errors = _experiment_single(self.outer_folds, self.pipeline, target_nodes,
                                             gpu_id_list=gpu_id_list, collectors=collectors,
-                                            tracker=tracker, finalize=finalize,
-                                            include_train=include_train)
+                                            tracker=tracker, finalize=finalize)
         finally:
             tracker.close()
 
@@ -791,11 +791,13 @@ class Experimenter():
                         train_data = train_flow.get_train(edges)
                         valid_data = train_flow.get_valid(edges)
                         test_data = outer_fold.get_test_data(edges)
+                        ext_data = {}
+                        if collector.get_properties().get('need_process_data', False):
+                            ext_data[collector.name] = train_flow.get_data(collector.get_ext_data(), node_attrs['edges'])
                         _run_collectors(
                             [collector], node_attrs, obj, result, info,
-                            train_data, valid_data, test_data,
-                            outer_idx, inner_idx, monitor,
-                            include_input=True, include_output=True, include_train=True,
+                            train_data, valid_data, test_data, ext_data,
+                            outer_idx, inner_idx, monitor
                         )
                     n_done += 1
                     self.logger.update_progress(0, n_done)
@@ -983,7 +985,7 @@ class Experimenter():
             pkl.dump(save_data, f)
 
     @staticmethod
-    def load(filepath, data, data_key=None, aug_data=None):
+    def load(filepath, data, data_key=None, aug_data=None, logger = DefaultLogger(level=['info', 'progress'])):
         """Load a saved Experimenter from disk.
 
         Args:
@@ -1030,6 +1032,7 @@ class Experimenter():
             cache_maxsize=save_data.get('cache_maxsize', 4 * 1024 ** 3),
             aug_data=aug_data,
             _save=False,
+            logger = logger
         )
         exp.exp_id = save_data['exp_id']
         exp.pipeline = save_data['pipeline']

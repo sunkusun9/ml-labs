@@ -47,7 +47,7 @@ class ModelAdapter(ABC):
         self.eval_mode = eval_mode
         self.verbose = verbose
 
-    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):
         """모델의 fit()에 전달할 파라미터를 구성
 
         Args:
@@ -87,7 +87,7 @@ class ModelAdapter(ABC):
             return GPU_NO
         return GPU_YES
 
-    def get_params(self, params, gpu_id_list=None, monitor=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None, single_worker=False):
         """모델 생성자에 전달할 파라미터를 조정
 
         Args:

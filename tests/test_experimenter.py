@@ -410,7 +410,7 @@ class TestStateManagement:
     def test_reopen_exp_collector_data_valid(self, exp):
         _setup_full(exp)
         exp.build()
-        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        mc = MetricCollector('acc', Connector(edges = {'y': [(None, 'target')]}), output_var=None, metric_func=accuracy_metric)
         exp.add_collector(mc)
         exp.exp()
         assert mc.has('dt')
@@ -431,10 +431,10 @@ class TestStateManagement:
         exp.add_collector(mc)
         exp.exp()
 
-        mc._sub['dt'] = [{'valid': 0.9}]
+        mc._buf['dt'] = [{'valid': 0.9}]
         exp.reset_nodes(['dt'])
 
-        assert 'dt' not in mc._sub
+        assert 'dt' not in mc._buf
 
     def test_close_exp_saves_status(self, exp, sample_data):
         _setup_full(exp)
@@ -448,7 +448,7 @@ class TestStateManagement:
     def test_reopen_exp_after_save_load(self, exp, sample_data):
         _setup_full(exp)
         exp.build()
-        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        mc = MetricCollector('acc', Connector(edges = {'y': [(None, 'target')]}), output_var=None, metric_func=accuracy_metric)
         exp.add_collector(mc)
         exp.exp()
         first_result = mc.get_metrics_agg(None)[0]
@@ -628,7 +628,7 @@ class TestNodeStore:
         assert store.status('node1') is None  # cache cleared, disk gone
 
     def test_dataflow_autoload(self, tmp_path):
-        NodeStore.write_objs(tmp_path / 'node1', StandardScaler(), None, {'build_id': 'dl'})
+        NodeStore.write_objs(tmp_path / 'node1', StandardScaler(), None, {'build_id': 'dl', 'edges': {'X': (None, ['X1', 'X2'])}})
         flow = DataFlow(tmp_path)
         assert 'node1' in flow.node_objs
         assert flow.status('node1') == 'built'

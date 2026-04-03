@@ -1,6 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
+import shutil
 
 from ._node_processor import resolve_columns
 from ._store import NodeStore
@@ -31,7 +32,8 @@ class DataFlow(NodeStore):
 
     def load_objs(self, node_name):
         obj, result, info = self.get_objs(node_name)
-        self.set_objs(node_name, obj, result, info)
+        self.node_objs[node_name] = (obj, result, info)
+        self._node_edges[node_name] = info['edges']
         return obj, result, info
 
     def load(self):
@@ -168,3 +170,8 @@ class TrainDataFlow(DataFlow):
         if self.cache is not None:
             self.cache.put_data(node_name, self.outer_idx, self.inner_idx, typ, data_out)
         return data_out
+
+    def reset_node(self, name):
+        super().reset_node(name)
+        if name in self.node_objs:
+            del self.node_objs[name]
