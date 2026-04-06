@@ -175,3 +175,55 @@ class TrainDataFlow(DataFlow):
         super().reset_node(name)
         if name in self.node_objs:
             del self.node_objs[name]
+
+
+class InferenceDataFlow:
+    """In-memory graph traversal for Inferencer. No disk or cache dependency.
+
+    Holds one processor per node (single split). Only 'X' edges are resolved —
+    'y' / 'sample_weight' edges are training-only and ignored at inference time.
+    """
+
+    def __init__(self):
+        self.node_objs = {}    # {name: obj}
+        self._node_edges = {}  # {name: X-only edges}
+
+    def add_node(self, name, obj, edges):
+        self.node_objs[name] = obj
+        self._node_edges[name] = {k: v for k, v in edges.items() if k == 'X'}
+
+    def get_data(self, source_data, edges):
+        """Resolve edges against source_data through the stage graph.
+
+        Args:
+            source_data: DataWrapper — raw input at DataSource level.
+            edges: {key: [(node_name, var), ...]} — X-only subset.
+
+        Returns:
+            {key: data} flat dict.
+        """
+        result = {}
+        for key, edge_list in edges.items():
+            parts = []
+            for node_name, var in edge_list:
+                data = self._resolve(source_data, node_name)
+                if data is None:
+                    continue
+                if var is not None:
+                    obj = self.node_objs.get(node_name)
+                    cols = resolve_columns(data, var, processor=obj)
+                    data = data.select_columns(cols)
+                parts.append(data)
+            if parts:
+                result[key] = type(parts[0]).concat(parts, axis=1) if len(parts) > 1 else parts[0]
+        return result
+
+    def _resolve(self, source_data, node_name):
+        if source_data is None:
+            return None
+        if node_name is None:
+            return source_data
+        if node_name not in self.node_objs:
+            return None
+        obj = self.node_objs[node_name]
+        return obj.process(self.get_data(source_data, self._node_edges[node_name]))

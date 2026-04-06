@@ -33,22 +33,15 @@ data_dict = {
 - `train_v`: training fold filtered by `output_var` (for inner validation)
 - `valid`: validation fold data
 
-### In Trainer
-
-```python
-data_dict = {
-    'X': (X_train, X_valid),
-    'y': (y_train, y_valid),
-}
-```
-
-No inner fold — data is split once by the `splitter`.
-
 ## Cache
 
 `Experimenter` uses an LRU cache (capacity-based, default 4 GB) to store Stage outputs. When a Stage node's output is requested by multiple downstream nodes, it is computed once and reused from cache.
 
-`Trainer` shares the same cache instance with its parent `Experimenter`, using `"train_all"` as the type key to avoid collisions.
+`Trainer` shares the same cache instance with its parent `Experimenter`. To avoid key collisions, each `TrainFold` uses a negative `outer_idx` (`-(split_idx + 1)`), which never overlaps with the Experimenter's positive fold indices.
+
+## Inference Data Flow
+
+At inference time, `Inferencer` builds an `InferenceDataFlow` per split. This is a lightweight in-memory graph that holds only the fitted processors — no disk or cache dependency. It resolves only `'X'` edges; `'y'` and `'sample_weight'` edges are training-only and are ignored during inference.
 
 ## X-less Nodes
 

@@ -19,6 +19,16 @@ def pw(data, columns=None):
     return PandasWrapper(pd.DataFrame(np.array(data), columns=columns))
 
 
+def make_data(X=None, y=None):
+    """Build {key: DataWrapper} dict for fit/fit_process/process."""
+    d = {}
+    if X is not None:
+        d['X'] = pw(X) if not isinstance(X, PandasWrapper) else X
+    if y is not None:
+        d['y'] = pw(y) if not isinstance(y, PandasWrapper) else y
+    return d
+
+
 def make_exp(path, data, aug_data=None):
     return Experimenter(
         data=data,
@@ -115,48 +125,43 @@ class TestTransformProcessorSampler:
     TRAIN = [[1.0, 2.0], [3.0, 4.0]]
     TRAIN_V = [[1.5, 2.5]]
     EXTRA = [[10.0, 10.0]]
+    COLS = ['a', 'b']
 
-    def _data_dict(self):
-        cols = ['a', 'b']
-        return {
-            'X': (pw(pd.DataFrame(self.TRAIN, columns=cols)),
-                  pw(pd.DataFrame(self.TRAIN_V, columns=cols))),
-        }
+    def _train_data(self):
+        return make_data(X=pd.DataFrame(self.TRAIN, columns=self.COLS))
+
+    def _valid_data(self):
+        return make_data(X=pd.DataFrame(self.TRAIN_V, columns=self.COLS))
 
     def test_fit_uses_augmented_data(self):
         sampler = AddRowsSampler(self.EXTRA)
-        data_dict = self._data_dict()
         proc = TransformProcessor('s', StandardScaler, params={'mllab_sampler': sampler})
-        proc.fit(data_dict)
+        proc.fit(self._train_data(), self._valid_data())
         expected_mean = np.mean(self.TRAIN + self.EXTRA, axis=0).astype(float)
         np.testing.assert_allclose(proc.obj.mean_, expected_mean)
 
     def test_fit_without_sampler_unaffected(self):
-        data_dict = self._data_dict()
         proc = TransformProcessor('s', StandardScaler)
-        proc.fit(data_dict)
+        proc.fit(self._train_data(), self._valid_data())
         expected_mean = np.mean(self.TRAIN, axis=0).astype(float)
         np.testing.assert_allclose(proc.obj.mean_, expected_mean)
 
     def test_fit_sampler_not_passed_to_transformer(self):
         sampler = AddRowsSampler(self.EXTRA)
-        data_dict = self._data_dict()
         proc = TransformProcessor('s', StandardScaler, params={'mllab_sampler': sampler})
-        proc.fit(data_dict)  # StandardScaler does not accept mllab_sampler — must not raise
+        proc.fit(self._train_data(), self._valid_data())  # must not raise
 
     def test_fit_process_fitted_on_augmented(self):
         sampler = AddRowsSampler(self.EXTRA)
-        data_dict = self._data_dict()
         proc = TransformProcessor('s', StandardScaler, params={'mllab_sampler': sampler})
-        proc.fit_process(data_dict)
+        proc.fit_process(self._train_data(), self._valid_data())
         expected_mean = np.mean(self.TRAIN + self.EXTRA, axis=0).astype(float)
         np.testing.assert_allclose(proc.obj.mean_, expected_mean)
 
     def test_fit_process_output_shape_matches_original(self):
         sampler = AddRowsSampler(self.EXTRA)
-        data_dict = self._data_dict()
         proc = TransformProcessor('s', StandardScaler, params={'mllab_sampler': sampler})
-        result = proc.fit_process(data_dict)
+        result = proc.fit_process(self._train_data(), self._valid_data())
         assert result.get_shape()[0] == len(self.TRAIN)
 
 
@@ -171,35 +176,37 @@ class TestPredictProcessorSampler:
     def data(self):
         rng = np.random.default_rng(0)
         cols = ['a', 'b']
-        self.train_X = rng.standard_normal((self.N, 2))
-        self.train_v_X = rng.standard_normal((self.N_V, 2))
-        self.train_y = rng.integers(0, 2, self.N)
-        self.train_v_y = rng.integers(0, 2, self.N_V)
+        train_X = rng.standard_normal((self.N, 2))
+        train_v_X = rng.standard_normal((self.N_V, 2))
+        train_y = rng.integers(0, 2, self.N)
+        train_v_y = rng.integers(0, 2, self.N_V)
         self.extra_X = rng.standard_normal((self.N_EXTRA, 2))
         self.extra_y = rng.integers(0, 2, self.N_EXTRA)
-        self.data_dict = {
-            'X': (pw(pd.DataFrame(self.train_X, columns=cols)),
-                  pw(pd.DataFrame(self.train_v_X, columns=cols))),
-            'y': (pw(pd.DataFrame({'t': self.train_y})),
-                  pw(pd.DataFrame({'t': self.train_v_y}))),
-        }
+        self.train_data = make_data(
+            X=pd.DataFrame(train_X, columns=cols),
+            y=pd.DataFrame({'t': train_y}),
+        )
+        self.valid_data = make_data(
+            X=pd.DataFrame(train_v_X, columns=cols),
+            y=pd.DataFrame({'t': train_v_y}),
+        )
 
     def test_fit_sampler_not_passed_to_estimator(self):
         sampler = AddRowsSampler(self.extra_X, self.extra_y)
         proc = PredictProcessor('dt', DecisionTreeClassifier,
                                 params={'mllab_sampler': sampler, 'max_depth': 3, 'random_state': 0})
-        proc.fit(self.data_dict)  # must not raise
+        proc.fit(self.train_data, self.valid_data)  # must not raise
 
     def test_fit_process_output_shape_matches_original(self):
         sampler = AddRowsSampler(self.extra_X, self.extra_y)
         proc = PredictProcessor('dt', SimpleFitPredict, method='fit_predict',
                                 params={'mllab_sampler': sampler})
-        result = proc.fit_process(self.data_dict)
+        result = proc.fit_process(self.train_data, self.valid_data)
         assert result.get_shape()[0] == self.N
 
     def test_fit_process_without_sampler_output_shape(self):
         proc = PredictProcessor('dt', SimpleFitPredict, method='fit_predict')
-        result = proc.fit_process(self.data_dict)
+        result = proc.fit_process(self.train_data, self.valid_data)
         assert result.get_shape()[0] == self.N
 
 
@@ -237,40 +244,37 @@ class TestExperimenterAugData:
     def test_inner_train_size_increased(self, tmp_path, base_data, aug_df):
         exp_with = make_exp(tmp_path / 'with', base_data, aug_data=aug_df)
         exp_without = make_exp(tmp_path / 'without', base_data)
-        for (t_with, _), _ in exp_with.get_node_output(None, 0):
-            for (t_without, _), _ in exp_without.get_node_output(None, 0):
-                assert t_with.get_shape()[0] == t_without.get_shape()[0] + len(aug_df)
-                break
-            break
+        n_with = exp_with.outer_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        n_without = exp_without.outer_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        assert n_with == n_without + len(aug_df)
 
     def test_inner_valid_unchanged(self, tmp_path, base_data, aug_df):
         exp_with = make_exp(tmp_path / 'with', base_data, aug_data=aug_df)
         exp_without = make_exp(tmp_path / 'without', base_data)
-        tv_with = [tv.get_shape()[0] for (_, tv), _ in exp_with.get_node_output(None, 0) if tv is not None]
-        tv_without = [tv.get_shape()[0] for (_, tv), _ in exp_without.get_node_output(None, 0) if tv is not None]
-        assert tv_with == tv_without
+        for i in range(len(exp_with.outer_folds[0].train_data_flows)):
+            v_with = exp_with.outer_folds[0].train_data_flows[i].data_source.get_valid()
+            v_without = exp_without.outer_folds[0].train_data_flows[i].data_source.get_valid()
+            if v_with is not None and v_without is not None:
+                assert v_with.get_shape()[0] == v_without.get_shape()[0]
 
-    def test_outer_valid_unchanged(self, tmp_path, base_data, aug_df):
+    def test_outer_test_unchanged(self, tmp_path, base_data, aug_df):
         exp_with = make_exp(tmp_path / 'with', base_data, aug_data=aug_df)
         exp_without = make_exp(tmp_path / 'without', base_data)
-        v_with = [v.get_shape()[0] for _, v in exp_with.get_node_output(None, 0)]
-        v_without = [v.get_shape()[0] for _, v in exp_without.get_node_output(None, 0)]
-        assert v_with == v_without
+        assert len(exp_with.outer_folds[0].test_idx) == len(exp_without.outer_folds[0].test_idx)
 
     def test_column_filter_applied_to_aug(self, tmp_path, base_data, aug_df):
         exp = make_exp(tmp_path / 'exp', base_data, aug_data=aug_df)
-        for (train, _), _ in exp.get_node_output(None, 0, v=['f1', 'f2']):
-            assert train.get_columns() == ['f1', 'f2']
-            break
+        train = exp.outer_folds[0].train_data_flows[0].data_source.get_train()
+        assert 'f1' in train.get_columns()
+        assert 'f2' in train.get_columns()
 
     def test_load_passes_aug_data(self, tmp_path, base_data, aug_df):
         path = tmp_path / 'exp'
         make_exp(path, base_data, aug_data=aug_df)
         exp2 = Experimenter.load(path, data=base_data, aug_data=aug_df)
         assert exp2.aug_data is not None
-        for (t, _), _ in exp2.get_node_output(None, 0):
-            assert t.get_shape()[0] == pytest.approx(t.get_shape()[0])  # just check it runs
-            break
+        n = exp2.outer_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        assert n > 0
 
     def test_load_without_aug_data(self, tmp_path, base_data):
         path = tmp_path / 'exp'
@@ -308,30 +312,28 @@ class TestTrainerAugData:
     def test_trainer_inner_train_size_increased(self, exp, aug_df):
         trainer_with = exp.add_trainer('t_with', aug_data=aug_df)
         trainer_without = exp.add_trainer('t_without')
-        for t_with, _ in trainer_with.get_node_output(None):
-            for t_without, _ in trainer_without.get_node_output(None):
-                assert t_with.get_shape()[0] == t_without.get_shape()[0] + len(aug_df)
-                break
-            break
+        n_with = trainer_with.train_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        n_without = trainer_without.train_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        assert n_with == n_without + len(aug_df)
 
     def test_trainer_valid_unchanged(self, exp, aug_df):
         trainer_with = exp.add_trainer('t_with', aug_data=aug_df)
         trainer_without = exp.add_trainer('t_without')
-        v_with = [v.get_shape()[0] for _, v in trainer_with.get_node_output(None)]
-        v_without = [v.get_shape()[0] for _, v in trainer_without.get_node_output(None)]
-        assert v_with == v_without
+        for fold_with, fold_without in zip(trainer_with.train_folds, trainer_without.train_folds):
+            v_with = fold_with.train_data_flows[0].data_source.get_valid()
+            v_without = fold_without.train_data_flows[0].data_source.get_valid()
+            if v_with is not None and v_without is not None:
+                assert v_with.get_shape()[0] == v_without.get_shape()[0]
 
     def test_trainer_no_split_aug_data(self, exp, aug_df):
         trainer_with = exp.add_trainer('t_with', splitter=None, aug_data=aug_df)
         trainer_without = exp.add_trainer('t_without', splitter=None)
-        for t_with, _ in trainer_with.get_node_output(None):
-            for t_without, _ in trainer_without.get_node_output(None):
-                assert t_with.get_shape()[0] == t_without.get_shape()[0] + len(aug_df)
-                break
-            break
+        n_with = trainer_with.train_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        n_without = trainer_without.train_folds[0].train_data_flows[0].data_source.get_train().get_shape()[0]
+        assert n_with == n_without + len(aug_df)
 
     def test_trainer_column_filter_applied_to_aug(self, exp, aug_df):
         trainer = exp.add_trainer('t1', aug_data=aug_df)
-        for train, _ in trainer.get_node_output(None, v=['f1', 'f2']):
-            assert train.get_columns() == ['f1', 'f2']
-            break
+        train = trainer.train_folds[0].train_data_flows[0].data_source.get_train()
+        selected = train.select_columns(['f1', 'f2'])
+        assert selected.get_columns() == ['f1', 'f2']

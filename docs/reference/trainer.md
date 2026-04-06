@@ -5,6 +5,8 @@
       members:
         - select_head
         - train
+        - get_status
+        - get_node_error
         - process
         - to_inferencer
         - reset_nodes

@@ -43,6 +43,9 @@ class CatBoostAdapter(ModelAdapter):
         if gpu is not None and gpu_id_list:
             params['task_type'] = 'GPU'
             params['devices'] = str(gpu_id_list[0])
+
+        if not single_worker:
+            params['thread_count'] = 1
         return params
 
     def get_process_data(self, data):

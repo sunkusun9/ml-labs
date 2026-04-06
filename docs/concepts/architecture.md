@@ -27,8 +27,8 @@ Inferencer ─────── applies trained processors to new data
 
 ## Trainer
 
-`Trainer` handles cross-validation. It splits data using a `splitter`, then runs each node across all splits. Stage outputs are kept in memory; Head outputs are written to disk per split. The result can be converted to an `Inferencer` via `to_inferencer()`.
+`Trainer` handles cross-validation. It splits data using a `splitter` and creates one `TrainFold` per split. Each `TrainFold` holds a `TrainDataFlow` (resolves stage transforms) and a `NodeStore` (persists fitted processors to disk). Training delegates to the same executor routines used by `Experimenter`. The result can be converted to an `Inferencer` via `to_inferencer()`.
 
 ## Inferencer
 
-`Inferencer` holds the fitted processors produced by `Trainer`. Given new data, it runs each split's processors and aggregates the results (`mean`, `mode`, or a custom callable).
+`Inferencer` holds the fitted processors produced by `Trainer`. Given new data, it builds an `InferenceDataFlow` per split — an in-memory graph that resolves only `'X'` edges — and aggregates the results across splits (`mean`, `mode`, or a custom callable).
