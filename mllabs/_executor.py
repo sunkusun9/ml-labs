@@ -226,6 +226,14 @@ def _build_flow_single(outer_folds, pipeline, nodes, gpu_id_list=None, collector
 
     errors = {}
     router = _TrackerRouter(1, tracker)
+
+    if tracker:
+        for outer_idx, outer_fold in enumerate(outer_folds):
+            for inner_idx, flow in enumerate(outer_fold.train_data_flows):
+                for n in nodes:
+                    if n in flow.node_objs:
+                        tracker.done(0, n, outer_idx, inner_idx, None)
+
     while True:
         ready = [
             (outer_idx, inner_idx, flow, n)
@@ -304,6 +312,13 @@ def _build_flow_multi(outer_folds, pipeline, nodes, n_jobs, gpu_id_list=None, co
 
     for _, conn in workers:
         conn.recv()  # wait for 'ready'
+
+    if tracker:
+        for outer_idx, outer_fold in enumerate(outer_folds):
+            for inner_idx, flow in enumerate(outer_fold.train_data_flows):
+                for n in nodes:
+                    if n in flow.node_objs:
+                        tracker.done(0, n, outer_idx, inner_idx, None)
 
     free_gpu = list(range(n_gpu))
     free_cpu = list(range(n_gpu, n_jobs))
@@ -435,6 +450,8 @@ def _experiment_single(outer_folds, pipeline, nodes,
                     continue
                 status = artifact_store.status(node_name)
                 if status == 'finalized':
+                    if tracker:
+                        tracker.done(0, node_name, outer_idx, inner_idx, None)
                     continue
                 train_data = train_flow.get_train(edges)
                 valid_data = train_flow.get_valid(edges)
@@ -529,6 +546,15 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
 
     gpu_jobs, cpu_jobs = _make_jobs()
 
+    if tracker:
+        for outer_idx, outer_fold in enumerate(outer_folds):
+            for inner_idx, (_, artifact_store) in enumerate(
+                zip(outer_fold.train_data_flows, outer_fold.artifact_stores)
+            ):
+                for node_name in nodes:
+                    if artifact_store.status(node_name) in ('built', 'finalized'):
+                        tracker.done(0, node_name, outer_idx, inner_idx, None)
+
     def _dispatch(job, worker_idx):
         outer_idx, inner_idx, node_name, outer_fold, train_flow, artifact_store = job
         node_attrs = pipeline.get_node_attrs(node_name)
@@ -559,7 +585,7 @@ def _experiment_multi(outer_folds, pipeline, nodes, n_jobs,
         for job in list(cpu_jobs):
             if free_cpu:
                 _dispatch(job, free_cpu[0]); cpu_jobs.remove(job)
-            elif free_gpu and cpu_fallback_gpu:
+            elif free_gpu and len(gpu_jobs) == 0 and cpu_fallback_gpu:
                 _dispatch(job, free_gpu[0]); cpu_jobs.remove(job)
             else:
                 break

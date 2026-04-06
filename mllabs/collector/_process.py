@@ -32,7 +32,13 @@ class ProcessCollector(Collector):
             setattr(self, attr, factory())
     
     def collect(self, context):
-        return context['output_ext']
+        output = context['output_ext']
+        if output is None:
+            return None
+        cols = resolve_columns(output, self.output_var)
+        if not cols:
+            return None
+        return output.select_columns(cols)
 
     def _aggregate(self, iterator):
         if self.method == 'mean':

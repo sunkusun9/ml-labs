@@ -828,3 +828,39 @@ class TestProcessCollector:
         built_exp.add_collector(pc)
         with pytest.raises(ValueError):
             pc.get_output(agg='invalid')
+
+    @pytest.fixture
+    def proba_exp(self, tmp_path, sample_data):
+        e = Experimenter(
+            data=sample_data,
+            path=tmp_path / 'exp_proba',
+            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
+        )
+        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                  method='predict_proba',
+                  edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
+                  params={'max_depth': 3, 'random_state': 42})
+        e.set_node('dt', grp='model')
+        e.build()
+        e.exp()
+        return e
+
+    def test_output_var_none_returns_all_columns(self, proba_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, output_var=None)
+        proba_exp.add_collector(pc)
+        result = pc.get_output()
+        assert result.shape == (20, 2)
+
+    def test_output_var_list_selects_column(self, proba_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, output_var=['dt__target_0'])
+        proba_exp.add_collector(pc)
+        result = pc.get_output()
+        assert list(result.columns) == ['dt__target_0']
+        assert result.shape == (20, 1)
+
+    def test_output_var_regex_selects_column(self, proba_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, output_var='dt__target_1')
+        proba_exp.add_collector(pc)
+        result = pc.get_output()
+        assert list(result.columns) == ['dt__target_1']
+        assert result.shape == (20, 1)

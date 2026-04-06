@@ -21,7 +21,7 @@ class ExecuteTracker:
         self.workers[worker_idx] = None
         self.records[(node_name, outer_idx, inner_idx)] = {
             'status': 'done',
-            'fit_time': info.get('fit_time'),
+            'fit_time': info.get('fit_time') if info is not None else None,
         }
         self._on_update('done', worker_idx=worker_idx, node_name=node_name,
                         outer_idx=outer_idx, inner_idx=inner_idx, info=info)

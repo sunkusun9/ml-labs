@@ -247,6 +247,9 @@ class Experimenter():
 
     def remove_collector(self, name):
         if name in self.collectors:
+            collector_path = self.path / '__collector' / name
+            if collector_path.exists():
+                shutil.rmtree(collector_path)
             del self.collectors[name]
             self._save()
 
@@ -256,7 +259,8 @@ class Experimenter():
         Args:
             collector (Collector): Collector instance to register.
             exist (str): ``'skip'`` (default) returns existing if already registered;
-                ``'error'`` raises.
+                ``'error'`` raises; ``'replace'`` removes the existing collector and
+                registers the new one from scratch.
 
         Returns:
             Collector: The registered collector.
@@ -266,6 +270,8 @@ class Experimenter():
                 return self.collectors[collector.name]
             elif exist == 'error':
                 raise RuntimeError("")
+            elif exist == 'replace':
+                self.remove_collector(collector.name)
 
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
