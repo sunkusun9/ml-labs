@@ -1,4 +1,7 @@
 import pickle
+import re
+import shutil
+
 import numpy as np
 
 from ._base import Collector
@@ -7,36 +10,21 @@ from .._data_wrapper import DataWrapper
 
 
 class StackingCollector(Collector):
-    """Collects out-of-fold (OOF) predictions for stacking.
-
-    Predictions are aggregated across inner folds and saved per outer fold,
-    then assembled into a dataset aligned to the original data index.
-
-    Args:
-        name (str): Collector name.
-        connector (Connector): Node matching criteria. The ``edges`` ``'y'``
-            entry is used to extract the target column.
-        output_var: Column selector for the Head output.
-        experimenter (Experimenter): Used to build the OOF index and target.
-        method (str): Inner-fold aggregation — ``'mean'`` (default), ``'mode'``,
-            or ``'simple'`` (concatenate).
-    """
+    _SAVE_EXCLUDE = {'_buf': dict, '_outer_buf': dict}
 
     def __init__(self, name, connector, output_var, experimenter, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
         self.method = method
-        self.columns = {}
-        self._buffer = {}
-        self._mem_data = {}
 
         self._data_cls = type(experimenter.data)
         self._index = self._build_index(experimenter)
         self._target, self._target_columns = self._build_target(experimenter)
+        self._outer_buf = {}  # {node: {outer_idx: aggregated_DataWrapper}}
 
     def _build_index(self, experimenter):
         all_valid_idx = np.concatenate([
-            experimenter.valid_idx_list[i]
+            experimenter.outer_folds[i].test_idx
             for i in range(experimenter.get_n_splits())
         ])
         return experimenter.data.iloc(all_valid_idx).get_index()
@@ -50,57 +38,20 @@ class StackingCollector(Collector):
         target_columns = None
         temp_edges = {'_target': target_vars}
         for idx in range(experimenter.get_n_splits()):
-            iterator = experimenter.get_data_valid(idx, temp_edges)
-            aggregated = DataWrapper.simple(
-                data_dict['_target'] for data_dict in iterator
-            )
+            data_dict = experimenter.get_test_data(temp_edges, o_idx=idx, i_idx=0)
+            target_data = data_dict['_target']
             if target_columns is None:
-                target_columns = aggregated.get_columns()
-            target_list.append(aggregated.to_array())
+                target_columns = target_data.get_columns()
+            target_list.append(target_data.to_array())
         if type(target_columns) is str:
             target_columns = [target_columns]
         return np.concatenate(target_list, axis=0), target_columns
 
-    def _start(self, node):
-        self._buffer[node] = []
-
-    def _collect(self, node, idx, inner_idx, context):
-        cols = resolve_columns(context['output_valid'], self.output_var)
+    def collect(self, context):
+        cols = resolve_columns(context['output_test'], self.output_var)
         if len(cols) == 0:
-            return
-        valid_output = context['output_valid'].select_columns(cols)
-        self._buffer[node].append(valid_output)
-        if inner_idx == 0:
-            self.columns[node] = valid_output.get_columns()
-
-    def _end_idx(self, node, idx):
-        if len(self._buffer[node]) == 0:
-            return
-        aggregated = self._aggregate(iter(self._buffer[node]))
-        arr = aggregated.to_array()
-
-        if self.path is not None:
-            self._ensure_path()
-            file_path = self.path / f"{node}.pkl"
-            if file_path.exists():
-                with open(file_path, 'rb') as f:
-                    existing = pickle.load(f)
-                existing['data'] = np.concatenate([existing['data'], arr])
-            else:
-                existing = {'data': arr, 'columns': self.columns[node]}
-            with open(file_path, 'wb') as f:
-                pickle.dump(existing, f)
-        else:
-            if node not in self._mem_data:
-                self._mem_data[node] = {'data': arr, 'columns': self.columns[node]}
-            else:
-                self._mem_data[node]['data'] = np.concatenate([self._mem_data[node]['data'], arr])
-
-        self._buffer[node] = []
-
-    def _end(self, node):
-        if node in self._buffer:
-            del self._buffer[node]
+            return None
+        return context['output_test'].select_columns(cols)
 
     def _aggregate(self, iterator):
         if self.method == 'simple':
@@ -112,111 +63,83 @@ class StackingCollector(Collector):
         else:
             raise ValueError(f"Unsupported method: {self.method}")
 
+    def _flush_outer(self, node, outer_idx, inner_list):
+        valid_results = [r for r in inner_list if r is not None]
+        if not valid_results:
+            return
+        aggregated = self._aggregate(iter(valid_results))
+        self._outer_buf.setdefault(node, {})[outer_idx] = aggregated
+        if self._n_outer is not None and len(self._outer_buf[node]) == self._n_outer:
+            self._save_node(node)
+
+    def _save_node(self, node):
+        outer_buf = self._outer_buf.pop(node)
+        arrays, columns = [], None
+        for outer_idx in range(self._n_outer):
+            agg = outer_buf[outer_idx]
+            if columns is None:
+                columns = agg.get_columns()
+                if type(columns) is str:
+                    columns = [columns]
+            arrays.append(agg.to_array())
+        all_data = np.concatenate(arrays, axis=0)
+        self.path.mkdir(parents=True, exist_ok=True)
+        with open(self.path / f'{node}.pkl', 'wb') as f:
+            pickle.dump({'data': all_data, 'columns': columns}, f)
+
     def has_node(self, node):
-        if node in self._mem_data:
-            return True
-        if self.path is not None:
-            return (self.path / f"{node}.pkl").exists()
-        return False
+        if self.path is None:
+            return False
+        return (self.path / f'{node}.pkl').exists()
+
+    def has(self, node):
+        return self.has_node(node)
 
     def reset_nodes(self, nodes):
+        node_set = set(nodes)
+        self._buf = {k: v for k, v in self._buf.items() if k not in node_set}
+        self._outer_buf = {k: v for k, v in self._outer_buf.items() if k not in node_set}
         for node in nodes:
-            if self.path is not None:
-                file_path = self.path / f"{node}.pkl"
-                if file_path.exists():
-                    file_path.unlink()
-            if node in self._mem_data:
-                del self._mem_data[node]
-            if node in self.columns:
-                del self.columns[node]
-            if node in self._buffer:
-                del self._buffer[node]
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        config = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'method': self.method,
-            '_data_cls': self._data_cls,
-            '_index': self._index,
-            '_target': self._target,
-            '_target_columns': self._target_columns,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(config, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            config = pickle.load(f)
-        obj = object.__new__(cls)
-        obj.name = config['name']
-        obj.connector = config['connector']
-        obj.output_var = config['output_var']
-        obj.method = config['method']
-        obj._data_cls = config['_data_cls']
-        obj._index = config['_index']
-        obj._target = config['_target']
-        obj._target_columns = config['_target_columns']
-        obj.columns = {}
-        obj._buffer = {}
-        obj._mem_data = {}
-        obj.path = path
-        return obj
-
-    def _load_node_data(self, node):
-        if self.path is not None:
-            file_path = self.path / f"{node}.pkl"
-            if not file_path.exists():
-                raise FileNotFoundError(f"Stacking data not found: {file_path}")
-            with open(file_path, 'rb') as f:
-                node_info = pickle.load(f)
-            return node_info['data'], node_info['columns']
-        else:
-            if node not in self._mem_data:
-                raise KeyError(f"Stacking data not found in memory: {node}")
-            return self._mem_data[node]['data'], self._mem_data[node]['columns']
+            p = self.path / f'{node}.pkl'
+            if p.exists():
+                p.unlink()
 
     def _get_saved_nodes(self):
-        if self.path is not None:
-            if not self.path.exists():
-                return []
-            return [f.stem for f in self.path.glob("*.pkl") if not f.stem.startswith('__')]
-        else:
-            return list(self._mem_data.keys())
+        if self.path is None:
+            return []
+        return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
+
+    def _get_nodes(self, nodes, available):
+        if nodes is None:
+            return available
+        if isinstance(nodes, list):
+            return [n for n in nodes if n in set(available)]
+        return [n for n in available if re.search(nodes, n)]
 
     def get_dataset(self, nodes=None, include_target=True):
-        """Return OOF predictions as a DataFrame aligned to the original index.
-
-        Args:
-            nodes: Node query. ``None`` returns all collected nodes.
-            include_target (bool): Append the target column(s) if available.
-
-        Returns:
-            DataFrame: OOF prediction columns (+ target) indexed to match
-            the original dataset.
-        """
         node_names = self._get_nodes(nodes, self._get_saved_nodes())
 
-        node_data = []
-        column_names = []
-        for i in node_names:
-            data, columns = self._load_node_data(i)
-            node_data.append(data)
-            column_names.extend(columns)
+        arrays, columns = [], []
+        for node in node_names:
+            with open(self.path / f'{node}.pkl', 'rb') as f:
+                saved = pickle.load(f)
+            arrays.append(saved['data'])
+            columns.extend(saved['columns'])
 
-        all_data = np.concatenate(node_data, axis=1)
-        all_columns = list(column_names)
+        all_data = np.concatenate(arrays, axis=1)
+        wrapped = self._data_cls.from_output(all_data, columns, self._index)
 
-        wrapped_data = self._data_cls.from_output(all_data, all_columns, self._index)
         if include_target and self._target is not None:
-            wrapped_data = self._data_cls.concat([
-                wrapped_data, 
+            wrapped = self._data_cls.concat([
+                wrapped,
                 self._data_cls.from_output(self._target, self._target_columns, self._index)
             ], axis=1)
 
-        return wrapped_data.to_native()
+        return wrapped.to_native()
+
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': True,
+            'need_process_data': False,
+        }

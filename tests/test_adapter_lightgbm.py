@@ -14,12 +14,16 @@ def adapter():
     return LightGBMAdapter(eval_mode='none', verbose=0)
 
 
-def make_data_dict(with_valid=False):
+def make_train_data():
     X = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
     y = pd.Series([0, 1, 0])
-    if with_valid:
-        return {'X': (X, X), 'y': (y, y)}
-    return {'X': (X, None), 'y': (y, None)}
+    return {'X': X, 'y': y}
+
+
+def make_valid_data():
+    X = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+    y = pd.Series([0, 1, 0])
+    return {'X': X, 'y': y}
 
 
 class TestGetParams:
@@ -42,39 +46,60 @@ class TestGetParams:
 
 class TestGetFitParamsEarlyStopping:
     def test_dict_early_stopping_creates_callback(self, adapter):
-        data_dict = make_data_dict()
+        train_data = make_train_data()
         params = {'early_stopping': {'stopping_rounds': 50, 'verbose': False}}
-        fit_params = adapter.get_fit_params(data_dict, params=params)
+        fit_params = adapter.get_fit_params(train_data, params=params)
         assert 'callbacks' in fit_params
         assert len(fit_params['callbacks']) == 1
         cb = fit_params['callbacks'][0]
-        # lgb_early_stopping 인스턴스인지 확인
         assert hasattr(cb, 'stopping_rounds') or callable(cb)
 
     def test_dict_early_stopping_stopping_rounds(self, adapter):
-        data_dict = make_data_dict()
+        train_data = make_train_data()
         params = {'early_stopping': {'stopping_rounds': 30, 'verbose': False}}
-        fit_params = adapter.get_fit_params(data_dict, params=params)
+        fit_params = adapter.get_fit_params(train_data, params=params)
         cb = fit_params['callbacks'][0]
         assert cb.stopping_rounds == 30
 
     def test_instance_early_stopping_passthrough(self, adapter):
-        data_dict = make_data_dict()
+        train_data = make_train_data()
         es_instance = lgb_early_stopping(stopping_rounds=20, verbose=False)
         params = {'early_stopping': es_instance}
-        fit_params = adapter.get_fit_params(data_dict, params=params)
+        fit_params = adapter.get_fit_params(train_data, params=params)
         assert fit_params['callbacks'][0] is es_instance
 
     def test_no_early_stopping_no_callbacks(self, adapter):
-        data_dict = make_data_dict()
-        fit_params = adapter.get_fit_params(data_dict, params={})
+        train_data = make_train_data()
+        fit_params = adapter.get_fit_params(train_data, params={})
         assert 'callbacks' not in fit_params
 
     def test_eval_metric_passed_to_fit(self, adapter):
-        data_dict = make_data_dict()
+        train_data = make_train_data()
         params = {'eval_metric': 'auc'}
-        fit_params = adapter.get_fit_params(data_dict, params=params)
+        fit_params = adapter.get_fit_params(train_data, params=params)
         assert fit_params.get('eval_metric') == 'auc'
+
+    def test_eval_set_with_valid_data(self):
+        adapter = LightGBMAdapter(eval_mode='valid', verbose=0)
+        train_data = make_train_data()
+        valid_data = make_valid_data()
+        fit_params = adapter.get_fit_params(train_data, valid_data, params={})
+        assert 'eval_set' in fit_params
+        assert len(fit_params['eval_set']) == 1
+
+    def test_eval_set_both_mode(self):
+        adapter = LightGBMAdapter(eval_mode='both', verbose=0)
+        train_data = make_train_data()
+        valid_data = make_valid_data()
+        fit_params = adapter.get_fit_params(train_data, valid_data, params={})
+        assert 'eval_set' in fit_params
+        assert len(fit_params['eval_set']) == 2
+
+    def test_no_eval_set_without_valid_data(self):
+        adapter = LightGBMAdapter(eval_mode='valid', verbose=0)
+        train_data = make_train_data()
+        fit_params = adapter.get_fit_params(train_data, params={})
+        assert 'eval_set' not in fit_params
 
 
 class TestParamsEqualWithDictEarlyStopping:
@@ -90,9 +115,6 @@ class TestParamsEqualWithDictEarlyStopping:
 
     def test_two_instances_not_equal(self):
         # 인스턴스 두 개는 _params_equal에서 같다고 보장되지 않음 (이것이 이슈의 근본)
-        a = {'early_stopping': lgb_early_stopping(stopping_rounds=50)}
-        b = {'early_stopping': lgb_early_stopping(stopping_rounds=50)}
-        # dict로 바꾸면 equal, 인스턴스면 같다고 보장 안됨 - 이슈 확인용
         a_dict = {'early_stopping': {'stopping_rounds': 50}}
         b_dict = {'early_stopping': {'stopping_rounds': 50}}
         assert _params_equal(a_dict, b_dict)

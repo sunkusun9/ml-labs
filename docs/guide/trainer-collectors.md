@@ -28,10 +28,20 @@ trainer = exp.add_trainer(
 trainer.select_head(['lgbm_v1', 'lgbm_v2'])
 ```
 
-**`train()`** trains all unbuilt nodes in topological order. Each node is trained across all splits before moving to the next node.
+**`train(n_jobs=1, gpu_id_list=None)`** trains all unbuilt nodes in topological order. Stages are trained first, then Head nodes. `n_jobs > 1` enables parallel training across splits.
 
 ```python
 trainer.train()
+trainer.train(n_jobs=4)
+```
+
+**`get_status(node_name)`** returns the disk state of a node across all splits: `'built'`, `'finalized'`, `'error'`, `None` (not yet built), or `'inconsistent'` (splits differ).
+
+**`get_node_error(node_name)`** returns the error dict `{type, message, traceback, fold}` for a node in error state, or `None`.
+
+```python
+trainer.get_status('lgbm_v1')    # → 'built'
+trainer.get_node_error('lgbm_v1')  # → None or error dict
 ```
 
 **`process(data, v=None)`** is a generator that applies the trained processors to new data, yielding one result per split.

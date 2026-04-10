@@ -47,13 +47,14 @@ class ModelAdapter(ABC):
         self.eval_mode = eval_mode
         self.verbose = verbose
 
-    def get_fit_params(self, data_dict, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):
         """모델의 fit()에 전달할 파라미터를 구성
 
         Args:
-            data_dict: {key: (train, train_v), ...} 형태의 데이터 딕셔너리
+            train_data: {key: data} 형태의 train 데이터 딕셔너리
+            valid_data: {key: data} 형태의 valid 데이터 딕셔너리 (Optional)
             params (dict): Processor에서 전달된 추가 파라미터 (Optional, default=None)
-            logger: Logger 인스턴스
+            monitor: ProgressMonitor 인스턴스
 
         Returns:
             dict: fit()에 unpacking으로 전달할 파라미터
@@ -61,10 +62,10 @@ class ModelAdapter(ABC):
         """
         from .._data_wrapper import unwrap
         fit_params = {}
-        if 'X' in data_dict:
-            fit_params['X'] = unwrap(data_dict['X'][0])
-        if 'y' in data_dict:
-            fit_params['y'] = unwrap(data_dict['y'][0].squeeze())
+        if 'X' in train_data:
+            fit_params['X'] = unwrap(train_data['X'])
+        if 'y' in train_data:
+            fit_params['y'] = unwrap(train_data['y'].squeeze())
         return fit_params
 
     def get_process_data(self, data):
@@ -86,7 +87,7 @@ class ModelAdapter(ABC):
             return GPU_NO
         return GPU_YES
 
-    def get_params(self, params, logger=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None, single_worker=False):
         """모델 생성자에 전달할 파라미터를 조정
 
         Args:

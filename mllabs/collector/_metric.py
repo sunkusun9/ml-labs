@@ -1,4 +1,6 @@
 import pickle
+import re
+
 import pandas as pd
 
 from ._base import Collector
@@ -6,147 +8,101 @@ from .._node_processor import resolve_columns
 
 
 class MetricCollector(Collector):
-    """Computes a scalar metric against ground-truth ``y`` for each fold.
-
-    Args:
-        name (str): Collector name.
-        connector (Connector): Node matching criteria.
-        output_var: Column selector for prediction output. ``None`` uses all
-            output columns.
-        metric_func (callable): ``func(y_true, y_pred) -> float``.
-        include_train (bool): If ``True``, also compute on train/inner-valid folds.
-    """
+    _SAVE_EXCLUDE = {'_buf': dict, '_cache': dict}
 
     def __init__(self, name, connector, output_var, metric_func, include_train=False):
         super().__init__(name, connector)
         self.output_var = output_var
         self.metric_func = metric_func
         self.include_train = include_train
-        self.metrics = {}
-        self._sub = {}
+        self._cache = {}  # {node: {(outer_idx, inner_idx): result}}
 
-    def _start(self, node):
-        self.metrics[node] = []
-        self._sub[node] = []
-
-    def _collect(self, node, idx, inner_idx, context):
-        if 'y' not in context['input']:
-            self._sub[node].append(None)
-            return
-
-        (true_t, true_tv), true_v = context['input']['y']
-        cols = resolve_columns(context['output_valid'], self.output_var)
+    def collect(self, context):
+        cols = resolve_columns(context['output_test'], self.output_var)
         if len(cols) == 0:
-            self._sub[node].append(None)
-            return
+            return None
 
-        prd_v = context['output_valid'].select_columns(cols)
-        result = {'valid': self.metric_func(true_v.data, prd_v.data)}
+        prd_test = context['output_test'].select_columns(cols)
+        result = {'test': self.metric_func(context['input'][2]['y'].data, prd_test.data)}
 
-        if self.include_train:
-            prd_t = context['output_train'][0].select_columns(cols)
-            result['train_sub'] = self.metric_func(true_t.data, prd_t.data)
-            if true_tv is not None:
-                prd_tv = context['output_train'][1].select_columns(cols)
-                result['valid_sub'] = self.metric_func(true_tv.data, prd_tv.data)
+        if self.include_train and context.get('output_train') is not None:
+            result['train'] = self.metric_func(
+                context['input'][0]['y'].data, context['output_train'].select_columns(cols).data
+            )
+            if context['output_valid'] is not None:
+                result['valid'] = self.metric_func(
+                    context['input'][1]['y'].data, context['output_valid'].select_columns(cols).data
+                )
 
-        self._sub[node].append(result)
+        return result
 
-    def _end_idx(self, node, idx):
-        self.metrics[node].append(self._sub[node])
-        self._sub[node] = []
+    def _flush_outer(self, node, outer_idx, inner_list):
+        node_cache = self._cache.setdefault(node, {})
+        for inner_idx, r in enumerate(inner_list):
+            node_cache[(outer_idx, inner_idx)] = r
+        if self.path is not None and self._n_outer is not None and len(node_cache) == self._n_outer * self._n_inner:
+            self.path.mkdir(parents=True, exist_ok=True)
+            with open(self.path / f'{node}.pkl', 'wb') as f:
+                pickle.dump(node_cache, f)
 
-    def _end(self, node):
-        if len(self.metrics[node]) == 0:
-            del self.metrics[node]
-        if node in self._sub:
-            del self._sub[node]
-        self.save()
+    def _load_results(self, node):
+        if node in self._cache:
+            return self._cache[node]
+        with open(self.path / f'{node}.pkl', 'rb') as f:
+            result = pickle.load(f)
+        self._cache[node] = result
+        return result
 
     def has_node(self, node):
-        return node in self.metrics
+        if node in self._cache:
+            return True
+        if self.path is None:
+            return False
+        return (self.path / f'{node}.pkl').exists()
+
+    def has(self, node):
+        return self.has_node(node)
 
     def reset_nodes(self, nodes):
+        node_set = set(nodes)
+        self._buf = {k: v for k, v in self._buf.items() if k not in node_set}
         for node in nodes:
-            if node in self.metrics:
-                del self.metrics[node]
-            if node in self._sub:
-                del self._sub[node]
-        self.save()
+            self._cache.pop(node, None)
+            if self.path is not None:
+                p = self.path / f'{node}.pkl'
+                if p.exists():
+                    p.unlink()
 
-    def save(self):
+    def _get_nodes(self, nodes, available):
+        if nodes is None:
+            return available
+        if isinstance(nodes, list):
+            return [n for n in nodes if n in set(available)]
+        return [n for n in available if re.search(nodes, n)]
+
+    def _get_saved_nodes(self):
         if self.path is None:
-            return
-        self._ensure_path()
-        data = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'metric_func': self.metric_func,
-            'include_train': self.include_train,
-            'metrics': self.metrics,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(data, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            data = pickle.load(f)
-        obj = cls(
-            name=data['name'],
-            connector=data['connector'],
-            output_var=data['output_var'],
-            metric_func=data['metric_func'],
-            include_train=data['include_train'],
-        )
-        obj.metrics = data['metrics']
-        obj.path = path
-        return obj
+            return list(self._cache.keys())
+        return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
 
     def get_metric(self, node):
-        """Return per-fold metrics for a single node.
-
-        Args:
-            node (str): Node name.
-
-        Returns:
-            pd.Series: Metrics indexed by ``(split, inner_split, metric_key)``.
-        """
-        l = list()
-        for i, sub in enumerate(self.metrics[node]):
+        data = self._load_results(node)
+        outer_idxs = sorted(set(k[0] for k in data.keys()))
+        l = []
+        for idx in outer_idxs:
+            sub = [data[(idx, inner_idx)] for inner_idx in sorted(
+                k[1] for k in data if k[0] == idx
+            )]
             l.append(
                 pd.concat([pd.Series(j, name=str(no)) for no, j in enumerate(sub)], axis=1).unstack()
             )
         return pd.concat(l, axis=1).unstack(level=[0, 1]).rename(node)
 
     def get_metrics(self, nodes=None):
-        """Return per-fold metrics for multiple nodes.
-
-        Args:
-            nodes: Node query — ``None`` (all), ``list``, or regex ``str``.
-
-        Returns:
-            pd.DataFrame: Rows are nodes, columns are fold MultiIndex.
-        """
-        node_names = self._get_nodes(nodes, self.metrics.keys())
+        node_names = self._get_nodes(nodes, self._get_saved_nodes())
         return pd.concat([self.get_metric(node) for node in node_names], axis=1).T
 
     def get_metrics_agg(self, nodes=None, inner_fold=True, outer_fold=True, include_std=False):
-        """Return aggregated metrics across folds.
-
-        Args:
-            nodes: Node query. ``None`` uses all collected nodes.
-            inner_fold (bool): Aggregate inner folds first (mean). Required when
-                ``outer_fold=True``.
-            outer_fold (bool): Aggregate outer folds after inner aggregation.
-            include_std (bool): Also return a std DataFrame.
-
-        Returns:
-            tuple[pd.DataFrame, pd.DataFrame | None]: ``(mean, std)`` where *std*
-            is ``None`` unless ``include_std=True``. When ``inner_fold=False``
-            returns the raw DataFrame directly.
-        """
         if outer_fold and not inner_fold:
             raise ValueError("")
         df = self.get_metrics(nodes)
@@ -162,3 +118,10 @@ class MetricCollector(Collector):
                 df_agg_mean = df_agg_mean.stack(level=0, future_stack=True).groupby(level=0).mean()
             return df_agg_mean, df_agg_std
         return df
+
+    def get_properties(self):
+        return {
+            'need_output_train': self.include_train,
+            'need_output_test': True,
+            'need_process_data': False,
+        }

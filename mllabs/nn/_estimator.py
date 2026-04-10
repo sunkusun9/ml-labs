@@ -338,6 +338,7 @@ class NNClassifier(_NNBase, ClassifierMixin):
         loss=None,
         metrics=None,
         random_state=None,
+        device = None
     ):
         super().__init__(
             cat_cols=cat_cols, embedding_dims=embedding_dims,
@@ -346,7 +347,7 @@ class NNClassifier(_NNBase, ClassifierMixin):
             early_stopping=early_stopping,
             validation_fraction=validation_fraction,
             shuffle_buffer=shuffle_buffer, callbacks=callbacks,
-            loss=loss, metrics=metrics, random_state=random_state,
+            loss=loss, metrics=metrics, random_state=random_state, device = device
         )
 
     def _prepare_target(self, y):
@@ -398,6 +399,7 @@ class NNRegressor(_NNBase, RegressorMixin):
         loss=None,
         metrics=None,
         random_state=None,
+        device = None
     ):
         super().__init__(
             cat_cols=cat_cols, embedding_dims=embedding_dims,
@@ -407,6 +409,7 @@ class NNRegressor(_NNBase, RegressorMixin):
             validation_fraction=validation_fraction,
             shuffle_buffer=shuffle_buffer, callbacks=callbacks,
             loss=loss, metrics=metrics, random_state=random_state,
+            device = device
         )
 
     def _prepare_target(self, y):

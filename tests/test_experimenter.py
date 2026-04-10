@@ -8,7 +8,8 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
 from mllabs._experimenter import Experimenter, DataCache
-from mllabs._expobj import StageObj, get_head_status, finalize_head
+from mllabs._store import NodeStore
+from mllabs._flow import DataFlow
 from mllabs._pipeline import Pipeline
 from mllabs import Connector, MetricCollector
 
@@ -91,31 +92,38 @@ def _setup_full(e):
     _setup_head(e)
 
 
+def _flow(exp, outer=0, inner=0):
+    return exp.outer_folds[outer].train_data_flows[inner]
+
+def _store(exp, outer=0, inner=0):
+    return exp.outer_folds[outer].artifact_stores[inner]
+
+
 class TestDataCache:
     def test_put_get(self):
         c = DataCache(maxsize=1024**3)
         data = np.array([1, 2, 3])
-        c.put_data('node1', 'all', 0, data)
-        result = c.get_data('node1', 'all', 0)
+        c.put_data('node1', 0, 0, 'train', data)
+        result = c.get_data('node1', 0, 0, 'train')
         assert np.array_equal(result, data)
 
     def test_get_missing(self):
         c = DataCache(maxsize=1024**3)
-        assert c.get_data('no_exist', 'all', 0) is None
+        assert c.get_data('no_exist', 0, 0, 'train') is None
 
     def test_clear_nodes(self):
         c = DataCache(maxsize=1024**3)
-        c.put_data('a', 'all', 0, np.array([1]))
-        c.put_data('b', 'all', 0, np.array([2]))
+        c.put_data('a', 0, 0, 'train', np.array([1]))
+        c.put_data('b', 0, 0, 'train', np.array([2]))
         c.clear_nodes(['a'])
-        assert c.get_data('a', 'all', 0) is None
-        assert c.get_data('b', 'all', 0) is not None
+        assert c.get_data('a', 0, 0, 'train') is None
+        assert c.get_data('b', 0, 0, 'train') is not None
 
     def test_clear(self):
         c = DataCache(maxsize=1024**3)
-        c.put_data('a', 'all', 0, np.array([1]))
+        c.put_data('a', 0, 0, 'train', np.array([1]))
         c.clear()
-        assert c.get_data('a', 'all', 0) is None
+        assert c.get_data('a', 0, 0, 'train') is None
 
 
 class TestExperimenterInit:
@@ -127,12 +135,13 @@ class TestExperimenterInit:
 
     def test_splits_created(self, exp):
         assert exp.get_n_splits() == 2
-        assert len(exp.valid_idx_list) == 2
+        assert len(exp.outer_folds) == 2
+        assert all(of.test_idx is not None for of in exp.outer_folds)
 
     def test_no_inner_split(self, exp):
         assert exp.get_n_splits_inner() == 1
-        train_idx, valid_v_idx = exp.train_idx_list[0][0]
-        assert valid_v_idx is None
+        flow = _flow(exp)
+        assert flow.data_source.valid_idx is None
 
     def test_with_inner_split(self, tmp_path, sample_data):
         e = Experimenter(
@@ -143,8 +152,8 @@ class TestExperimenterInit:
         )
         assert e.get_n_splits() == 2
         assert e.get_n_splits_inner() == 3
-        train_idx, valid_v_idx = e.train_idx_list[0][0]
-        assert valid_v_idx is not None
+        flow = e.outer_folds[0].train_data_flows[0]
+        assert flow.data_source.valid_idx is not None
 
     def test_create_path_exists(self, tmp_path, sample_data):
         path = tmp_path / 'existing'
@@ -202,15 +211,17 @@ class TestBuild:
     def test_build_stage(self, exp):
         _setup_stage(exp)
         exp.build()
-        assert 'scaler' in exp.node_objs
-        assert exp.node_objs['scaler'].status == 'built'
+        flow = _flow(exp)
+        assert 'scaler' in flow.node_objs
+        assert flow.status('scaler') == 'built'
 
     def test_build_skips_built(self, exp):
         _setup_stage(exp)
         exp.build()
-        n_objs_before = len(exp.node_objs)
+        flow = _flow(exp)
+        build_id = flow.get_info('scaler')['build_id']
         exp.build()
-        assert len(exp.node_objs) == n_objs_before
+        assert flow.get_info('scaler')['build_id'] == build_id
 
     def test_build_error_continues(self, exp):
         exp.set_grp('good', role='stage', processor=StandardScaler,
@@ -220,19 +231,20 @@ class TestBuild:
                     method='transform', edges={'X': [(None, ['f2'])]})
         exp.set_node('bad_node', grp='bad')
         exp.build()
-        assert exp.node_objs['good_node'].status == 'built'
-        assert exp.node_objs['bad_node'].status == 'error'
+        flow = _flow(exp)
+        assert flow.status('good_node') == 'built'
+        assert flow.status('bad_node') == 'error'
 
     def test_build_error_dict(self, exp):
         exp.set_grp('err', role='stage', processor=ErrorProcessor,
                     method='transform', edges={'X': [(None, ['f1'])]})
         exp.set_node('err_node', grp='err')
         exp.build()
-        err = exp.node_objs['err_node'].error
+        info = _flow(exp).get_info('err_node')
+        err = info['error']
         assert err['type'] == 'TypeError'
         assert 'test error msg' in err['message']
         assert 'traceback' in err
-        assert 'fold' in err
 
 
 class TestExp:
@@ -240,18 +252,16 @@ class TestExp:
         _setup_full(exp)
         exp.build()
         exp.exp()
-        node_path = exp.get_node_path('dt')
-        assert get_head_status(node_path.parent, 'dt') == 'built'
+        assert exp.get_status('dt') == 'built'
 
     def test_exp_skips_built(self, exp):
         _setup_full(exp)
         exp.build()
         exp.exp()
-        node_path = exp.get_node_path('dt')
-        pkls_before = set(node_path.glob('obj*.pkl'))
+        store = _store(exp)
+        build_id = store.get_info('dt')['build_id']
         exp.exp()
-        pkls_after = set(node_path.glob('obj*.pkl'))
-        assert pkls_before == pkls_after
+        assert store.get_info('dt')['build_id'] == build_id
 
     def test_exp_error(self, exp):
         exp.set_grp('bad_model', role='head', processor=BadPredictor,
@@ -259,8 +269,7 @@ class TestExp:
                                               'y': [(None, 'target')]})
         exp.set_node('bad_dt', grp='bad_model')
         exp.exp()
-        node_path = exp.get_node_path('bad_dt')
-        assert get_head_status(node_path.parent, 'bad_dt') == 'error'
+        assert exp.get_status('bad_dt') == 'error'
 
     def test_exp_with_collector(self, exp):
         _setup_full(exp)
@@ -308,67 +317,63 @@ class TestCollectorManagement:
 
 
 class TestResetNodes:
-    def test_reset_clears_node_objs(self, exp):
+    def test_reset_removes_node_dir(self, exp):
         _setup_stage(exp)
         exp.build()
-        assert 'scaler' in exp.node_objs
+        flow = _flow(exp)
+        node_path = flow._node_path('scaler')
+        assert node_path.exists()
         exp.reset_nodes(['scaler'])
-        assert 'scaler' not in exp.node_objs
+        assert not node_path.exists()
+        assert flow.status('scaler') is None
 
     def test_reset_clears_cache(self, exp):
         _setup_stage(exp)
         exp.build()
-        exp.cache.put_data('scaler', 'all', 0, np.array([1]))
+        exp.cache.put_data('scaler', 0, 0, 'train', np.array([1]))
         exp.reset_nodes(['scaler'])
-        assert exp.cache.get_data('scaler', 'all', 0) is None
+        assert exp.cache.get_data('scaler', 0, 0, 'train') is None
 
     def test_set_node_replace_resets(self, exp):
         _setup_stage(exp)
         exp.build()
-        assert 'scaler' in exp.node_objs
+        flow = _flow(exp)
+        assert flow.status('scaler') == 'built'
         exp.set_node('scaler', grp='scale', exist='replace')
-        assert 'scaler' not in exp.node_objs
-
-    def test_reset_finalizes_built_node(self, exp):
-        _setup_stage(exp)
-        exp.build()
-        node_path = exp.get_node_path('scaler')
-        assert node_path.exists()
-        exp.reset_nodes(['scaler'])
-        assert not node_path.exists()
+        assert flow.status('scaler') is None
 
 
 class TestRebuild:
     def test_build_with_rebuild_true(self, exp):
         _setup_stage(exp)
         exp.build()
-        old_processors = [obj for obj, _, _ in exp.node_objs['scaler'].get_objs(0)]
+        flow = _flow(exp)
+        old_obj = flow.node_objs['scaler'][0]
         exp.build(rebuild=True)
-        new_processors = [obj for obj, _, _ in exp.node_objs['scaler'].get_objs(0)]
-        assert exp.node_objs['scaler'].status == 'built'
-        assert old_processors[0] is not new_processors[0]
+        new_obj = _flow(exp).node_objs['scaler'][0]
+        assert flow.status('scaler') == 'built'
+        assert old_obj is not new_obj
 
     def test_set_node_replace_then_build(self, exp):
         _setup_stage(exp)
         exp.build()
-        old_obj = exp.node_objs['scaler']
+        flow = _flow(exp)
+        old_obj = flow.node_objs['scaler'][0]
         exp.set_node('scaler', grp='scale', exist='replace')
         exp.build()
-        assert 'scaler' in exp.node_objs
-        new_obj = exp.node_objs['scaler']
+        new_obj = _flow(exp).node_objs['scaler'][0]
         assert new_obj is not old_obj
-        assert new_obj.status == 'built'
+        assert _flow(exp).status('scaler') == 'built'
 
     def test_exp_rebuilds_non_built_node(self, exp):
         _setup_full(exp)
         exp.build()
         exp.exp()
-        node_path = exp.get_node_path('dt')
-        assert get_head_status(node_path.parent, 'dt') == 'built'
+        assert exp.get_status('dt') == 'built'
         exp.reset_nodes(['dt'])
-        assert get_head_status(node_path.parent, 'dt') not in ['built', 'finalized']
+        assert exp.get_status('dt') is None
         exp.exp()
-        assert get_head_status(node_path.parent, 'dt') == 'built'
+        assert exp.get_status('dt') == 'built'
 
 
 class TestStateManagement:
@@ -383,8 +388,7 @@ class TestStateManagement:
         exp.build()
         exp.exp()
         exp.finalize(['dt'])
-        node_path = exp.get_node_path('dt')
-        assert get_head_status(node_path.parent, 'dt') == 'finalized'
+        assert exp.get_status('dt') == 'finalized'
 
     def test_reinitialize(self, exp):
         _setup_full(exp)
@@ -392,8 +396,7 @@ class TestStateManagement:
         exp.exp()
         exp.finalize(['dt'])
         exp.reinitialize(['dt'])
-        node_path = exp.get_node_path('dt')
-        assert get_head_status(node_path.parent, 'dt') is None
+        assert exp.get_status('dt') is None
 
     def test_reopen_exp_status(self, exp):
         _setup_full(exp)
@@ -407,7 +410,7 @@ class TestStateManagement:
     def test_reopen_exp_collector_data_valid(self, exp):
         _setup_full(exp)
         exp.build()
-        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        mc = MetricCollector('acc', Connector(edges = {'y': [(None, 'target')]}), output_var=None, metric_func=accuracy_metric)
         exp.add_collector(mc)
         exp.exp()
         assert mc.has('dt')
@@ -428,10 +431,10 @@ class TestStateManagement:
         exp.add_collector(mc)
         exp.exp()
 
-        mc._sub['dt'] = [{'valid': 0.9}]
+        mc._buf['dt'] = [{'valid': 0.9}]
         exp.reset_nodes(['dt'])
 
-        assert 'dt' not in mc._sub
+        assert 'dt' not in mc._buf
 
     def test_close_exp_saves_status(self, exp, sample_data):
         _setup_full(exp)
@@ -445,7 +448,7 @@ class TestStateManagement:
     def test_reopen_exp_after_save_load(self, exp, sample_data):
         _setup_full(exp)
         exp.build()
-        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
+        mc = MetricCollector('acc', Connector(edges = {'y': [(None, 'target')]}), output_var=None, metric_func=accuracy_metric)
         exp.add_collector(mc)
         exp.exp()
         first_result = mc.get_metrics_agg(None)[0]
@@ -476,11 +479,10 @@ class TestSaveLoad:
 
         loaded = Experimenter.load(path, sample_data)
         assert set(loaded.pipeline.grps.keys()) == set(exp.pipeline.grps.keys())
-        assert 'scaler' in loaded.node_objs
-        assert loaded.node_objs['scaler'].status == 'built'
-        assert 'dt' not in loaded.node_objs  # head nodes not stored in node_objs
-        node_path = loaded.get_node_path('dt')
-        assert get_head_status(node_path.parent, 'dt') == 'built'
+        flow = loaded.outer_folds[0].train_data_flows[0]
+        assert 'scaler' in flow.node_objs
+        assert flow.status('scaler') == 'built'
+        assert loaded.get_status('dt') == 'built'
 
     def test_load_data_key_mismatch(self, tmp_path, sample_data):
         e = Experimenter(data=sample_data, path=tmp_path / 'dk',
@@ -514,65 +516,119 @@ class TestPaths:
         assert path == exp.path / 'scale' / 'scaler'
 
 
-class TestExpObj:
-    def test_stage_obj_lifecycle(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        assert obj.status is None
-        obj.start_build()
-        assert path.exists()
-        obj.end_build()
-        assert obj.status == 'built'
+class TestGetStatus:
+    def test_get_status_none_before_exp(self, exp):
+        _setup_full(exp)
+        exp.build()
+        assert exp.get_status('dt') is None
 
-    def test_stage_obj_exp_requires_built(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        with pytest.raises(RuntimeError):
-            list(obj.exp_idx(0, {}, iter([]), None))
+    def test_get_status_built_after_exp(self, exp):
+        _setup_full(exp)
+        exp.build()
+        exp.exp()
+        assert exp.get_status('dt') == 'built'
 
-    def test_stage_obj_exp_finalized_rejected(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        obj.start_build()
-        obj.end_build()
-        obj.finalize()
-        with pytest.raises(RuntimeError):
-            list(obj.exp_idx(0, {}, iter([]), None))
+    def test_get_status_finalized(self, exp):
+        _setup_full(exp)
+        exp.build()
+        exp.exp()
+        exp.finalize(['dt'])
+        assert exp.get_status('dt') == 'finalized'
 
-    def test_stage_obj_finalize(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        obj.start_build()
-        obj.end_build()
-        obj.finalize()
-        assert obj.status == 'finalized'
-        assert not path.exists()
+    def test_get_status_error(self, exp):
+        exp.set_grp('bad_model', role='head', processor=BadPredictor,
+                    method='predict', edges={'X': [(None, ['f1'])],
+                                              'y': [(None, 'target')]})
+        exp.set_node('bad_dt', grp='bad_model')
+        exp.exp()
+        assert exp.get_status('bad_dt') == 'error'
 
-    def test_head_status_lifecycle(self, tmp_path):
-        # dir does not exist → None (init)
-        assert get_head_status(tmp_path, 'head_node') is None
-        # dir exists but empty → None
-        (tmp_path / 'head_node').mkdir()
-        assert get_head_status(tmp_path, 'head_node') is None
 
-    def test_head_status_finalize_with_specs(self, tmp_path):
-        import pickle
-        node_path = tmp_path / 'head_node'
-        node_path.mkdir()
-        spec = {'build_id': 'x', 'fit_time': 0.1, 'train_shape': None, 'train_v_shape': None}
-        with open(node_path / 'obj0_0.pkl', 'wb') as f:
-            pickle.dump((None, None, spec), f)
-        assert get_head_status(tmp_path, 'head_node') == 'built'
-        finalize_head(tmp_path, 'head_node')
-        assert get_head_status(tmp_path, 'head_node') == 'finalized'
-        assert (node_path / 'finalized.pkl').exists()
-        assert not (node_path / 'obj0_0.pkl').exists()
+class TestNodeStore:
+    def test_write_objs_and_status(self, tmp_path):
+        store = NodeStore(tmp_path)
+        node_path = tmp_path / 'node1'
+        NodeStore.write_objs(node_path, object(), np.array([1, 2]), {'build_id': 'x'})
+        assert store.status('node1') == 'built'
 
-    def test_stage_obj_load(self, tmp_path):
-        path = tmp_path / 'stage_node'
-        obj = StageObj(path)
-        obj.load()
-        assert obj.status == 'finalized'
+    def test_get_objs(self, tmp_path):
+        store = NodeStore(tmp_path)
+        node_path = tmp_path / 'node1'
+        sc = StandardScaler()
+        result = np.array([1.0, 2.0])
+        NodeStore.write_objs(node_path, sc, result, {'build_id': 'abc'})
+        got_obj, got_result, got_info = store.get_objs('node1')
+        assert isinstance(got_obj, StandardScaler)
+        assert np.array_equal(got_result, result)
+        assert got_info['build_id'] == 'abc'
+        assert got_info['status'] == 'built'
 
-    def test_head_status_load(self, tmp_path):
-        assert get_head_status(tmp_path, 'head_node') is None
+    def test_get_info(self, tmp_path):
+        store = NodeStore(tmp_path)
+        NodeStore.write_objs(tmp_path / 'node1', None, None, {'build_id': 'xyz'})
+        info = store.get_info('node1')
+        assert info['status'] == 'built'
+        assert info['build_id'] == 'xyz'
+
+    def test_get_obj_get_result(self, tmp_path):
+        store = NodeStore(tmp_path)
+        sc = StandardScaler()
+        result = np.array([3.0])
+        NodeStore.write_objs(tmp_path / 'node1', sc, result, {})
+        assert isinstance(store.get_obj('node1'), StandardScaler)
+        assert np.array_equal(store.get_result('node1'), result)
+
+    def test_status_none_when_missing(self, tmp_path):
+        store = NodeStore(tmp_path)
+        assert store.status('missing') is None
+
+    def test_write_info_error_status(self, tmp_path):
+        store = NodeStore(tmp_path)
+        node_path = tmp_path / 'node1'
+        error_info = {
+            'status': 'error',
+            'build_id': 'e1',
+            'error': {'type': 'ValueError', 'message': 'oops', 'traceback': '...'},
+        }
+        NodeStore.write_info(node_path, error_info)
+        assert store.status('node1') == 'error'
+        assert store.get_info('node1')['error']['type'] == 'ValueError'
+
+    def test_finalize(self, tmp_path):
+        store = NodeStore(tmp_path)
+        node_path = tmp_path / 'node1'
+        NodeStore.write_objs(node_path, None, None, {'build_id': 'y'})
+        store.finalize('node1')
+        assert store.status('node1') == 'finalized'
+        assert not (node_path / 'obj.pkl').exists()
+        assert not (node_path / 'result.pkl').exists()
+        assert (node_path / 'info.pkl').exists()
+
+    def test_reset_node(self, tmp_path):
+        store = NodeStore(tmp_path)
+        node_path = tmp_path / 'node1'
+        NodeStore.write_objs(node_path, None, None, {})
+        assert node_path.exists()
+        store.reset_node('node1')
+        assert not node_path.exists()
+        assert store.status('node1') is None
+
+    def test_info_cache_lazy(self, tmp_path):
+        store = NodeStore(tmp_path)
+        NodeStore.write_objs(tmp_path / 'node1', None, None, {'build_id': 'cached'})
+        info1 = store.get_info('node1')
+        info2 = store.get_info('node1')
+        assert info1 is info2
+
+    def test_reset_clears_cache(self, tmp_path):
+        store = NodeStore(tmp_path)
+        NodeStore.write_objs(tmp_path / 'node1', None, None, {})
+        store.get_info('node1')  # populate cache
+        store.reset_node('node1')
+        assert store.status('node1') is None  # cache cleared, disk gone
+
+    def test_dataflow_autoload(self, tmp_path):
+        NodeStore.write_objs(tmp_path / 'node1', StandardScaler(), None, {'build_id': 'dl', 'edges': {'X': (None, ['X1', 'X2'])}})
+        flow = DataFlow(tmp_path)
+        assert 'node1' in flow.node_objs
+        assert flow.status('node1') == 'built'

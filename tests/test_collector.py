@@ -90,43 +90,43 @@ def multi_head_exp(tmp_path, sample_data):
 class TestConnector:
     def test_match_all(self):
         c = Connector()
-        assert c.match('any_node', {}) is True
+        assert c.match({'name': 'any_node'}) is True
 
     def test_match_node_query_str(self):
         c = Connector(node_query='dt')
-        assert c.match('dt1', {}) is True
-        assert c.match('scaler', {}) is False
+        assert c.match({'name': 'dt1'}) is True
+        assert c.match({'name': 'scaler'}) is False
 
     def test_match_node_query_regex(self):
         c = Connector(node_query='^dt')
-        assert c.match('dt1', {}) is True
-        assert c.match('my_dt', {}) is False
+        assert c.match({'name': 'dt1'}) is True
+        assert c.match({'name': 'my_dt'}) is False
 
     def test_match_node_query_list(self):
         c = Connector(node_query=['dt1', 'dt2'])
-        assert c.match('dt1', {}) is True
-        assert c.match('dt3', {}) is False
+        assert c.match({'name': 'dt1'}) is True
+        assert c.match({'name': 'dt3'}) is False
 
     def test_match_processor(self):
         c = Connector(processor=DecisionTreeClassifier)
-        assert c.match('dt', {'processor': DecisionTreeClassifier}) is True
-        assert c.match('dt', {'processor': StandardScaler}) is False
+        assert c.match({'name': 'dt', 'processor': DecisionTreeClassifier}) is True
+        assert c.match({'name': 'dt', 'processor': StandardScaler}) is False
 
     def test_match_edges(self):
         edges_req = {'X': [(None, ['f1'])]}
         c = Connector(edges=edges_req)
-        node_attrs = {'edges': {'X': [(None, ['f1']), ('s', None)], 'y': [(None, 'target')]}}
-        assert c.match('dt', node_attrs) is True
+        node_attrs = {'name': 'dt', 'edges': {'X': [(None, ['f1']), ('s', None)], 'y': [(None, 'target')]}}
+        assert c.match(node_attrs) is True
 
     def test_match_edges_missing_key(self):
         c = Connector(edges={'z': [(None, None)]})
-        assert c.match('dt', {'edges': {'X': [(None, None)]}}) is False
+        assert c.match({'name': 'dt', 'edges': {'X': [(None, None)]}}) is False
 
     def test_match_combined(self):
         c = Connector(node_query='dt', processor=DecisionTreeClassifier)
-        assert c.match('dt1', {'processor': DecisionTreeClassifier}) is True
-        assert c.match('dt1', {'processor': StandardScaler}) is False
-        assert c.match('scaler', {'processor': DecisionTreeClassifier}) is False
+        assert c.match({'name': 'dt1', 'processor': DecisionTreeClassifier}) is True
+        assert c.match({'name': 'dt1', 'processor': StandardScaler}) is False
+        assert c.match({'name': 'scaler', 'processor': DecisionTreeClassifier}) is False
 
 
 class TestMetricCollector:
@@ -212,7 +212,7 @@ class TestMetricCollector:
                              metric_func=accuracy_metric, include_train=True)
         built_exp.add_collector(mc)
         result = mc.get_metric('dt')
-        assert 'train_sub' in result.index.get_level_values(-1)
+        assert 'train' in result.index.get_level_values(-1)
 
     def test_inner_split_metrics(self, built_exp_inner):
         mc = MetricCollector('acc', Connector(), output_var=None,
@@ -332,7 +332,7 @@ class TestStackingCollector:
         built_exp.add_collector(sc)
         ds = sc.get_dataset()
         all_valid_idx = np.concatenate([
-            built_exp.valid_idx_list[i]
+            built_exp.outer_folds[i].test_idx
             for i in range(built_exp.get_n_splits())
         ])
         expected_index = built_exp.data.data.index[all_valid_idx]
@@ -452,7 +452,8 @@ class TestOutputCollector:
         oc = OutputCollector('out', Connector(), output_var=None)
         built_exp.add_collector(oc)
         result = oc.get_output('dt', 0, 0)
-        assert 'output_valid' in result
+        print(result)
+        assert 'output_test' in result
         assert 'output_train' in result
         assert 'columns' in result
 
@@ -460,9 +461,9 @@ class TestOutputCollector:
         oc = OutputCollector('out', Connector(), output_var=None)
         built_exp.add_collector(oc)
         result = oc.get_output('dt', 0, 0)
-        assert isinstance(result['output_valid'], np.ndarray)
-        assert isinstance(result['output_train'], tuple)
-        assert len(result['output_train']) == 2
+        assert isinstance(result['output_test'], np.ndarray)
+        assert result['output_train'] is None or isinstance(result['output_train'], np.ndarray)
+        assert result['output_valid'] is None or isinstance(result['output_valid'], np.ndarray)
 
     def test_get_outputs(self, built_exp):
         oc = OutputCollector('out', Connector(), output_var=None)
@@ -644,39 +645,32 @@ class TestSHAPCollector:
 
 class TestBaseCollector:
     def test_get_nodes_none(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes(None, ['a', 'b', 'c'])
         assert result == ['a', 'b', 'c']
 
     def test_get_nodes_list(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes(['a', 'c'], ['a', 'b', 'c'])
         assert result == ['a', 'c']
 
     def test_get_nodes_list_filter(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes(['a', 'x'], ['a', 'b', 'c'])
         assert result == ['a']
 
     def test_get_nodes_regex(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
         result = c._get_nodes('dt', ['dt1', 'dt2', 'scaler'])
         assert result == ['dt1', 'dt2']
 
     def test_get_nodes_invalid_type(self):
-        from mllabs.collector._base import Collector
-        c = Collector('test', Connector())
-        with pytest.raises(ValueError):
+        c = MetricCollector('test', Connector(), output_var=None, metric_func=dummy_metric)
+        with pytest.raises((ValueError, TypeError)):
             c._get_nodes(123, ['a', 'b'])
 
 
 class TestCollectorErrorHandling:
-    from mllabs.collector._base import Collector as _Collector
-
     @pytest.fixture
     def pre_exp(self, tmp_path, sample_data):
         e = Experimenter(
@@ -692,30 +686,17 @@ class TestCollectorErrorHandling:
         e.build()
         return e
 
-    def _make_broken_collector(self, fail_on):
+    def _make_broken_collector(self):
         from mllabs.collector._base import Collector
 
         class BrokenCollector(Collector):
-            def _start(self, node):
-                if fail_on == '_start':
-                    raise RuntimeError("start error")
-
-            def _collect(self, node, idx, inner_idx, context):
-                if fail_on == '_collect':
-                    raise RuntimeError("collect error")
-
-            def _end_idx(self, node, idx):
-                if fail_on == '_end_idx':
-                    raise RuntimeError("end_idx error")
-
-            def _end(self, node):
-                if fail_on == '_end':
-                    raise RuntimeError("end error")
+            def collect(self, context):
+                raise RuntimeError("collect error")
 
         return BrokenCollector('broken', Connector())
-    
+
     def test_exp_warning_contains_traceback(self, pre_exp):
-        bc = self._make_broken_collector('_collect')
+        bc = self._make_broken_collector()
         pre_exp.add_collector(bc)
         pre_exp.exp()
         w = bc.warnings[0]
@@ -724,7 +705,7 @@ class TestCollectorErrorHandling:
         assert 'collect error' in w['traceback']
 
     def test_exp_continues_other_collectors_after_error(self, pre_exp):
-        bc = self._make_broken_collector('_collect')
+        bc = self._make_broken_collector()
         mc = MetricCollector('acc', Connector(), output_var=None, metric_func=accuracy_metric)
         pre_exp.add_collector(bc)
         pre_exp.add_collector(mc)
@@ -738,25 +719,25 @@ class TestProcessCollector:
         return sample_data.iloc[:20].reset_index(drop=True)
 
     def test_collect_basic(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         assert pc.has_node('dt')
 
     def test_get_output_shape(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         result = pc.get_output()
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 20
 
     def test_get_output_nodes_none(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         result = pc.get_output(nodes=None)
         assert isinstance(result, pd.DataFrame)
 
     def test_get_output_nodes_list(self, multi_head_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         multi_head_exp.add_collector(pc)
         result_dt1 = pc.get_output(nodes=['dt1'])
         result_all = pc.get_output(nodes=None)
@@ -764,7 +745,7 @@ class TestProcessCollector:
         assert result_dt1.shape[1] < result_all.shape[1]
 
     def test_get_output_nodes_regex(self, multi_head_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         multi_head_exp.add_collector(pc)
         result = pc.get_output(nodes='dt1')
         assert isinstance(result, pd.DataFrame)
@@ -772,41 +753,41 @@ class TestProcessCollector:
 
     def test_with_upstream_stage(self, built_exp, ext_data):
         # built_exp: scaler(stage) -> dt(head), ext_data goes through scaler first
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         result = pc.get_output()
         assert len(result) == 20
 
     def test_agg_mean(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp, method='mean')
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, method='mean')
         built_exp.add_collector(pc)
         result = pc.get_output(agg='mean')
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 20
 
     def test_agg_mode(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         result = pc.get_output(agg='mode')
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 20
 
     def test_agg_simple(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp, method='simple')
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, method='simple')
         built_exp.add_collector(pc)
         result = pc.get_output(agg='simple')
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 20
 
     def test_with_inner_splits(self, built_exp_inner, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp_inner)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp_inner.add_collector(pc)
         result = pc.get_output()
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 20
 
     def test_multi_head_columns_concat(self, multi_head_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         multi_head_exp.add_collector(pc)
         result_all = pc.get_output(nodes=None)
         result_dt1 = pc.get_output(nodes=['dt1'])
@@ -814,27 +795,27 @@ class TestProcessCollector:
         assert result_all.shape[1] == result_dt1.shape[1] + result_dt2.shape[1]
 
     def test_connector_filter(self, multi_head_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(node_query=['dt1']), ext_data=ext_data, experimenter=multi_head_exp)
+        pc = ProcessCollector('proc', Connector(node_query=['dt1']), ext_data=ext_data)
         multi_head_exp.add_collector(pc)
         assert pc.has_node('dt1')
         assert not pc.has_node('dt2')
 
     def test_reset_nodes(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         assert pc.has_node('dt')
         pc.reset_nodes(['dt'])
         assert not pc.has_node('dt')
 
     def test_get_saved_nodes(self, multi_head_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=multi_head_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         multi_head_exp.add_collector(pc)
         saved = pc._get_saved_nodes()
         assert 'dt1' in saved
         assert 'dt2' in saved
 
     def test_save_load(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         loaded = ProcessCollector.load(pc.path)
         assert loaded.has_node('dt')
@@ -843,7 +824,43 @@ class TestProcessCollector:
         pd.testing.assert_frame_equal(result_orig, result_loaded)
 
     def test_invalid_agg(self, built_exp, ext_data):
-        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, experimenter=built_exp)
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data)
         built_exp.add_collector(pc)
         with pytest.raises(ValueError):
             pc.get_output(agg='invalid')
+
+    @pytest.fixture
+    def proba_exp(self, tmp_path, sample_data):
+        e = Experimenter(
+            data=sample_data,
+            path=tmp_path / 'exp_proba',
+            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
+        )
+        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                  method='predict_proba',
+                  edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
+                  params={'max_depth': 3, 'random_state': 42})
+        e.set_node('dt', grp='model')
+        e.build()
+        e.exp()
+        return e
+
+    def test_output_var_none_returns_all_columns(self, proba_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, output_var=None)
+        proba_exp.add_collector(pc)
+        result = pc.get_output()
+        assert result.shape == (20, 2)
+
+    def test_output_var_list_selects_column(self, proba_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, output_var=['dt__target_0'])
+        proba_exp.add_collector(pc)
+        result = pc.get_output()
+        assert list(result.columns) == ['dt__target_0']
+        assert result.shape == (20, 1)
+
+    def test_output_var_regex_selects_column(self, proba_exp, ext_data):
+        pc = ProcessCollector('proc', Connector(), ext_data=ext_data, output_var='dt__target_1')
+        proba_exp.add_collector(pc)
+        result = pc.get_output()
+        assert list(result.columns) == ['dt__target_1']
+        assert result.shape == (20, 1)

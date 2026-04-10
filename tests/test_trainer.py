@@ -81,7 +81,6 @@ class TestAddTrainer:
     def test_no_splitter(self, exp):
         trainer = exp.add_trainer('t1', splitter=None)
         assert trainer.splitter is None
-        assert trainer.split_indices is None
         assert trainer.get_n_splits() == 1
 
 
@@ -111,26 +110,29 @@ class TestTrain:
         trainer = exp.add_trainer('t1')
         trainer.select_head(['dt'])
         trainer.train()
-        assert 'scaler' in trainer.node_objs
-        assert trainer.node_objs['scaler'].status == 'built'
-        assert 'dt' in trainer.node_objs
-        assert trainer.node_objs['dt'].status == 'built'
+        assert trainer.get_status('scaler') == 'built'
+        assert trainer.get_status('dt') == 'built'
 
     def test_train_skips_built(self, exp):
         trainer = exp.add_trainer('t1')
         trainer.select_head(['dt'])
         trainer.train()
-        objs_before = dict(trainer.node_objs)
+
+        build_ids = {
+            name: [fold.artifact_stores[0].get_info(name)['build_id'] for fold in trainer.train_folds]
+            for name in ['scaler', 'dt']
+        }
         trainer.train()
-        assert trainer.node_objs['scaler'] is objs_before['scaler']
-        assert trainer.node_objs['dt'] is objs_before['dt']
+        for name in ['scaler', 'dt']:
+            for i, fold in enumerate(trainer.train_folds):
+                assert fold.artifact_stores[0].get_info(name)['build_id'] == build_ids[name][i]
 
     def test_train_no_splitter(self, exp):
         trainer = exp.add_trainer('t_nosplit', splitter=None)
         trainer.select_head(['dt'])
         trainer.train()
-        assert trainer.node_objs['scaler'].status == 'built'
-        assert trainer.node_objs['dt'].status == 'built'
+        assert trainer.get_status('scaler') == 'built'
+        assert trainer.get_status('dt') == 'built'
 
     def test_train_error(self, exp):
         exp.set_grp('bad', role='head', processor=BadProcessor,
@@ -140,8 +142,8 @@ class TestTrain:
         trainer = exp.add_trainer('t_err')
         trainer.select_head(['bad_node'])
         trainer.train()
-        assert trainer.node_objs['bad_node'].status == 'error'
-        err = trainer.node_objs['bad_node'].error
+        assert trainer.get_status('bad_node') == 'error'
+        err = trainer.get_node_error('bad_node')
         assert err['type'] == 'ValueError'
         assert 'intentional error' in err['message']
 
@@ -153,16 +155,16 @@ class TestTrain:
         trainer = exp.add_trainer('t_mixed')
         trainer.select_head(['dt', 'bad_node'])
         trainer.train()
-        assert trainer.node_objs['dt'].status == 'built'
-        assert trainer.node_objs['bad_node'].status == 'error'
+        assert trainer.get_status('dt') == 'built'
+        assert trainer.get_status('bad_node') == 'error'
 
     def test_train_n_splits(self, exp):
         trainer = exp.add_trainer('t1')
         trainer.select_head(['dt'])
         assert trainer.get_n_splits() == 3
         trainer.train()
-        objs = list(trainer.node_objs['dt'].get_obj())
-        assert len(objs) == 3
+        for fold in trainer.train_folds:
+            assert fold.artifact_stores[0].status('dt') == 'built'
 
 
 class TestProcess:
@@ -187,17 +189,17 @@ class TestResetNodes:
         trainer.select_head(['dt'])
         trainer.train()
         trainer.reset_nodes(['scaler'])
-        assert 'scaler' not in trainer.node_objs
-        assert 'dt' not in trainer.node_objs
+        assert trainer.get_status('scaler') is None
+        assert trainer.get_status('dt') is None
 
     def test_reset_allows_retrain(self, exp):
         trainer = exp.add_trainer('t1')
         trainer.select_head(['dt'])
         trainer.train()
         trainer.reset_nodes(['dt'])
-        assert 'dt' not in trainer.node_objs
+        assert trainer.get_status('dt') is None
         trainer.train()
-        assert trainer.node_objs['dt'].status == 'built'
+        assert trainer.get_status('dt') == 'built'
 
 
 class TestSaveLoad:
@@ -212,8 +214,8 @@ class TestSaveLoad:
         assert loaded_trainer.name == 't1'
         assert set(loaded_trainer.selected_stages) == set(trainer.selected_stages)
         assert set(loaded_trainer.selected_heads) == set(trainer.selected_heads)
-        assert 'scaler' in loaded_trainer.node_objs
-        assert 'dt' in loaded_trainer.node_objs
+        assert loaded_trainer.get_status('scaler') == 'built'
+        assert loaded_trainer.get_status('dt') == 'built'
 
     def test_save_creates_file(self, exp):
         trainer = exp.add_trainer('t1')

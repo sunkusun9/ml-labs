@@ -17,7 +17,7 @@ class KerasAdapter(ModelAdapter):
             raise ValueError(f"KerasAdapter only supports gpu='auto', got {gpu!r}")
         return GPU_POSSIBLE
 
-    def get_params(self, params, logger=None):
+    def get_params(self, params, gpu_id_list=None, monitor=None, single_worker=False):
         if params is None:
             return {}
         params = params.copy()
@@ -26,14 +26,14 @@ class KerasAdapter(ModelAdapter):
             raise ValueError(f"KerasAdapter only supports gpu='auto', got {gpu!r}")
         return params
 
-    def get_fit_params(self, data_dict, params=None, logger=None):
+    def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):
         """Keras의 fit 파라미터 구성"""
         from .._data_wrapper import unwrap
 
-        fit_params = super().get_fit_params(data_dict, params, logger)
+        fit_params = super().get_fit_params(train_data, valid_data, params, monitor)
 
-        train_v_X = data_dict['X'][1]
-        train_v_y = data_dict['y'][1] if 'y' in data_dict else None
+        train_v_X = valid_data.get('X') if valid_data else None
+        train_v_y = valid_data.get('y') if valid_data else None
 
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:
             fit_params['validation_data'] = (unwrap(train_v_X), unwrap(train_v_y))

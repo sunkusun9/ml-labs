@@ -1,14 +1,45 @@
 import os
-import shutil
 import pickle as pkl
-import traceback
-import warnings
 import numpy as np
 from pathlib import Path
 
-from ._data_wrapper import wrap, unwrap
-from ._trainobj import TrainStageObj, TrainHeadObj
+from ._data_wrapper import wrap, unwrap, DataWrapperProvider
+from ._flow import TrainDataFlow
+from ._store import NodeStore
 from ._node_processor import resolve_columns
+
+
+class TrainFold:
+    """Single split data flow and artifact store for Trainer.
+
+    Analogous to OuterFold for Experimenter. Holds exactly one TrainDataFlow
+    and one NodeStore at the same fold path.
+
+    get_test_data() returns None (Trainer has no separate test set).
+    """
+
+    def __init__(self, split_idx, base_path, data, train_idx, valid_idx=None, cache=None, aug_data=None):
+        self.split_idx = split_idx
+        fold_path = Path(base_path) / str(split_idx)
+        provider = DataWrapperProvider(data, train_idx, valid_idx=valid_idx, aug_data=aug_data)
+        self.train_data_flows = [
+            TrainDataFlow(
+                path=fold_path,
+                data_source=provider,
+                cache=cache,
+                outer_idx=-(split_idx + 1),  # 음수로 Experimenter cache와 충돌 방지
+                inner_idx=0,
+            )
+        ]
+        self.artifact_stores = [NodeStore(path=fold_path)]
+
+    def set_data(self, data, cache=None, aug_data=None):
+        self.train_data_flows[0].data_source.set_data(data, aug_data)
+        if cache is not None:
+            self.train_data_flows[0].cache = cache
+
+    def get_test_data(self, edges, inner_idx=0):
+        return None
 
 
 class Trainer:
@@ -21,9 +52,7 @@ class Trainer:
         name (str): Trainer name.
         selected_stages (list[str]): Stage nodes included in training.
         selected_heads (list[str]): Head nodes to train.
-        split_indices (list[tuple] | None): ``[(train_idx, valid_idx), ...]``
-            or ``None`` if no splitting.
-        node_objs (dict): ``{node_name: TrainStageObj | TrainHeadObj}``.
+        train_folds (list[TrainFold]): Per-split data flows and artifact stores.
     """
 
     def __init__(self, name, pipeline, data, path, splitter, splitter_params, cache, logger, aug_data=None):
@@ -40,10 +69,42 @@ class Trainer:
         self.selected_stages = []
         self.selected_heads = []
 
-        self.node_objs = {}
-
-        self.split_indices = self._make_splits()
+        split_indices = self._make_splits()
+        self.train_folds = self._make_train_folds(split_indices)
         self.save()
+
+    # ------------------------------------------------------------------
+    # split / fold setup
+    # ------------------------------------------------------------------
+
+    def _make_splits(self):
+        if self.splitter is None:
+            return None
+        data_native = unwrap(self.data)
+        split_params = {'X': data_native}
+        for k, v in self.splitter_params.items():
+            split_params[k] = unwrap(self.data.select_columns(v))
+        return [
+            (train_idx, valid_idx)
+            for train_idx, valid_idx in self.splitter.split(**split_params)
+        ]
+
+    def _make_train_folds(self, split_indices):
+        if split_indices is None:
+            n_rows = self.data.get_shape()[0]
+            full_idx = np.arange(n_rows)
+            return [
+                TrainFold(0, self.path, self.data, full_idx, valid_idx=None,
+                          cache=self.cache, aug_data=self.aug_data)
+            ]
+        return [
+            TrainFold(i, self.path, self.data, train_idx, valid_idx=valid_idx,
+                      cache=self.cache, aug_data=self.aug_data)
+            for i, (train_idx, valid_idx) in enumerate(split_indices)
+        ]
+
+    def get_n_splits(self):
+        return len(self.train_folds)
 
     # ------------------------------------------------------------------
     # node selection
@@ -82,6 +143,30 @@ class Trainer:
                     selected.add(source_node)
                     self._collect_upstream(source_node, selected)
 
+    # ------------------------------------------------------------------
+    # status
+    # ------------------------------------------------------------------
+
+    def get_status(self, node_name):
+        """Return the disk status of a node across all folds.
+
+        Returns ``'built'``, ``'finalized'``, ``'error'``, ``None`` (init),
+        or ``'inconsistent'`` if folds differ.
+        """
+        statuses = {
+            fold.artifact_stores[0].status(node_name)
+            for fold in self.train_folds
+        }
+        return statuses.pop() if len(statuses) == 1 else 'inconsistent'
+
+    def get_node_error(self, node_name):
+        """Return error dict for a node in error state, or None."""
+        for fold in self.train_folds:
+            info = fold.artifact_stores[0].get_info(node_name)
+            if info is not None and info.get('status') == 'error':
+                return info.get('error')
+        return None
+
     def reset_nodes(self, nodes):
         selected_set = set(self.selected_stages + self.selected_heads)
         affected = set(n for n in nodes if n in selected_set)
@@ -95,11 +180,10 @@ class Trainer:
                     affected.add(downstream)
                     queue.append(downstream)
 
-        for node_name in affected:
-            if node_name in self.node_objs:
-                node_obj = self.node_objs.pop(node_name)
-                if os.path.isdir(node_obj.path):
-                    shutil.rmtree(node_obj.path)
+        for name in affected:
+            for fold in self.train_folds:
+                fold.train_data_flows[0].reset_node(name)
+                fold.artifact_stores[0].reset_node(name)
 
         if self.cache is not None:
             self.cache.clear_nodes(affected)
@@ -110,181 +194,75 @@ class Trainer:
     # train
     # ------------------------------------------------------------------
 
-    def train(self):
+    def train(self, n_jobs=1, gpu_id_list=None):
         """Train all unbuilt selected nodes across all splits.
 
-        Nodes are trained in topological order. Each node completes all splits
-        before the next node begins.
+        Stages are trained first (topological order), then Head nodes.
+
+        Args:
+            n_jobs (int): Number of parallel workers. Default 1 (sequential).
+            gpu_id_list (list, optional): GPU IDs for GPU-enabled nodes.
         """
-        selected_set = set(self.selected_stages + self.selected_heads)
-        stage_set = set(self.selected_stages)
+        from ._executor import _build_flow_single, _build_flow_multi, _experiment_single, _experiment_multi
+        from ._tracker import LoggerExecuteTracker
 
-        target_nodes = []
-        for name in self.pipeline._get_affected_nodes([None]):
-            if name not in selected_set:
-                continue
-            if name in self.node_objs:
-                continue
-            target_nodes.append(name)
+        target_stages = [
+            n for n in self.selected_stages
+            if self.get_status(n) not in ['built', 'finalized']
+        ]
+        target_heads = [
+            n for n in self.selected_heads
+            if self.get_status(n) not in ['built', 'finalized']
+        ]
 
-        for node_name in target_nodes:
-            if node_name in stage_set:
-                node_obj = TrainStageObj(self._get_node_path(node_name))
-            else:
-                node_obj = TrainHeadObj(self._get_node_path(node_name))
-            node_obj.start_build()
-            self.node_objs[node_name] = node_obj
+        if not target_stages and not target_heads:
+            self.logger.info("No nodes to train")
+            return
 
-        n_splits = self.get_n_splits()
-        self.logger.start_progress("Train", len(target_nodes))
-        for ni, node_name in enumerate(target_nodes):
-            self.logger.update_progress(ni)
-            self.logger._progress[-1][0] = node_name
-            node_obj = self.node_objs[node_name]
-            node_attrs = self.pipeline.get_node_attrs(node_name)
-            self.logger.start_progress("Split", n_splits)
-            for split_idx, data_dict in enumerate(self.get_data(node_attrs['edges'])):
-                self.logger.update_progress(split_idx)
-                if node_obj.status == 'error':
-                    break
-                try:
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always")
-                        node_obj.build_split(split_idx, node_attrs, data_dict, self.logger)
-                        for w in caught:
-                            self.logger.warning(f"[{node_name}] split {split_idx}: {w.category.__name__}: {w.message}")
-                except Exception as e:
-                    node_obj.status = 'error'
-                    node_obj.error = {
-                        'type': type(e).__name__,
-                        'message': str(e),
-                        'traceback': traceback.format_exc(),
-                        'split': split_idx,
-                    }
-                    self.logger.info(f"[{node_name}] Train error at split {split_idx}: {type(e).__name__}: {e}")
-                    self.logger.info(traceback.format_exc())
-                    self.cache.clear_nodes([node_name])
-            self.logger.end_progress(n_splits)
-            if node_obj.status != 'error':
-                node_obj.end_build()
-        self.logger.end_progress(len(target_nodes))
+        total = len(self.train_folds) * (len(target_stages) + len(target_heads))
+        tracker = LoggerExecuteTracker(total, n_jobs, self.logger)
+        error_nodes = set()
+        try:
+            if target_stages:
+                if n_jobs > 1:
+                    stage_errors = _build_flow_multi(
+                        self.train_folds, self.pipeline, target_stages, n_jobs,
+                        gpu_id_list=gpu_id_list, tracker=tracker)
+                else:
+                    stage_errors = _build_flow_single(
+                        self.train_folds, self.pipeline, target_stages,
+                        gpu_id_list=gpu_id_list, tracker=tracker)
+                error_nodes.update(n for _, _, n in stage_errors)
 
-        error_nodes = [n for n in target_nodes if self.node_objs[n].status == 'error']
+            if target_heads:
+                if n_jobs > 1:
+                    head_errors = _experiment_multi(
+                        self.train_folds, self.pipeline, target_heads, n_jobs,
+                        gpu_id_list=gpu_id_list, tracker=tracker)
+                else:
+                    head_errors = _experiment_single(
+                        self.train_folds, self.pipeline, target_heads,
+                        gpu_id_list=gpu_id_list, tracker=tracker)
+                error_nodes.update(n for _, n in head_errors)
+        finally:
+            tracker.close()
+
+        target_all = target_stages + target_heads
+        n_ok = len(target_all) - len(error_nodes)
         if error_nodes:
-            self.logger.info(f"Train complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+            self.logger.info(
+                f"Train complete: {n_ok}/{len(target_all)} node(s), "
+                f"{len(error_nodes)} error(s): {sorted(error_nodes)}"
+            )
         else:
-            self.logger.info(f"Train complete: {len(target_nodes)} node(s)")
+            self.logger.info(f"Train complete: {len(target_all)} node(s)")
 
         self.save()
 
     # ------------------------------------------------------------------
-    # data resolution
+    # process
     # ------------------------------------------------------------------
 
-    def _make_splits(self):
-        if self.splitter is None:
-            return None
-        data_native = unwrap(self.data)
-        split_params = {'X': data_native}
-        for k, v in self.splitter_params.items():
-            split_params[k] = unwrap(self.data.select_columns(v))
-        return [
-            (train_idx, valid_idx)
-            for train_idx, valid_idx in self.splitter.split(**split_params)
-        ]
-
-    def get_n_splits(self):
-        if self.split_indices is None:
-            return 1
-        return len(self.split_indices)
-
-    def get_data(self, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_output(node_name, var))
-            data_dict[key] = zip(*key_data_list)
-
-        for _ in range(self.get_n_splits()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                train_sub, valid_sub = [], []
-                for train_data, valid_data in z:
-                    train_sub.append(train_data)
-                    if valid_data is not None:
-                        valid_sub.append(valid_data)
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                if valid_sub:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                else:
-                    valid_concat = None
-                result[k] = train_concat, valid_concat
-            yield result
-
-    def get_node_output(self, node, v=None):
-        if node is None:
-            if self.split_indices is None:
-                data = self.data if v is None else self.data.select_columns(v)
-                if self.aug_data is not None:
-                    aug = self.aug_data if v is None else self.aug_data.select_columns(v)
-                    data = type(data).concat([data, aug], axis=0)
-                yield data, None
-            else:
-                for train_idx, valid_idx in self.split_indices:
-                    train_data = self.data.iloc(train_idx)
-                    valid_data = self.data.iloc(valid_idx)
-                    if v is not None:
-                        train_data = train_data.select_columns(v)
-                        valid_data = valid_data.select_columns(v)
-                    if self.aug_data is not None:
-                        aug = self.aug_data if v is None else self.aug_data.select_columns(v)
-                        train_data = type(train_data).concat([train_data, aug], axis=0)
-                    yield train_data, valid_data
-            return
-
-        cached = self.cache.get_data(node, "train_all", 0)
-        if cached is not None:
-            for (train_result, valid_result), (obj, _, _) in zip(cached, self.node_objs[node].get_obj()):
-                if v is not None:
-                    X = resolve_columns(train_result, v, processor=obj)
-                    train_result = train_result.select_columns(X)
-                    if valid_result is not None:
-                        valid_result = valid_result.select_columns(X)
-                yield train_result, valid_result
-            return
-
-        node_attrs = self.pipeline.get_node_attrs(node)
-        cache_data = []
-        for data_dict, (obj, train_stored, info) in zip(self.get_data(node_attrs['edges']), self.node_objs[node].get_obj()):
-            if 'X' in data_dict:
-                train_, valid_ = data_dict['X']
-            else:
-                train_, valid_ = data_dict['y']
-
-            if train_stored is None:
-                train_result = obj.process(train_)
-            else:
-                train_result = train_stored
-
-            valid_result = obj.process(valid_) if valid_ is not None else None
-
-            cache_data.append((train_result, valid_result))
-
-            if v is not None:
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if valid_result is not None:
-                    valid_result = valid_result.select_columns(X)
-
-            yield train_result, valid_result
-        self.cache.put_data(node, "train_all", 0, cache_data)
-
-    def get_node_data(self, node):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data(node_attrs['edges'])
-    
     def process(self, data, v=None):
         """Apply trained processors to new data, yielding one result per split.
 
@@ -296,62 +274,27 @@ class Trainer:
             DataFrame: Concatenated Head outputs for each split.
         """
         data = wrap(data)
-        ordered = [
-            name for name in self.pipeline._get_affected_nodes([None])
-            if name in set(self.selected_stages + self.selected_heads)
-        ]
-        stage_set = set(self.selected_stages)
-
-        obj_iters = {name: self.node_objs[name].get_obj() for name in ordered}
-
-        for _ in range(self.get_n_splits()):
-            data_dicts = {None: (data, None)}
+        for fold in self.train_folds:
+            flow = fold.train_data_flows[0]
+            flow.load()
             head_outputs = []
-
-            for name in ordered:
-                obj, _, _ = next(obj_iters[name])
-                node_attrs = self.pipeline.get_node_attrs(name)
-                output = self._process_node(obj, data_dicts, node_attrs['edges'])
+            for name in self.selected_heads:
+                if name not in flow.node_objs:
+                    continue
+                output = flow._resolve(data, name)
                 if output is None:
                     continue
-                if name in stage_set:
-                    data_dicts[name] = (output, obj)
-                else:
-                    if v is not None:
-                        cols = resolve_columns(output, v, processor=obj)
-                        output = output.select_columns(cols)
-                    head_outputs.append(output)
-
+                if v is not None:
+                    obj = flow.node_objs[name][0]
+                    cols = resolve_columns(output, v, processor=obj)
+                    output = output.select_columns(cols)
+                head_outputs.append(output)
+            if not head_outputs:
+                continue
             if len(head_outputs) == 1:
                 yield head_outputs[0]
             else:
                 yield type(head_outputs[0]).concat(head_outputs, axis=1)
-
-    def _process_node(self, obj, data_dicts, edges):
-        input_data = self._get_process_data(data_dicts, edges)
-        if input_data is not None:
-            return obj.process(input_data['X'])
-        else:
-            return None
-
-    def _get_process_data(self, data_dicts, edges):
-        result = {}
-        if 'X' not in edges:
-            return None
-        key = 'X'
-        edge_list = edges[key]
-        parts = []
-        for src_node, var in edge_list:
-            src, obj = data_dicts[src_node]
-            if var is not None:
-                cols = resolve_columns(src, var, processor=obj)
-                src = src.select_columns(cols)
-            parts.append(src)
-        if len(parts) == 1:
-            result[key] = parts[0]
-        else:
-            result[key] = type(parts[0]).concat(parts, axis=1)
-        return result
 
     # ------------------------------------------------------------------
     # to_inferencer
@@ -375,35 +318,19 @@ class Trainer:
 
         all_selected = self.selected_stages + self.selected_heads
         for name in all_selected:
-            obj = self.node_objs.get(name)
-            if obj is None or obj.status != 'built':
+            if self.get_status(name) != 'built':
                 raise RuntimeError(f"Node '{name}' is not built. Run train() first.")
 
+        node_objs = {}
+        for name in all_selected:
+            objs = []
+            for fold in self.train_folds:
+                objs.append(fold.artifact_stores[0].get_obj(name))
+            node_objs[name] = objs
+
         pipeline = self.pipeline.copy_nodes(self.selected_heads)
-        node_objs = {
-            name: [obj for obj, _, _ in self.node_objs[name].get_obj()]
-            for name in all_selected
-        }
         return Inferencer(pipeline, list(self.selected_stages), list(self.selected_heads),
                           self.get_n_splits(), node_objs, v=v)
-
-    # ------------------------------------------------------------------
-    # path helpers
-    # ------------------------------------------------------------------
-
-    def _get_grp_path(self, grp):
-        if isinstance(grp, str):
-            grp = self.pipeline.get_grp(grp)
-        path_parts = [grp.name]
-        current = self.pipeline.get_grp(grp.parent)
-        while current is not None:
-            path_parts.insert(0, current.name)
-            current = self.pipeline.get_grp(current.parent)
-        return self.path / '/'.join(path_parts)
-
-    def _get_node_path(self, node_name):
-        node = self.pipeline.get_node(node_name)
-        return self._get_grp_path(node.grp) / node.name
 
     # ------------------------------------------------------------------
     # save / load
@@ -413,14 +340,21 @@ class Trainer:
         if self.path is None:
             return
         self.path.mkdir(parents=True, exist_ok=True)
+        if self.splitter is None:
+            split_indices = None
+        else:
+            split_indices = [
+                (fold.train_data_flows[0].data_source.train_idx,
+                 fold.train_data_flows[0].data_source.valid_idx)
+                for fold in self.train_folds
+            ]
         save_data = {
             'name': self.name,
             'splitter': self.splitter,
             'splitter_params': self.splitter_params,
             'selected_stages': self.selected_stages,
             'selected_heads': self.selected_heads,
-            'node_obj_keys': list(self.node_objs.keys()),
-            'split_indices': self.split_indices,
+            'split_indices': split_indices,
         }
         with open(self.path / '__trainer.pkl', 'wb') as f:
             pkl.dump(save_data, f)
@@ -442,19 +376,9 @@ class Trainer:
         trainer.logger = logger
         trainer.selected_stages = save_data['selected_stages']
         trainer.selected_heads = save_data['selected_heads']
-        trainer.split_indices = save_data['split_indices']
         trainer.aug_data = wrap(aug_data) if aug_data is not None else None
 
-        stage_set = set(trainer.selected_stages)
-        trainer.node_objs = {}
-        for node_name in save_data['node_obj_keys']:
-            node_path = trainer._get_node_path(node_name)
-            if os.path.isdir(node_path):
-                if node_name in stage_set:
-                    node_obj = TrainStageObj(node_path)
-                else:
-                    node_obj = TrainHeadObj(node_path)
-                node_obj.load()
-                trainer.node_objs[node_name] = node_obj
+        split_indices = save_data['split_indices']
+        trainer.train_folds = trainer._make_train_folds(split_indices)
 
         return trainer

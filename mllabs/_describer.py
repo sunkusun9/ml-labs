@@ -51,10 +51,11 @@ def desc_spec(exp):
         lines.append(f"| **Splitter Params** | `{{}}` |")
 
     # Fold 수
-    lines.append(f"| **Outer Folds** | {len(exp.train_idx_list)} |")
-    if len(exp.train_idx_list) > 0:
-        inner_folds = len(exp.train_idx_list[0])
-        lines.append(f"| **Inner Folds** | {inner_folds} |")
+    n_outer_folds = len(exp.outer_folds)
+    lines.append(f"| **Outer Folds** | {n_outer_folds} |")
+    if n_outer_folds > 0:
+        n_inner_folds = len(exp.outer_folds[0].train_data_flows)
+        lines.append(f"| **Inner Folds** | {n_inner_folds} |")
 
     return "\n".join(lines)
 

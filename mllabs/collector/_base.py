@@ -1,66 +1,75 @@
-import re
+import pickle
+from pathlib import Path
 
 
 class Collector:
-    """Base class for data collectors attached to an Experimenter.
-
-    Subclasses override the lifecycle hooks ``_start``, ``_collect``,
-    ``_end_idx``, and ``_end`` to capture data during :meth:`~mllabs.Experimenter.exp`.
-
-    Args:
-        name (str): Collector name (unique within an Experimenter).
-        connector (Connector): Determines which Head nodes this collector
-            attaches to.
-
-    Attributes:
-        path (Path | None): Set by Experimenter on registration.
-    """
+    _SAVE_EXCLUDE = {'_buf': dict}  # {attr: factory} — load 시 factory()로 초기화
 
     def __init__(self, name, connector):
         self.name = name
         self.connector = connector
         self.path = None
         self.warnings = []
+        self._n_outer = None
+        self._n_inner = None
+        self._buf = {}  # {node: {outer_idx: {inner_idx: result}}}
 
-    def _start(self, node):
+    def _setup(self, n_outer, n_inner):
+        self._n_outer = n_outer
+        self._n_inner = n_inner
+
+    def collect(self, context):
+        return None
+
+    def push(self, node, outer_idx, inner_idx, result):
+        outer_buf = self._buf.setdefault(node, {}).setdefault(outer_idx, {})
+        outer_buf[inner_idx] = result
+        if self._n_inner is not None and len(outer_buf) == self._n_inner:
+            inner_list = [outer_buf.get(i) for i in range(self._n_inner)]
+            del self._buf[node][outer_idx]
+            self._flush_outer(node, outer_idx, inner_list)
+
+    def _flush_outer(self, node, outer_idx, inner_list):
         pass
-
-    def _collect(self, node, idx, inner_idx, context):
-        pass
-
-    def _end_idx(self, node, idx):
-        pass
-
-    def _end(self, node):
-        pass
-
-    def has(self, node):
-        return self.has_node(node)
 
     def has_node(self, node):
         return False
 
-    def reset_nodes(self, nodes):
-        pass
+    def has(self, node):
+        return self.has_node(node)
 
-    def _ensure_path(self):
-        if self.path is not None and not self.path.exists():
-            self.path.mkdir(parents=True, exist_ok=True)
+    def abort_node(self, node):
+        self._buf.pop(node, None)
+
+    def __getstate__(self):
+        exclude = self._SAVE_EXCLUDE.keys()
+        return {k: v for k, v in self.__dict__.items() if k not in exclude}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        for attr, factory in self._SAVE_EXCLUDE.items():
+            setattr(self, attr, factory())
 
     def save(self):
-        pass
+        self.path.mkdir(parents=True, exist_ok=True)
+        exclude = self._SAVE_EXCLUDE.keys()
+        state = {k: v for k, v in self.__dict__.items() if k not in exclude}
+        with open(self.path / '__config.pkl', 'wb') as f:
+            pickle.dump(state, f)
 
     @classmethod
     def load(cls, path):
-        raise NotImplementedError
+        with open(Path(path) / '__config.pkl', 'rb') as f:
+            state = pickle.load(f)
+        obj = cls.__new__(cls)
+        obj.__dict__.update(state)
+        for attr, factory in cls._SAVE_EXCLUDE.items():
+            setattr(obj, attr, factory())
+        return obj
 
-    def _get_nodes(self, nodes, available_nodes):
-        if nodes is None:
-            return list(available_nodes)
-        elif isinstance(nodes, list):
-            return [n for n in nodes if n in available_nodes]
-        elif isinstance(nodes, str):
-            pat = re.compile(nodes)
-            return [k for k in available_nodes if k is not None and pat.search(k)]
-        else:
-            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': False,
+            'need_process_data': False,
+        }

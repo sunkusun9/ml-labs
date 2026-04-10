@@ -13,12 +13,9 @@ from cachetools import LRUCache
 
 from sklearn.model_selection import ShuffleSplit
 
-from ._data_wrapper import wrap, unwrap
-from ._expobj import (
-    StageObj,
-    get_head_status, get_head_error, set_head_error, finalize_head,
-    exp_node as _head_exp_node, get_head_objs,
-)
+from ._data_wrapper import wrap, unwrap, DataWrapperProvider
+from ._flow import TrainDataFlow
+from ._store import NodeStore
 from ._describer import desc_spec, desc_status, desc_obj_vars
 from ._logger import DefaultLogger
 
@@ -27,6 +24,51 @@ from ._node_processor import resolve_columns
 from ._connector import Connector
 from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
 from ._trainer import Trainer
+
+
+class OuterFold:
+    """One outer fold: test indices, base path, and per-inner-fold TrainDataFlows.
+
+    Serializes test_idx, path, and TrainDataFlow list.
+    DataWrapperProvider inside each TrainDataFlow persists only indices — DataWrapper is transient.
+
+    Call set_data(data) to re-inject DataWrapper and cache after load.
+    """
+
+    def __init__(self, outer_idx, path, data, test_idx, train_idx_list, cache=None, aug_data=None):
+        self.outer_idx = outer_idx
+        self.path = Path(path)
+        self.test_idx = test_idx
+        self.data = data
+        self.train_data_flows = [
+            TrainDataFlow(
+                path=self.path / str(j),
+                data_source=DataWrapperProvider(data, train_idx, valid_idx=valid_idx, aug_data=aug_data),
+                cache=cache,
+                outer_idx=outer_idx,
+                inner_idx=j,
+            )
+            for j, (train_idx, valid_idx) in enumerate(train_idx_list)
+        ]
+        self.artifact_stores = [
+            NodeStore(path=self.path / str(j))
+            for j in range(len(train_idx_list))
+        ]
+
+    def set_data(self, data, cache=None, aug_data=None):
+        self.data = data
+        for flow in self.train_data_flows:
+            flow.data_source.set_data(data, aug_data)
+            if cache is not None:
+                flow.cache = cache
+
+    def get_data(self, data, edges, inner_idx=0):
+        return self.train_data_flows[inner_idx].get_data(data, edges)
+
+    def get_test_data(self, edges, inner_idx=0):
+        test_source = self.data.iloc(self.test_idx)
+        return self.get_data(test_source, edges, inner_idx)
+
 
 
 def _get_data_size(data):
@@ -54,12 +96,12 @@ class DataCache():
     def __init__(self, maxsize=4 * 1024 ** 3):  # 4GB 기본값
         self.cache_dic = LRUCache(maxsize=maxsize, getsizeof=_get_data_size)
 
-    def get_data(self, node, typ, idx):
-        key = (node, typ, idx)
+    def get_data(self, node, outer_idx, inner_idx, typ):
+        key = (node, outer_idx, inner_idx, typ)
         return self.cache_dic.get(key, None)
 
-    def put_data(self, node, typ, idx, data):
-        key = (node, typ, idx)
+    def put_data(self, node, outer_idx, inner_idx, typ, data):
+        key = (node, outer_idx, inner_idx, typ)
         self.cache_dic[key] = data
 
     def clear(self):
@@ -94,7 +136,7 @@ class Experimenter():
 
     Attributes:
         pipeline (Pipeline): The pipeline being experimented on.
-        node_objs (dict): ``{node_name: StageObj}`` — stage nodes only; head node state is checked on-demand via :func:`get_head_status`.
+        node_objs (dict): ``{node_name: StageObj}`` — stage nodes only; head node state is checked on-demand via :meth:`get_status`.
         cache (DataCache): Shared LRU cache.
         collectors (dict): Registered :class:`~mllabs.collector.Collector` instances.
         trainers (dict): Registered :class:`~mllabs._trainer.Trainer` instances.
@@ -112,53 +154,53 @@ class Experimenter():
         if not os.path.exists(path):
             self.path.mkdir(parents=True, exist_ok=True)
             self.logger.info(f"📁 Created directory: {self.path}")
-        self.train_idx_list = list()
-        self.valid_idx_list = list()
         data_native = data
         self.data = wrap(data)
         self.aug_data = wrap(aug_data) if aug_data is not None else None
-        # 실험 타이틀 저장
         self.title = title
-
-        # data 식별자 (load 시 검증용)
         self.data_key = data_key
-
-        # splitter 설정 저장
         self.sp = sp
         self.sp_v = sp_v
         self.splitter_params = splitter_params if splitter_params is not None else {}
         self.exp_id = str(uuid.uuid4())
 
         split_params = {}
-
         if data_names is None:
             data_names = self.data.get_columns()
         for k, v in self.splitter_params.items():
             split_params[k] = unwrap(self.data.select_columns(v))
 
-        for train_idx, valid_idx in sp.split(data_native, **split_params):
+        raw_splits = []
+        for outer_train_idx, test_idx in sp.split(data_native, **split_params):
             if sp_v is not None:
-                train_data = self.data.iloc(train_idx)
+                train_data = self.data.iloc(outer_train_idx)
                 train_data_native = unwrap(train_data)
-
                 inner_split_params = {'X': train_data_native}
                 for k, v in self.splitter_params.items():
                     inner_split_params[k] = unwrap(train_data.select_columns(v))
-
-                self.train_idx_list.append([
-                    (train_idx[train_v_idx], train_idx[valid_v_idx])
-                    for train_v_idx, valid_v_idx in sp_v.split(**inner_split_params)
-                ])
+                inner_folds = [
+                    (outer_train_idx[train_idx], outer_train_idx[valid_idx])
+                    for train_idx, valid_idx in sp_v.split(**inner_split_params)
+                ]
             else:
-                self.train_idx_list.append([
-                    (train_idx, None)
-                ])
-            self.valid_idx_list.append(valid_idx)
+                inner_folds = [(outer_train_idx, None)]
+            raw_splits.append((test_idx, inner_folds))
 
         self.pipeline = Pipeline()
-        self.node_objs = {}
         self.cache = DataCache(maxsize=cache_maxsize)
-        self.grps = {}
+
+        self.outer_folds = [
+            OuterFold(
+                outer_idx=i,
+                path=self.path / '__folds' / str(i),
+                data=self.data,
+                test_idx=test_idx,
+                train_idx_list=inner_folds,
+                cache=self.cache,
+                aug_data=self.aug_data,
+            )
+            for i, (test_idx, inner_folds) in enumerate(raw_splits)
+        ]
         self.collectors = {}
         self.trainers = {}
         self.status = "open"
@@ -195,16 +237,19 @@ class Experimenter():
             aug_data=aug_data)
 
     def get_n_splits(self):
-        return len(self.train_idx_list)
+        return len(self.outer_folds)
 
     def get_n_splits_inner(self):
-        return len(self.train_idx_list[0])
+        return len(self.outer_folds[0].train_data_flows)
 
     def get_collector(self, name):
         return self.collectors.get(name)
 
     def remove_collector(self, name):
         if name in self.collectors:
+            collector_path = self.path / '__collector' / name
+            if collector_path.exists():
+                shutil.rmtree(collector_path)
             del self.collectors[name]
             self._save()
 
@@ -214,7 +259,8 @@ class Experimenter():
         Args:
             collector (Collector): Collector instance to register.
             exist (str): ``'skip'`` (default) returns existing if already registered;
-                ``'error'`` raises.
+                ``'error'`` raises; ``'replace'`` removes the existing collector and
+                registers the new one from scratch.
 
         Returns:
             Collector: The registered collector.
@@ -224,9 +270,14 @@ class Experimenter():
                 return self.collectors[collector.name]
             elif exist == 'error':
                 raise RuntimeError("")
+            elif exist == 'replace':
+                self.remove_collector(collector.name)
 
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
+        collector._setup(
+            len(self.outer_folds), len(self.outer_folds[0].train_data_flows)
+        )
         collector.save()
         self.collectors[collector.name] = collector
         self.collect(collector)
@@ -394,6 +445,24 @@ class Experimenter():
         self.logger.info(f"Node '{name}' removed")
         self._save()
 
+    def get_status(self, node_name):
+        """Return the disk status of a head node across all folds.
+
+        Reads info.pkl from every artifact_store (outer × inner folds).
+        Returns the common status if all folds agree, or ``'inconsistent'``
+        if they differ.
+
+        Returns:
+            ``'built'``, ``'finalized'``, ``'error'``, ``None`` (init),
+            or ``'inconsistent'``.
+        """
+        statuses = {
+            artifact_store.status(node_name)
+            for outer_fold in self.outer_folds
+            for artifact_store in outer_fold.artifact_stores
+        }
+        return statuses.pop() if len(statuses) == 1 else 'inconsistent'
+
     def finalize(self, nodes):
         """Release memory for built Head nodes (``built`` → ``finalized``).
 
@@ -410,10 +479,11 @@ class Experimenter():
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'head':
-                grp_path = self.get_grp_path(node.grp)
-                if get_head_status(grp_path, i) == 'built':
+                if self.get_status(i) == 'built':
                     self.logger.info(f"Finalize '{i}'")
-                    finalize_head(grp_path, i)
+                    for outer_fold in self.outer_folds:
+                        for artifact_store in outer_fold.artifact_stores:
+                            artifact_store.finalize(i)
 
     def reinitialize(self, nodes):
         self._check_open()
@@ -428,10 +498,13 @@ class Experimenter():
                     self.logger.info(f"reinitialize '{i}'")
                     del self.node_objs[i]
             else:
-                grp_path = self.get_grp_path(node.grp)
-                finalized_pkl = grp_path / i / 'finalized.pkl'
-                if finalized_pkl.exists():
-                    finalized_pkl.unlink()
+                reinitialized = False
+                for outer_fold in self.outer_folds:
+                    for artifact_store in outer_fold.artifact_stores:
+                        if artifact_store.status(i) == 'finalized':
+                            artifact_store.reset_node(i)
+                            reinitialized = True
+                if reinitialized:
                     self.logger.info(f"reinitialize '{i}'")
 
     def close_exp(self):
@@ -448,11 +521,15 @@ class Experimenter():
                 continue
             node = self.pipeline.get_node(name)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'head':
-                grp_path = self.get_grp_path(node.grp)
-                if get_head_status(grp_path, name) == 'built':
-                    self.logger.info(f"Finalize '{name}'")
-                    finalize_head(grp_path, name)
+            logged = False
+            for outer_fold in self.outer_folds:
+                stores = outer_fold.train_data_flows if grp.role == 'stage' else outer_fold.artifact_stores
+                for store in stores:
+                    if store.status(name) == 'built':
+                        if not logged:
+                            self.logger.info(f"Finalize '{name}'")
+                            logged = True
+                        store.finalize(name)
         self.status = "closed"
         self._save()
 
@@ -464,9 +541,15 @@ class Experimenter():
         """
         if self.status != "closed":
             raise RuntimeError("")
-        for k in list(self.node_objs.keys()):
-            self.logger.info(f"Initialize '{k}'")
-            del self.node_objs[k]
+        for name in list(self.pipeline.nodes):
+            if name is None:
+                continue
+            node = self.pipeline.get_node(name)
+            grp = self.pipeline.get_grp(node.grp)
+            for outer_fold in self.outer_folds:
+                if grp.role == 'stage':
+                    for store in outer_fold.train_data_flows:
+                        store.reset_node(name)
         self.status = "open"
         self.build()
         self._save()
@@ -485,7 +568,6 @@ class Experimenter():
             affected_nodes = result_obj['affected_nodes']
             self.logger.info(f"Affected {len(affected_nodes)} dependent node(s): {sorted(affected_nodes)}")
             self.reset_nodes(affected_nodes)
-
         if result_obj['result'] == 'update':
             self.reset_nodes([name])
         self._save()
@@ -500,20 +582,20 @@ class Experimenter():
         Args:
             nodes (list[str]): Node names to reset.
         """
-        for i in nodes:
-            if i in self.node_objs:
-                node_obj = self.node_objs[i]
-                if node_obj.status == 'built':
-                    node_obj.finalize()
-                del self.node_objs[i]
-            else:
-                node = self.pipeline.get_node(i)
-                if node is not None:
-                    grp = self.pipeline.get_grp(node.grp)
-                    if grp.role == 'head':
-                        node_path = self.get_node_path(i)
-                        if os.path.isdir(node_path):
-                            shutil.rmtree(node_path)
+        for name in nodes:
+            node = self.pipeline.get_node(name)
+            if node is None:
+                continue
+            grp = self.pipeline.get_grp(node.grp)
+            if grp is None:
+                 continue
+            for outer_fold in self.outer_folds:
+                if grp.role == 'stage':
+                    for flow in outer_fold.train_data_flows:
+                        flow.reset_node(name)
+                else:
+                    for store in outer_fold.artifact_stores:
+                        store.reset_node(name)
 
         self.cache.clear_nodes(nodes)
 
@@ -537,176 +619,133 @@ class Experimenter():
                 continue
             node = self.pipeline.get_node(n)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                if n in self.node_objs and self.node_objs[n].status == 'error':
-                    error_nodes.append(n)
-            else:
-                if get_head_status(self.get_node_path(n).parent, n) == 'error':
-                    error_nodes.append(n)
+            stores = (
+                [flow for of in self.outer_folds for flow in of.train_data_flows]
+                if grp.role == 'stage' else
+                [store for of in self.outer_folds for store in of.artifact_stores]
+            )
+            if any(s.status(n) == 'error' for s in stores):
+                error_nodes.append(n)
         if not error_nodes:
             self.logger.info("No error nodes found")
             return
         for n in error_nodes:
             node = self.pipeline.get_node(n)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                err = self.node_objs[n].error
-            else:
-                err = get_head_error(self.get_node_path(n).parent, n)
+            stores = (
+                [flow for of in self.outer_folds for flow in of.train_data_flows]
+                if grp.role == 'stage' else
+                [store for of in self.outer_folds for store in of.artifact_stores]
+            )
+            err = next((s.get_info(n)['error'] for s in stores if s.status(n) == 'error'), None)
+            if err is None:
+                continue
             if traceback:
                 self.logger.info(f"[{n}] {err['type']}: {err['message']}\n{err['traceback']}")
             else:
                 self.logger.info(f"[{n}] {err['type']}: {err['message']}")
 
-    def build(self, nodes = None, rebuild = False):
+    def build(self, nodes=None, rebuild=False, n_jobs=1, gpu_id_list=None):
         """Build Stage nodes.
 
         Args:
             nodes: Node query — ``None`` (all stages), ``list``, or regex ``str``.
             rebuild (bool): If ``True``, rebuild already-built nodes.
+            n_jobs (int): Number of parallel workers. Default 1 (sequential).
+            gpu_id_list (list, optional): GPU IDs to use for GPU-enabled nodes.
         """
+        from ._executor import _build_flow_single, _build_flow_multi
+        from ._tracker import LoggerExecuteTracker
         self._check_open()
-        node_names = self.pipeline.get_node_names(nodes)
-        target_nodes = list()
-        for i in self.pipeline._get_affected_nodes([None]):
-            node = self.pipeline.get_node(i)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'stage':
-                if i not in self.node_objs:
-                    target_nodes.append(i)
-                elif rebuild or self.node_objs[i].status != 'built':
-                    target_nodes.append(i)
+        node_names = set(self.pipeline.get_node_names(nodes))
+        target_nodes = [
+            i for i in self.pipeline._get_affected_nodes([None])
+            if i is not None
+            and i in node_names
+            and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'stage'
+        ]
+        if rebuild:
+            self.reset_nodes(target_nodes)
+        else:
+            target_nodes = [
+                i for i in target_nodes
+                if self.get_status(i) not in ['built', 'finalized']
+            ]
+        if not target_nodes:
+            self.logger.info("No stage nodes to build")
+            return
 
         self.logger.info(f"Building {len(target_nodes)} node(s)")
-        for node in target_nodes:
-            if node in self.node_objs:
-                node_obj = self.node_objs[node]
-            else:
-                node_obj = StageObj(self.get_node_path(node))
-                self.node_objs[node] = node_obj
-            node_obj.start_build()
-        
-        n_splits = self.get_n_splits()
-        self.logger.clear_progress()
-        self.logger.start_progress("Build", n_splits)
-        for i in range(n_splits):
-            self.logger.update_progress(i)
-            self.logger.start_progress("Node", len(target_nodes))
-            for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(ni)
-                self.logger.rename_progress(node)
-                node_obj = self.node_objs[node]
-                if node_obj.status == 'error':
-                    continue
-                try:
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always")
-                        node_attrs = self.pipeline.get_node_attrs(node)
-                        node_obj.build_idx(
-                            i, node_attrs, self.get_node_data(node, i), self.logger
-                        )
-                        for w in caught:
-                            self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
-                except Exception as e:
-                    node_obj.set_error({
-                        'type': type(e).__name__,
-                        'message': str(e),
-                        'traceback': traceback.format_exc(),
-                        'fold': i,
-                    })
-                    self.logger.info(f"[{node}] Build error at fold {i}: {type(e).__name__}: {e}")
-                    self.logger.info(traceback.format_exc())
-            self.logger.end_progress(len(target_nodes))
-        self.logger.end_progress(n_splits)
+        collectors = list(self.collectors.values())
+        total = sum(len(of.train_data_flows) for of in self.outer_folds) * len(target_nodes)
+        tracker = LoggerExecuteTracker(total, n_jobs, self.logger)
 
-        error_nodes = [n for n in target_nodes if self.node_objs[n].status == 'error']
-        for node in target_nodes:
-            node_obj = self.node_objs[node]
-            if node_obj.status != 'error':
-                node_obj.end_build()
+        try:
+            if n_jobs > 1:
+                errors = _build_flow_multi(self.outer_folds, self.pipeline, target_nodes, n_jobs,
+                                           gpu_id_list=gpu_id_list, collectors=collectors,
+                                           tracker=tracker)
+            else:
+                errors = _build_flow_single(self.outer_folds, self.pipeline, target_nodes,
+                                            gpu_id_list=gpu_id_list, collectors=collectors,
+                                            tracker=tracker)
+        finally:
+            tracker.close()
+
+        error_nodes = list({n for _, _, n in errors})
+        n_ok = len(target_nodes) - len(error_nodes)
         if error_nodes:
-            self.logger.info(f"Build complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+            self.logger.info(f"Build complete: {n_ok}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
             self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
-    def exp(self, nodes=None, finalize=False, include_train=True):
+    def exp(self, nodes=None, finalize=False, n_jobs=1, gpu_id_list=None):
         """Run Head nodes and invoke all matching Collectors.
 
         Args:
             nodes: Node query — ``None`` (all heads), ``list``, or regex ``str``.
-            finalize (bool): If ``True``, save ``finalized.pkl`` with specs after
-                all folds complete and remove per-fold pkl files.
-            include_train (bool): If ``False``, skip computing train output
-                (``output_train`` will be absent from collector context).
+            finalize (bool): If ``True``, finalize after all folds complete.
+            n_jobs (int): Number of parallel workers. Default 1 (sequential).
+            gpu_id_list (list, optional): GPU IDs to use for GPU-enabled nodes.
         """
+        from ._executor import _experiment_single, _experiment_multi
+        from ._tracker import LoggerExecuteTracker
         self._check_open()
         node_names = set(self.pipeline.get_node_names(nodes))
-        target_nodes = list()
-        for i in self.pipeline._get_affected_nodes([None]):
-            node = self.pipeline.get_node(i)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role == 'head' and i in node_names:
-                grp_path = self.get_grp_path(node.grp)
-                if get_head_status(grp_path, i) not in ['built', 'finalized']:
-                    target_nodes.append(i)
+        target_nodes = [
+            i for i in self.pipeline._get_affected_nodes([None])
+            if i is not None
+            and i in node_names
+            and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'head'
+            and self.get_status(i) not in ['built', 'finalized']
+        ]
+        if not target_nodes:
+            self.logger.info("No head nodes to experiment")
+            return
 
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
+        collectors = list(self.collectors.values())
+        total = sum(len(of.train_data_flows) for of in self.outer_folds) * len(target_nodes)
+        tracker = LoggerExecuteTracker(total, n_jobs, self.logger)
 
-        # node_attrs with path injected
-        node_attrs_cache = {}
-        for n in target_nodes:
-            attrs = self.pipeline.get_node_attrs(n)
-            attrs['path'] = self.get_grp_path(self.pipeline.get_node(n).grp)
-            node_attrs_cache[n] = attrs
+        try:
+            if n_jobs > 1:
+                errors = _experiment_multi(self.outer_folds, self.pipeline, target_nodes, n_jobs,
+                                           gpu_id_list=gpu_id_list, collectors=collectors,
+                                           tracker=tracker, finalize=finalize)
+            else:
+                errors = _experiment_single(self.outer_folds, self.pipeline, target_nodes,
+                                            gpu_id_list=gpu_id_list, collectors=collectors,
+                                            tracker=tracker, finalize=finalize)
+        finally:
+            tracker.close()
 
-        # matched collectors per node — used for _start / _end / error reset
-        node_matched = {
-            node: [c for c in self.collectors.values()
-                   if c.connector.match(node, node_attrs_cache[node])]
-            for node in target_nodes
-        }
-
-        for node in target_nodes:
-            for collector in node_matched[node]:
-                collector._start(node)
-
-        error_nodes_set = set()
-        n_splits = self.get_n_splits()
-        self.logger.clear_progress()
-        self.logger.start_progress("Exp", n_splits)
-        for i in range(n_splits):
-            self.logger.update_progress(i)
-            self.logger.start_progress("Node", len(target_nodes))
-            for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(ni)
-                self.logger.rename_progress(node)
-                if node in error_nodes_set:
-                    continue
-                success = _head_exp_node(
-                    node_attrs_cache[node], self.get_node_data(node, i), i, self.logger,
-                    collectors=self.collectors, finalize=finalize, include_train=include_train,
-                )
-                if not success:
-                    error_nodes_set.add(node)
-                    for collector in node_matched[node]:
-                        collector.reset_nodes([node])
-
-            self.logger.end_progress(len(target_nodes))
-        self.logger.end_progress(n_splits)
-
-        error_nodes = list(error_nodes_set)
-        for node in target_nodes:
-            if node not in error_nodes_set:
-                if finalize:
-                    grp_path = node_attrs_cache[node]['path']
-                    finalize_head(grp_path, node)
-                for collector in node_matched[node]:
-                    collector._end(node)
-
+        error_nodes = list({n for _, n in errors})
+        n_ok = len(target_nodes) - len(error_nodes)
         if error_nodes:
-            self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+            self.logger.info(f"Exp complete: {n_ok}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
-            self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
+            self.logger.info(f"Exp complete: {len(target_nodes)} node(s)")
         self._save()
 
     def collect(self, collector, nodes=None, exist='skip'):
@@ -720,357 +759,90 @@ class Experimenter():
         Returns:
             Collector: The same collector after collection.
         """
+        from ._executor import _run_collectors
+        from ._node_processor import ProgressMonitor
+
         node_names = set(self.pipeline.get_node_names(nodes))
-        # built head 노드 중 connector 매칭
-        target_nodes = []
-        node_attrs_cache = {}
-        for name in self.pipeline._get_affected_nodes([None]):
-            node = self.pipeline.get_node(name)
-            grp = self.pipeline.get_grp(node.grp)
-            if grp.role != 'head':
-                continue
-            if name not in node_names:
-                continue
-            if exist == 'skip' and collector.has(name):
-                continue
-            grp_path = self.get_grp_path(node.grp)
-            if get_head_status(grp_path, name) != 'built':
-                continue
-            node_attrs = self.pipeline.get_node_attrs(name)
-            node_attrs['path'] = grp_path
-            if collector.connector.match(name, node_attrs) and not collector.has_node(name):
-                target_nodes.append(name)
-                node_attrs_cache[name] = node_attrs
+        target_nodes = [
+            name for name in self.pipeline._get_affected_nodes([None])
+            if name is not None
+            and name in node_names
+            and not (exist == 'skip' and collector.has(name))
+            and self.get_status(name) == 'built'
+            and collector.connector.match(self.pipeline.get_node_attrs(name))
+        ]
 
-        for node in target_nodes:
-            collector._start(node)
+        if not target_nodes:
+            return collector
 
-        n_splits = self.get_n_splits()
-        single_collector_dict = {collector.name: collector}
-
-        self.logger.start_progress("Collect", n_splits)
-        for idx in range(n_splits):
-            self.logger.update_progress(idx)
-            self.logger.start_progress("Node", len(target_nodes))
-            for ni, node in enumerate(target_nodes):
-                self.logger.update_progress(ni)
-                self.logger.rename_progress(node)
-                _head_exp_node(
-                    node_attrs_cache[node], self.get_node_data(node, idx), idx, self.logger,
-                    collectors=single_collector_dict,
-                )
-            self.logger.end_progress(len(target_nodes))
-        self.logger.end_progress(n_splits)
-
-        for node in target_nodes:
-            collector._end(node)
-
+        collector._setup(len(self.outer_folds), len(self.outer_folds[0].train_data_flows))
+        monitor = ProgressMonitor()
+        n_total = self.get_n_splits() * len(target_nodes)
+        try:
+            self.logger.create_session(0)
+            self.logger.create_session(1)
+            self.logger.start_progress(0, 'Collect', n_total)
+            n_done = 0
+            for name in target_nodes:
+                node_attrs = self.pipeline.get_node_attrs(name)
+                edges = node_attrs['edges']
+                self.logger.start_progress(1, name)
+                for outer_idx, outer_fold in enumerate(self.outer_folds):
+                    for inner_idx, (train_flow, artifact_store) in enumerate(
+                        zip(outer_fold.train_data_flows, outer_fold.artifact_stores)
+                    ):
+                        if artifact_store.status(name) != 'built':
+                            continue
+                        obj, result, info = artifact_store.get_objs(name)
+                        train_data = train_flow.get_train(edges)
+                        valid_data = train_flow.get_valid(edges)
+                        test_data = outer_fold.get_test_data(edges)
+                        ext_data = {}
+                        if collector.get_properties().get('need_process_data', False):
+                            ext_data[collector.name] = train_flow.get_data(collector.get_ext_data(), node_attrs['edges'])
+                        _run_collectors(
+                            [collector], node_attrs, obj, result, info,
+                            train_data, valid_data, test_data, ext_data,
+                            outer_idx, inner_idx, monitor
+                        )
+                    n_done += 1
+                    self.logger.update_progress(0, n_done)
+                self.logger.end_progress(1)
+            self.logger.end_progress(0, n_total)
+        finally:
+            self.logger.remove_session(1)
+            self.logger.remove_session(0)
         return collector
 
-    def get_data(self, idx, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_output(node_name, idx, var))
-            data_dict[key] = zip(*key_data_list)
-
-        for _ in range(self.get_n_splits_inner()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                train_sub, valid_sub, outer_valid_sub = list(), list(), list()
-                for (train_data, train_v_data), outer_valid_data in z:
-                    train_sub.append(train_data)
-                    if train_v_data is not None:
-                        valid_sub.append(train_v_data)
-                    outer_valid_sub.append(outer_valid_data)
-
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                if len(valid_sub) > 0:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    result[k] = ((train_concat, valid_concat), outer_concat)
-                else:
-                    result[k] = ((train_concat, None), outer_concat)
-            yield result
-    
-    def get_data_train(self, idx, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_train_output(node_name, idx, var))
-            data_dict[key] = zip(*key_data_list)
-        
-        for _ in range(self.get_n_splits_inner()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                train_sub, valid_sub = list(), list()
-                for train_data, train_v_data in z:
-                    train_sub.append(train_data)
-                    if train_v_data is not None:
-                        valid_sub.append(train_v_data)
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                if len(valid_sub) > 0:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    result[k] = (train_concat, valid_concat)
-                else:
-                    result[k] = (train_concat, None)
-            yield result
-    
-    def get_data_valid(self, idx, edges):
-        data_dict = {}
-        for key, edge_list in edges.items():
-            key_data_list = []
-            for node_name, var in edge_list:
-                key_data_list.append(self.get_node_valid_output(node_name, idx, var))
-            data_dict[key] = zip(*key_data_list)
-        for _ in range(self.get_n_splits_inner()):
-            result = {}
-            for k, it in data_dict.items():
-                z = next(it)
-                outer_valid_sub = list()
-                for outer_valid_data in z:
-                    outer_valid_sub.append(outer_valid_data)
-                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                result[k] = outer_concat
-            yield result
-
-    def get_node_data(self, node, idx):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data(idx, node_attrs['edges'])
-    
-    def get_node_data_train(self, node, idx):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data_train(idx, node_attrs['edges'])
-
-    def get_node_data_valid(self, node, idx):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        return self.get_data_valid(idx, node_attrs['edges'])
-
-    def split(self, edges):
-        for idx in range(len(self.train_idx_list)):
-            yield self.get_data(idx, edges)
-
-    def process_ext(self, data, node, idx):
-        data = wrap(data)
-        node_attrs = self.pipeline.get_node_attrs(node)
+    def process_ext(self, data, node_name, outer_idx):
+        node_attrs = self.pipeline.get_node_attrs(node_name)
         edges = node_attrs['edges']
+        ext_wrapped = wrap(data)
+        for train_flow in self.outer_folds[outer_idx].train_data_flows:
+            yield train_flow.get_data(ext_wrapped, edges)
 
-        all_ordered = self.pipeline._get_affected_nodes([None])
-        upstream_stages = []
-        for name in all_ordered:
-            if name == node:
-                break
-            if name is not None and name in self.node_objs:
-                grp = self.pipeline.get_grp(self.pipeline.get_node(name).grp)
-                if grp.role == 'stage':
-                    upstream_stages.append(name)
+    def get_train_data(self, edges, o_idx=0, i_idx=0):
+        return self.outer_folds[o_idx].train_data_flows[i_idx].get_train(edges)
 
-        stage_objs = {name: list(self.node_objs[name].get_objs(idx)) for name in upstream_stages}
-        stage_edges = {name: self.pipeline.get_node_attrs(name)['edges'] for name in upstream_stages}
+    def get_valid_data(self, edges, o_idx=0, i_idx=0):
+        return self.outer_folds[o_idx].train_data_flows[i_idx].get_valid(edges)
 
-        for inner_idx in range(self.get_n_splits_inner()):
-            data_dicts = {None: (data, None)}
-            for name in upstream_stages:
-                objs = stage_objs[name]
-                if inner_idx >= len(objs):
-                    continue
-                obj, _, _ = objs[inner_idx]
-                input_data = self._get_ext_process_data(data_dicts, stage_edges[name])
-                if input_data is not None:
-                    data_dicts[name] = (obj.process(input_data), obj)
-            yield self._get_ext_process_data(data_dicts, edges)
+    def get_test_data(self, edges, o_idx=0, i_idx=0):
+        return self.outer_folds[o_idx].get_test_data(edges, i_idx)
 
-    def _get_ext_process_data(self, data_dicts, edges):
-        if 'X' not in edges:
-            return None
-        parts = []
-        for src_node, var in edges['X']:
-            if src_node not in data_dicts:
-                continue
-            src, obj = data_dicts[src_node]
-            if var is not None:
-                cols = var if src_node is None else resolve_columns(src, var, processor=obj)
-                src = src.select_columns(cols)
-            parts.append(src)
-        if not parts:
-            return None
-        if len(parts) == 1:
-            return parts[0]
-        return type(parts[0]).concat(parts, axis=1)
+    def get_node_train_data(self, node, o_idx=0, i_idx=0):
+        edges = self.pipeline.get_node_attrs(node)['edges']
+        return self.get_train_data(edges, o_idx, i_idx)
 
-    def get_node_output(self, node, idx, v = None):
-        if node is None:
-            outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
-            if v is not None:
-                outer_valid_data = outer_valid_data.select_columns(v)
-            
-            for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
-                if v is None:
-                    train_data = self.data.iloc(train_v_idx)
-                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
-                else:
-                    train_data = self.data.iloc(train_v_idx).select_columns(v)
-                    if valid_v_idx is not None:
-                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                    else:
-                        train_v_data = None
+    def get_node_valid_data(self, node, o_idx=0, i_idx=0):
+        edges = self.pipeline.get_node_attrs(node)['edges']
+        return self.get_valid_data(edges, o_idx, i_idx)
 
-                if self.aug_data is not None:
-                    aug = self.aug_data if v is None else self.aug_data.select_columns(v)
-                    train_data = type(train_data).concat([train_data, aug], axis=0)
+    def get_node_test_data(self, node, o_idx=0, i_idx=0):
+        edges = self.pipeline.get_node_attrs(node)['edges']
+        return self.get_test_data(edges, o_idx, i_idx)
 
-                yield (train_data, train_v_data), outer_valid_data
-            return
 
-        cached = self.cache.get_data(node, "all", idx)
-        if cached is not None:
-            sub = self.node_objs[node].get_objs(idx)
-            for ((train_result, train_v_result), valid_result), (obj, _, _) in zip(cached, sub):
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-                valid_result = valid_result.select_columns(X)
-                yield (train_result, train_v_result), valid_result
-            return
-        it = self.get_node_data(node, idx)
-        sub = self.node_objs[node].get_objs(idx)
-        use_cache = self.cache_maxsize > 0
-        cache_data = list() if use_cache else None
-        
-        for data_dict, (obj, train_stored, info) in zip(it, sub):
-            if 'X' in data_dict:
-                # X key로 입력 데이터 가져오기
-                (train_, train_v_), valid_ = data_dict['X']
-            else:
-                (train_, train_v_), valid_ = data_dict['y']
-
-            # train data 처리
-            if train_stored is None:
-                train_result = obj.process(train_)
-            else:
-                train_result = train_stored
-
-            # train_v data 처리
-            if train_v_ is not None:
-                train_v_result = obj.process(train_v_)
-            else:
-                train_v_result = None
-
-            # valid data 처리 (외부 fold의 valid)
-            valid_result = obj.process(valid_)
-            if use_cache:
-                cache_data.append(((train_result, train_v_result), valid_result))
-            # 필요하면 컬럼 필터링
-            if v is not None:
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-                valid_result = valid_result.select_columns(X)
-
-            yield (train_result, train_v_result), valid_result
-        if use_cache:
-            self.cache.put_data(node, "all", idx, cache_data)
-
-    def get_node_train_output(self, node, idx, v=None):
-        if node is None:
-            for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
-                if v is None:
-                    train_data = self.data.iloc(train_v_idx)
-                    if self.aug_data is not None:
-                        train_data = type(train_data).concat([train_data, self.aug_data], axis=0)
-                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
-                else:
-                    train_data = self.data.iloc(train_v_idx).select_columns(v)
-                    if self.aug_data is not None:
-                        aug = self.aug_data.select_columns(v)
-                        train_data = type(train_data).concat([train_data, aug], axis=0)
-                    if valid_v_idx is not None:
-                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                    else:
-                        train_v_data = None
-
-                yield train_data, train_v_data
-            return
-        cached = self.cache.get_data(node, "train", idx)
-        if cached is not None:
-            sub = self.node_objs[node].get_objs(idx)
-            for (train_result, train_v_result), (obj, _, _) in zip(cached, sub):
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-                yield train_result, train_v_result
-            return
-
-        it = self.get_node_data_train(node, idx)
-        sub = self.node_objs[node].get_objs(idx)
-        cache_data = list()
-        for data_dict, (obj, train_stored, info) in zip(it, sub):
-            if 'X' in data_dict:
-                train_, train_v_ = data_dict['X']
-            else:
-                train_, train_v_ = data_dict['y']
-            train_result = obj.process(train_) if train_stored is None else train_stored
-            if train_v_ is not None:
-                train_v_result = obj.process(train_v_)
-            else:
-                train_v_result = None
-            cache_data.append((train_result, train_v_result))
-            if v is not None:
-                X = resolve_columns(train_result, v, processor=obj)
-                train_result = train_result.select_columns(X)
-                if train_v_result is not None:
-                    train_v_result = train_v_result.select_columns(X)
-            yld = train_result, train_v_result
-            yield yld
-        self.cache.put_data(node, "train", idx, cache_data)
-    
-    def get_node_valid_output(self, node, idx, v=None):
-        if node is None:
-            outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
-            if v is not None:
-                outer_valid_data = outer_valid_data.select_columns(v)
-            
-            for _ in range(self.get_n_splits_inner()):
-                yield outer_valid_data
-
-        cached = self.cache.get_data(node, "valid", idx)
-        if cached is not None:
-            sub = self.node_objs[node].get_objs(idx)
-            for valid_result, (obj, _, _) in zip(cached, sub):
-                X = resolve_columns(valid_result, v, processor=obj)
-                valid_result = valid_result.select_columns(X)
-                yield valid_result
-
-        it = self.get_node_data_valid(node, idx)
-        sub = self.node_objs[node].get_objs(idx)
-        use_cache = self.cache_maxsize > 0
-        cache_data = list() if use_cache else None
-        for data_dict, (obj, train_stored, info) in zip(it, sub):
-            # X key로 valid 데이터 가져오기
-            if 'X' in data_dict:
-                valid_ = data_dict['X']
-            else:
-                valid_ = data_dict['y']
-            # valid data 처리 (외부 fold의 valid)
-            valid_result = obj.process(valid_)
-            if use_cache:
-                cache_data.append(valid_result)
-            # 필요하면 컬럼 필터링
-            if v is not None:
-                X = resolve_columns(valid_result, v, processor=obj)
-                valid_result = valid_result.select_columns(X)
-            yield valid_result
-        if use_cache:
-            self.cache.put_data(node, "valid", idx, cache_data)
-        return ret_func()
-    
     def get_node_info(self):
         lines = [f"# Experiment Pipeline Summary\n"]
         lines.append(f"- **DataSource**\n")
@@ -1098,104 +870,14 @@ class Experimenter():
 
         return "\n".join(lines)
 
-    def get_objs(self, node_name, idx):
-        if node_name not in self.node_objs or node_name is None:
-            raise ValueError(f"Node '{node_name}' objects not found")
-
-        obj = self.node_objs[node_name]
-
-        # 노드가 빌드되지 않았으면 에러
-        if obj.status != 'built':
-            raise ValueError(f"Node '{node_name}' status should be built")
-
-        # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        return obj.get_objs(idx)
-    
-    def get_obj_vars(self, node_name, idx):
-        if node_name not in self.node_objs:
-            raise ValueError(f"Node '{node_name}' has no object")
-
-        # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        objs_ = self.node_objs[node_name].get_objs(idx)
-
-        # (입력변수 튜플, 출력변수 튜플) -> 내부 fold index 리스트
-        var_map = {}
-        for inner_idx, (processor, train_v, info) in enumerate(objs_):
-            # 입력 변수와 출력 변수 가져오기
-            input_vars = tuple(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else ()
-            output_vars = tuple(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else ()
-
-            # 튜플 키 생성
-            key = (input_vars, output_vars)
-
-            if key not in var_map:
-                var_map[key] = []
-            var_map[key].append(inner_idx)
-
-        # 결과 리스트 생성: [(입력변수 리스트, 출력변수 리스트, 내부 폴드 index 리스트), ...]
-        result = []
-        for (input_vars, output_vars), fold_indices in var_map.items():
-            result.append((list(input_vars), list(output_vars), fold_indices))
-
-        # 등장 빈도(내부 폴드 개수)의 내림차순으로 정렬
-        result.sort(key=lambda x: len(x[2]), reverse=True)
-        return result
-
-    def get_edges_var(self, edges):
-        class _ColHolder:
-            def __init__(self, columns):
-                self._columns = columns
-            def get_columns(self):
-                return self._columns
-
-        var_map = {}
-
-        for idx in range(self.get_n_splits()):
-            n_inner = len(self.train_idx_list[idx])
-            # edges는 dict: {key: [(node_name, var), ...], ...}
-            edge_objs = {}
-            for key, edge_list in edges.items():
-                edge_objs[key] = []
-                for node_name, var in edge_list:
-                    if node_name is None:
-                        edge_objs[key].append((None, var, None))
-                    else:
-                        node_obj = self.node_objs[node_name]
-                        edge_objs[key].append((node_name, var, node_obj.get_objs(idx)))
-
-            for inner_idx in range(n_inner):
-                collected = {}
-                for key, objs_list in edge_objs.items():
-                    collected[key] = []
-                    for node_name, var, objs in objs_list:
-                        if node_name is None:
-                            cols = self.data.get_columns()
-                            proc = None
-                        else:
-                            obj = next(objs)
-                            proc = obj[0]
-                            cols = list(proc.output_vars) if proc.output_vars is not None else []
-
-                        if var is not None:
-                            cols = resolve_columns(_ColHolder(cols), var, processor=proc)
-
-                        collected[key].extend(cols)
-
-                # key를 정렬된 형태로 튜플화
-                key_tuple = tuple((k, tuple(v)) for k, v in sorted(collected.items()))
-                if key_tuple not in var_map:
-                    var_map[key_tuple] = []
-                var_map[key_tuple].append((idx, inner_idx))
-
-        result = []
-        for vars_tuple, fold_indices in var_map.items():
-            # dict로 복원
-            vars_dict = {k: list(v) for k, v in vars_tuple}
-            result.append((vars_dict, fold_indices))
-
-        result.sort(key=lambda x: len(x[1]), reverse=True)
-
-        return result
+    def get_objs(self, node_name, outer_idx = 0, inner_idx = 0):
+        node = self.pipeline.get_node(node_name)
+        node_attrs = node.get_attrs(self.pipeline.grps)
+        fold = self.outer_folds[outer_idx]
+        if node_attrs['role'] == 'head':
+            return fold.artifact_stores[inner_idx].get_objs(node_name)
+        else:
+            return fold.train_data_flows[inner_idx].get_objs(node_name)
 
     def _save(self, filepath=None):
         if filepath is None:
@@ -1210,7 +892,6 @@ class Experimenter():
             'cache_maxsize': self.cache_maxsize,
             'exp_id': self.exp_id,
             'pipeline': self.pipeline,
-            'node_obj_keys': list(self.node_objs.keys()),
             'collector_keys': {name: type(c).__name__ for name, c in self.collectors.items()},
             'trainer_keys': list(self.trainers.keys()),
             'status': self.status
@@ -1220,7 +901,7 @@ class Experimenter():
             pkl.dump(save_data, f)
 
     @staticmethod
-    def load(filepath, data, data_key=None, aug_data=None):
+    def load(filepath, data, data_key=None, aug_data=None, logger = DefaultLogger(level=['info', 'progress'])):
         """Load a saved Experimenter from disk.
 
         Args:
@@ -1267,21 +948,11 @@ class Experimenter():
             cache_maxsize=save_data.get('cache_maxsize', 4 * 1024 ** 3),
             aug_data=aug_data,
             _save=False,
+            logger = logger
         )
         exp.exp_id = save_data['exp_id']
         exp.pipeline = save_data['pipeline']
         exp.status = save_data['status']
-
-        # node_objs 복원 (stage 노드만)
-        for node_name in save_data['node_obj_keys']:
-            node = exp.pipeline.get_node(node_name)
-            grp = exp.pipeline.get_grp(node.grp)
-            node_path = exp.get_node_path(node_name)
-
-            if grp.role == 'stage':
-                node_obj = StageObj(node_path)
-                node_obj.load()
-                exp.node_objs[node_name] = node_obj
 
         # Collector 복원
         collector_keys = save_data.get('collector_keys', {})
@@ -1308,7 +979,7 @@ class Experimenter():
                 )
                 exp.trainers[trainer_name] = trainer
 
-        exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.train_idx_list)} fold(s)")
+        exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.outer_folds)} fold(s)")
         return exp
     
     def export_pipeline(self):

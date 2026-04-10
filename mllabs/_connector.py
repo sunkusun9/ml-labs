@@ -22,17 +22,17 @@ class Connector:
         self.processor = processor
         self.role = role
 
-    def match(self, node_name, node_attrs):
+    def match(self, node_attrs):
         """Return True if the node satisfies all configured criteria.
 
         Args:
-            node_name (str): Node name to test.
             node_attrs (dict): Resolved node attributes from
                 ``Pipeline.get_node_attrs()``.
 
         Returns:
             bool: True if all criteria match.
         """
+        node_name = node_attrs['name']
         if self.node_query is not None:
             if isinstance(self.node_query, str):
                 if not re.search(self.node_query, node_name):

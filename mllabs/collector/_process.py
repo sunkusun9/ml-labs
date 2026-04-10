@@ -1,88 +1,44 @@
 import pickle
+import re
 import shutil
 
 import numpy as np
 
 from ._base import Collector
 from .._node_processor import resolve_columns
-
+from .._data_wrapper import wrap
 
 class ProcessCollector(Collector):
-    """Collects predictions on external (test) data for each matched node.
+    _SAVE_EXCLUDE = {
+        '_buf': dict,
+        '_input_cache': dict,
+    }
 
-    For each matched head node, passes the external data through upstream
-    stage processors (via :meth:`~mllabs.Experimenter.process_ext`) and
-    calls the fitted processor to produce predictions. Inner-fold predictions
-    are aggregated per outer fold; outer-fold predictions are aggregated on
-    query.
-
-    Args:
-        name (str): Collector name.
-        connector (Connector): Node matching criteria.
-        ext_data: External dataset (pandas/polars/numpy) to predict on.
-        experimenter (Experimenter): Used to run upstream stage transforms
-            via ``process_ext``.
-        output_var: Column selector applied to processor output.
-        method (str): Inner-fold aggregation — ``'mean'`` (default),
-            ``'mode'``, or ``'simple'``.
-    """
-
-    def __init__(self, name, connector, ext_data, experimenter, output_var=None, method='mean'):
+    def __init__(self, name, connector, ext_data, output_var=None, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
         self.method = method
-        self._ext_data = ext_data
-        self._experimenter = experimenter
-        self._data_cls = type(experimenter.data)
-        self.columns = {}
-        self._buffer = {}
-        self._input_cache = {}
-        self._mem_data = {}
+        self._ext_data = wrap(ext_data)
+        self._data_cls = type(self._ext_data)
+        self._input_cache = {}  # {(node, outer_idx): [inner0_input, ...]} transient
 
-    def _start(self, node):
-        self._buffer[node] = []
-        self._input_cache[node] = {}
+    def __getstate__(self):
+        exclude = list(self._SAVE_EXCLUDE.keys()) + ['_ext_data']
+        return {k: v for k, v in self.__dict__.items() if k not in exclude}
 
-    def _collect(self, node, idx, inner_idx, context):
-        if idx not in self._input_cache[node]:
-            self._input_cache[node][idx] = list(
-                self._experimenter.process_ext(self._ext_data, node, idx)
-            )
-        inputs = self._input_cache[node][idx]
-        if inner_idx >= len(inputs) or inputs[inner_idx] is None:
-            return
-
-        output = context['processor'].process(inputs[inner_idx])
-        if self.output_var is not None:
-            cols = resolve_columns(output, self.output_var, processor=context['processor'])
-            output = output.select_columns(cols)
-        if inner_idx == 0:
-            self.columns[node] = output.get_columns()
-        self._buffer[node].append(output)
-
-    def _end_idx(self, node, idx):
-        self._input_cache[node].pop(idx, None)
-        if not self._buffer[node]:
-            return
-        aggregated = self._aggregate(iter(self._buffer[node]))
-        arr = aggregated.to_array()
-
-        if self.path is not None:
-            self._ensure_path()
-            node_dir = self.path / node
-            node_dir.mkdir(parents=True, exist_ok=True)
-            with open(node_dir / f"{idx}.pkl", 'wb') as f:
-                pickle.dump({'data': arr, 'columns': self.columns[node]}, f)
-        else:
-            if node not in self._mem_data:
-                self._mem_data[node] = []
-            self._mem_data[node].append(arr)
-
-        self._buffer[node] = []
-
-    def _end(self, node):
-        self._buffer.pop(node, None)
-        self._input_cache.pop(node, None)
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        for attr, factory in self._SAVE_EXCLUDE.items():
+            setattr(self, attr, factory())
+    
+    def collect(self, context):
+        output = context['output_ext']
+        if output is None:
+            return None
+        cols = resolve_columns(output, self.output_var)
+        if not cols:
+            return None
+        return output.select_columns(cols)
 
     def _aggregate(self, iterator):
         if self.method == 'mean':
@@ -93,87 +49,61 @@ class ProcessCollector(Collector):
             return self._data_cls.simple(iterator)
         raise ValueError(f"Unsupported method: {self.method}")
 
+    def _flush_outer(self, node, outer_idx, inner_list):
+        self._input_cache.pop((node, outer_idx), None)
+        valid_results = [r for r in inner_list if r is not None]
+        if not valid_results:
+            return
+        aggregated = valid_results[0] if len(valid_results) == 1 else self._aggregate(iter(valid_results))
+        node_dir = self.path / node
+        node_dir.mkdir(parents=True, exist_ok=True)
+        with open(node_dir / f'{outer_idx}.pkl', 'wb') as f:
+            pickle.dump({'data': aggregated.to_array(), 'columns': aggregated.get_columns()}, f)
+
     def has_node(self, node):
-        if node in self._mem_data:
-            return True
-        if self.path is not None:
-            node_dir = self.path / node
-            return node_dir.exists() and any(node_dir.glob("*.pkl"))
-        return False
+        if self.path is None:
+            return False
+        p = self.path / node
+        return p.is_dir() and any(p.glob('*.pkl'))
+
+    def has(self, node):
+        return self.has_node(node)
 
     def reset_nodes(self, nodes):
+        node_set = set(nodes)
+        self._buf = {k: v for k, v in self._buf.items() if k not in node_set}
+        self._input_cache = {k: v for k, v in self._input_cache.items() if k[0] not in node_set}
         for node in nodes:
-            self._mem_data.pop(node, None)
-            self.columns.pop(node, None)
-            self._buffer.pop(node, None)
-            self._input_cache.pop(node, None)
-            if self.path is not None:
-                node_dir = self.path / node
-                if node_dir.exists():
-                    shutil.rmtree(node_dir)
-
-    def save(self):
-        if self.path is None:
-            return
-        self._ensure_path()
-        config = {
-            'name': self.name,
-            'connector': self.connector,
-            'output_var': self.output_var,
-            'method': self.method,
-            '_data_cls': self._data_cls,
-            'columns': self.columns,
-        }
-        with open(self.path / '__config.pkl', 'wb') as f:
-            pickle.dump(config, f)
-
-    @classmethod
-    def load(cls, path):
-        with open(path / '__config.pkl', 'rb') as f:
-            config = pickle.load(f)
-        obj = object.__new__(cls)
-        obj.name = config['name']
-        obj.connector = config['connector']
-        obj.output_var = config['output_var']
-        obj.method = config['method']
-        obj._data_cls = config['_data_cls']
-        obj.columns = config['columns']
-        obj._buffer = {}
-        obj._input_cache = {}
-        obj._mem_data = {}
-        obj._ext_data = None
-        obj._experimenter = None
-        obj.path = path
-        obj.warnings = []
-        return obj
+            p = self.path / node
+            if p.exists():
+                shutil.rmtree(p)
 
     def _get_saved_nodes(self):
-        if self.path is not None:
-            if not self.path.exists():
-                return []
-            return [d.name for d in self.path.iterdir() if d.is_dir()]
-        return list(self._mem_data.keys())
+        if self.path is None:
+            return []
+        return [p.name for p in self.path.iterdir()
+                if p.is_dir() and any(p.glob('*.pkl'))]
 
-    def _load_node_data(self, node, agg):
-        if self.path is not None:
-            node_dir = self.path / node
-            if not node_dir.exists():
-                raise FileNotFoundError(f"Process data not found: {node_dir}")
-            arrays, cols = [], None
-            for f in sorted(node_dir.glob("*.pkl"), key=lambda p: int(p.stem)):
-                with open(f, 'rb') as fp:
-                    entry = pickle.load(fp)
-                arrays.append(entry['data'])
-                cols = entry['columns']
-        else:
-            if node not in self._mem_data:
-                raise KeyError(f"Process data not found in memory: {node}")
-            arrays = self._mem_data[node]
-            cols = self.columns.get(node)
+    def _get_nodes(self, nodes, available):
+        if nodes is None:
+            return available
+        if isinstance(nodes, list):
+            return [n for n in nodes if n in set(available)]
+        return [n for n in available if re.search(nodes, n)]
 
-        wrapped = [self._data_cls.from_output(arr, cols) for arr in arrays]
-        if len(wrapped) == 1:
-            return wrapped[0], cols
+    def _load_node(self, node, agg):
+        p = self.path / node
+        outer_files = sorted(p.glob('*.pkl'), key=lambda x: int(x.stem))
+        arrays, cols = [], None
+        for f in outer_files:
+            with open(f, 'rb') as fp:
+                saved = pickle.load(fp)
+            if cols is None:
+                cols = saved['columns']
+            arrays.append(saved['data'])
+        if len(arrays) == 1:
+            return self._data_cls.from_output(arrays[0], cols), cols
+        wrapped = [self._data_cls.from_output(a, cols) for a in arrays]
         if agg == 'mean':
             return self._data_cls.mean(iter(wrapped)), cols
         elif agg == 'mode':
@@ -183,23 +113,21 @@ class ProcessCollector(Collector):
         raise ValueError(f"Unsupported agg: {agg}")
 
     def get_output(self, nodes=None, agg='mean'):
-        """Return aggregated test predictions, optionally for multiple nodes.
-
-        Args:
-            nodes: Node query — ``None`` (all), list, or regex str.
-            agg (str): Outer-fold aggregation — ``'mean'`` (default),
-                ``'mode'``, or ``'simple'``.
-
-        Returns:
-            Native DataFrame with columns from all matched nodes concatenated.
-        """
         node_names = self._get_nodes(nodes, self._get_saved_nodes())
-
-        node_data, column_names = [], []
+        arrays, columns = [], []
         for node in node_names:
-            result, cols = self._load_node_data(node, agg)
-            node_data.append(result.to_array())
-            column_names.extend(cols if cols is not None else [])
+            result, cols = self._load_node(node, agg)
+            arrays.append(result.to_array())
+            columns.extend(cols if cols is not None else [])
+        all_data = np.concatenate(arrays, axis=1)
+        return self._data_cls.from_output(all_data, columns).to_native()
 
-        all_data = np.concatenate(node_data, axis=1)
-        return self._data_cls.from_output(all_data, column_names).to_native()
+    def get_ext_data(self):
+        return self._ext_data
+    
+    def get_properties(self):
+        return {
+            'need_output_train': False,
+            'need_output_test': False,
+            'need_process_data': True,
+        }
