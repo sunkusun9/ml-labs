@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-10
+
+### Added
+
+- `DefaultLogger`: new ANSI cursor-movement multi-session progress display — each session occupies one terminal line, redrawn in-place; falls back to plain `print` in non-TTY environments (Jupyter, pipes)
+- `ProgressSessionLogger`: renamed from the old `DefaultLogger`; session_cls injection pattern preserved (`TqdmProgressSession` etc.)
+- `MetricCollector`, `ModelAttrCollector`, `SHAPCollector`: ad-hoc collection without path — when `path=None`, results accumulate in `_cache` only; all query methods (`get_metric`, `get_attr`, `get_feature_importance`, etc.) work against the cache
+- `Experimenter.collect`: calls `_setup(n_outer, n_inner)` before ad-hoc loop so `_flush_outer` triggers correctly for path=None collectors
+- `Experimenter.add_collector`: `exist='replace'` mode added
+- `NNClassifier`/`NNRegressor`: `device` parameter for explicit GPU assignment (issue #103)
+- GPU device profiling and injection interface added to adapters (issue #99)
+
+### Changed
+
+- Collector/Executor architecture fully redesigned for parallel execution (issue #107)
+  - Node storage split into `_store.py`, `_flow.py`, `_tracker.py`
+  - `DataFlow`/`TrainDataFlow`: encapsulate per-fold data assembly
+  - `ArtifactStore`: per-fold artifact read/write abstraction
+  - `ExecuteTracker`: progress and state tracking for build/exp runs
+  - Collector interface switched to push-based model
+- Head node management refactored from `HeadObj` to function-based API (issue #105)
+- `Trainer`/`Inferencer` modernized with `TrainDataFlow`/`InferenceDataFlow`
+
+### Fixed
+
+- `SHAPCollector.collect`: second data filter was overwriting `train_data` with filtered `valid_data`; return block was using `train_data['X']` for both train and valid SHAP values
+- `Experimenter.remove_collector`: now deletes the collector directory from disk
+
 ## [0.6.4] - 2026-03-18
 
 ### Added
