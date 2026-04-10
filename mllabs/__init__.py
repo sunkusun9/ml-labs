@@ -1,6 +1,6 @@
 __version__ = "0.6.4"
 
-from ._logger import BaseLogger, DefaultLogger, BaseProgressSession, TqdmProgressSession
+from ._logger import BaseLogger, DefaultLogger, ProgressSessionLogger, BaseProgressSession, TqdmProgressSession
 from ._experimenter import Experimenter
 from ._inferencer import Inferencer
 from ._connector import Connector
@@ -25,7 +25,7 @@ __all__ = [
     'ColSelector',
     'BaseLogger',
     'DefaultLogger',
+    'ProgressSessionLogger',
     'BaseProgressSession',
     'TqdmProgressSession',
-    'RichProgressSession',
 ]

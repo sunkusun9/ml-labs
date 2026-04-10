@@ -11,12 +11,13 @@ from .._data_wrapper import unwrap
 
 
 class SHAPCollector(Collector):
-    _SAVE_EXCLUDE = {'_buf': dict}
+    _SAVE_EXCLUDE = {'_buf': dict, '_cache': dict}
 
     def __init__(self, name, connector, explainer_cls=None, data_filter=None):
         super().__init__(name, connector)
         self.explainer_cls = explainer_cls or shap.TreeExplainer
         self.data_filter = data_filter
+        self._cache = {}  # {node: {(outer_idx, inner_idx): result}}
 
     def collect(self, context):
         train_data, valid_data, test_data = context['input']
@@ -26,24 +27,28 @@ class SHAPCollector(Collector):
 
         if self.data_filter is not None:
             train_data = self.data_filter(train_data)
+            valid_data = self.data_filter(valid_data)
 
-        if self.data_filter is not None:
-            train_data = self.data_filter(valid_data)
         return {
             'train': explainer.shap_values(unwrap(train_data['X'])),
-            'valid': explainer.shap_values(unwrap(train_data['X'])),
+            'valid': explainer.shap_values(unwrap(valid_data['X'])),
             'train_index': train_data['X'].get_index(),
-            'valid_index': train_data['X'].get_index(),
+            'valid_index': valid_data['X'].get_index(),
             'columns': list(context['processor'].X_),
         }
 
     def push(self, node, outer_idx, inner_idx, result):
-        node_dir = self.path / node
-        node_dir.mkdir(parents=True, exist_ok=True)
-        with open(node_dir / f'{outer_idx}_{inner_idx}.pkl', 'wb') as f:
-            pickle.dump(result, f)
+        if self.path is None:
+            self._cache.setdefault(node, {})[(outer_idx, inner_idx)] = result
+        else:
+            node_dir = self.path / node
+            node_dir.mkdir(parents=True, exist_ok=True)
+            with open(node_dir / f'{outer_idx}_{inner_idx}.pkl', 'wb') as f:
+                pickle.dump(result, f)
 
     def has_node(self, node):
+        if node in self._cache:
+            return True
         if self.path is None:
             return False
         p = self.path / node
@@ -54,13 +59,15 @@ class SHAPCollector(Collector):
 
     def reset_nodes(self, nodes):
         for node in nodes:
-            p = self.path / node
-            if p.exists():
-                shutil.rmtree(p)
+            self._cache.pop(node, None)
+            if self.path is not None:
+                p = self.path / node
+                if p.exists():
+                    shutil.rmtree(p)
 
     def _get_saved_nodes(self):
         if self.path is None:
-            return []
+            return list(self._cache.keys())
         return [p.name for p in self.path.iterdir()
                 if p.is_dir() and any(p.glob('*.pkl'))]
 
@@ -80,27 +87,37 @@ class SHAPCollector(Collector):
             abs_vals = abs_vals.mean(axis=-1)
         return pd.Series(abs_vals.mean(axis=0), index=columns)
 
-    def get_feature_importance(self, node, idx):
+    def _load_result(self, node, outer_idx, inner_idx):
+        if node in self._cache:
+            return self._cache[node][(outer_idx, inner_idx)]
+        with open(self.path / node / f'{outer_idx}_{inner_idx}.pkl', 'rb') as f:
+            return pickle.load(f)
+
+    def _get_inner_idxs(self, node, outer_idx):
+        if node in self._cache:
+            return sorted(k[1] for k in self._cache[node] if k[0] == outer_idx)
         p = self.path / node
-        inner_files = sorted(
-            (f for f in p.glob(f'{idx}_*.pkl')),
-            key=lambda x: int(x.stem.split('_')[1])
+        return sorted(
+            int(f.stem.split('_')[1])
+            for f in p.glob(f'{outer_idx}_*.pkl')
         )
+
+    def _get_outer_idxs(self, node):
+        if node in self._cache:
+            return sorted(set(k[0] for k in self._cache[node]))
+        p = self.path / node
+        return sorted(set(int(f.stem.split('_')[0]) for f in p.glob('*.pkl')))
+
+    def get_feature_importance(self, node, idx):
         result = []
-        for f in inner_files:
-            with open(f, 'rb') as fp:
-                data = pickle.load(fp)
-            print(data)
-            inner_idx = int(f.stem.split('_')[1])
+        for inner_idx in self._get_inner_idxs(node, idx):
+            data = self._load_result(node, idx, inner_idx)
             result.append(self._shap_to_importance(data['valid'], data['columns']).rename(inner_idx))
         return result
 
     def get_feature_importance_agg(self, node, agg_inner='mean', agg_outer='mean'):
-        p = self.path / node
-        outer_idxs = sorted(set(int(f.stem.split('_')[0]) for f in p.glob('*.pkl')))
-
         outer_frames = []
-        for idx in outer_idxs:
+        for idx in self._get_outer_idxs(node):
             inner_list = self.get_feature_importance(node, idx)
             df = pd.concat(inner_list, axis=1)
             if agg_inner is not None:

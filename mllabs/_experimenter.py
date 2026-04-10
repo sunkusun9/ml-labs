@@ -767,7 +767,6 @@ class Experimenter():
             name for name in self.pipeline._get_affected_nodes([None])
             if name is not None
             and name in node_names
-            and self.pipeline.grps[self.pipeline.nodes[name].grp].role == 'head'
             and not (exist == 'skip' and collector.has(name))
             and self.get_status(name) == 'built'
             and collector.connector.match(self.pipeline.get_node_attrs(name))
@@ -776,6 +775,7 @@ class Experimenter():
         if not target_nodes:
             return collector
 
+        collector._setup(len(self.outer_folds), len(self.outer_folds[0].train_data_flows))
         monitor = ProgressMonitor()
         n_total = self.get_n_splits() * len(target_nodes)
         try:
@@ -870,104 +870,14 @@ class Experimenter():
 
         return "\n".join(lines)
 
-    def get_objs(self, node_name, idx):
-        if node_name not in self.node_objs or node_name is None:
-            raise ValueError(f"Node '{node_name}' objects not found")
-
-        obj = self.node_objs[node_name]
-
-        # 노드가 빌드되지 않았으면 에러
-        if obj.status != 'built':
-            raise ValueError(f"Node '{node_name}' status should be built")
-
-        # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        return obj.get_objs(idx)
-    
-    def get_obj_vars(self, node_name, idx):
-        if node_name not in self.node_objs:
-            raise ValueError(f"Node '{node_name}' has no object")
-
-        # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        objs_ = self.node_objs[node_name].get_objs(idx)
-
-        # (입력변수 튜플, 출력변수 튜플) -> 내부 fold index 리스트
-        var_map = {}
-        for inner_idx, (processor, train_v, info) in enumerate(objs_):
-            # 입력 변수와 출력 변수 가져오기
-            input_vars = tuple(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else ()
-            output_vars = tuple(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else ()
-
-            # 튜플 키 생성
-            key = (input_vars, output_vars)
-
-            if key not in var_map:
-                var_map[key] = []
-            var_map[key].append(inner_idx)
-
-        # 결과 리스트 생성: [(입력변수 리스트, 출력변수 리스트, 내부 폴드 index 리스트), ...]
-        result = []
-        for (input_vars, output_vars), fold_indices in var_map.items():
-            result.append((list(input_vars), list(output_vars), fold_indices))
-
-        # 등장 빈도(내부 폴드 개수)의 내림차순으로 정렬
-        result.sort(key=lambda x: len(x[2]), reverse=True)
-        return result
-
-    def get_edges_var(self, edges):
-        class _ColHolder:
-            def __init__(self, columns):
-                self._columns = columns
-            def get_columns(self):
-                return self._columns
-
-        var_map = {}
-
-        for idx in range(self.get_n_splits()):
-            n_inner = len(self.outer_folds[idx].train_data_flows)
-            # edges는 dict: {key: [(node_name, var), ...], ...}
-            edge_objs = {}
-            for key, edge_list in edges.items():
-                edge_objs[key] = []
-                for node_name, var in edge_list:
-                    if node_name is None:
-                        edge_objs[key].append((None, var, None))
-                    else:
-                        node_obj = self.node_objs[node_name]
-                        edge_objs[key].append((node_name, var, node_obj.get_objs(idx)))
-
-            for inner_idx in range(n_inner):
-                collected = {}
-                for key, objs_list in edge_objs.items():
-                    collected[key] = []
-                    for node_name, var, objs in objs_list:
-                        if node_name is None:
-                            cols = self.data.get_columns()
-                            proc = None
-                        else:
-                            obj = next(objs)
-                            proc = obj[0]
-                            cols = list(proc.output_vars) if proc.output_vars is not None else []
-
-                        if var is not None:
-                            cols = resolve_columns(_ColHolder(cols), var, processor=proc)
-
-                        collected[key].extend(cols)
-
-                # key를 정렬된 형태로 튜플화
-                key_tuple = tuple((k, tuple(v)) for k, v in sorted(collected.items()))
-                if key_tuple not in var_map:
-                    var_map[key_tuple] = []
-                var_map[key_tuple].append((idx, inner_idx))
-
-        result = []
-        for vars_tuple, fold_indices in var_map.items():
-            # dict로 복원
-            vars_dict = {k: list(v) for k, v in vars_tuple}
-            result.append((vars_dict, fold_indices))
-
-        result.sort(key=lambda x: len(x[1]), reverse=True)
-
-        return result
+    def get_objs(self, node_name, outer_idx = 0, inner_idx = 0):
+        node = self.pipeline.get_node(node_name)
+        node_attrs = node.get_attrs(self.pipeline.grps)
+        fold = self.outer_folds[outer_idx]
+        if node_attrs['role'] == 'head':
+            return fold.artifact_stores[inner_idx].get_objs(node_name)
+        else:
+            return fold.train_data_flows[inner_idx].get_objs(node_name)
 
     def _save(self, filepath=None):
         if filepath is None:

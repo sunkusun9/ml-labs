@@ -35,7 +35,7 @@ class ModelAttrCollector(Collector):
         node_cache = self._cache.setdefault(node, {})
         for inner_idx, r in enumerate(inner_list):
             node_cache[(outer_idx, inner_idx)] = r
-        if self._n_outer is not None and len(node_cache) == self._n_outer * self._n_inner:
+        if self.path is not None and self._n_outer is not None and len(node_cache) == self._n_outer * self._n_inner:
             self.path.mkdir(parents=True, exist_ok=True)
             with open(self.path / f'{node}.pkl', 'wb') as f:
                 pickle.dump(node_cache, f)
@@ -49,6 +49,8 @@ class ModelAttrCollector(Collector):
         return result
 
     def has_node(self, node):
+        if node in self._cache:
+            return True
         if self.path is None:
             return False
         return (self.path / f'{node}.pkl').exists()
@@ -61,13 +63,14 @@ class ModelAttrCollector(Collector):
         self._buf = {k: v for k, v in self._buf.items() if k not in node_set}
         for node in nodes:
             self._cache.pop(node, None)
-            p = self.path / f'{node}.pkl'
-            if p.exists():
-                p.unlink()
+            if self.path is not None:
+                p = self.path / f'{node}.pkl'
+                if p.exists():
+                    p.unlink()
 
     def _get_saved_nodes(self):
         if self.path is None:
-            return []
+            return list(self._cache.keys())
         return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
 
     def _get_nodes(self, nodes, available):
