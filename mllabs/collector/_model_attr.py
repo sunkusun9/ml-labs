@@ -43,7 +43,10 @@ class ModelAttrCollector(Collector):
     def _load_results(self, node):
         if node in self._cache:
             return self._cache[node]
-        with open(self.path / f'{node}.pkl', 'rb') as f:
+        p = self.path / f'{node}.pkl'
+        if not p.exists():
+            return None
+        with open(p, 'rb') as f:
             result = pickle.load(f)
         self._cache[node] = result
         return result
@@ -82,6 +85,8 @@ class ModelAttrCollector(Collector):
 
     def get_attr(self, node, idx=None):
         data = self._load_results(node)
+        if data is None:
+            return None
         outer_idxs = sorted(set(k[0] for k in data.keys()))
         result = []
         for oi in outer_idxs:
@@ -101,6 +106,8 @@ class ModelAttrCollector(Collector):
         if not self._is_mergeable():
             raise ValueError(f"Result '{self.result_key}' is not mergeable across folds")
         results = self.get_attr(node)
+        if results is None:
+            return None
         l = []
         for no, inner_list in enumerate(results):
             l.append(

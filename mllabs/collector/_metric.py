@@ -48,7 +48,10 @@ class MetricCollector(Collector):
     def _load_results(self, node):
         if node in self._cache:
             return self._cache[node]
-        with open(self.path / f'{node}.pkl', 'rb') as f:
+        p = self.path / f'{node}.pkl'
+        if not p.exists():
+            return None
+        with open(p, 'rb') as f:
             result = pickle.load(f)
         self._cache[node] = result
         return result
@@ -87,6 +90,8 @@ class MetricCollector(Collector):
 
     def get_metric(self, node):
         data = self._load_results(node)
+        if data is None:
+            return None
         outer_idxs = sorted(set(k[0] for k in data.keys()))
         l = []
         for idx in outer_idxs:
@@ -100,7 +105,11 @@ class MetricCollector(Collector):
 
     def get_metrics(self, nodes=None):
         node_names = self._get_nodes(nodes, self._get_saved_nodes())
-        return pd.concat([self.get_metric(node) for node in node_names], axis=1).T
+        results = [self.get_metric(node) for node in node_names]
+        results = [r for r in results if r is not None]
+        if not results:
+            return None
+        return pd.concat(results, axis=1).T
 
     def get_metrics_agg(self, nodes=None, inner_fold=True, outer_fold=True, include_std=False):
         if outer_fold and not inner_fold:

@@ -126,6 +126,8 @@ class SHAPCollector(Collector):
                 df.columns = pd.MultiIndex.from_tuples([(idx, s.name) for s in inner_list])
             outer_frames.append(df)
 
+        if not outer_frames:
+            return None
         result = pd.concat(outer_frames, axis=1)
         if agg_outer is not None and agg_inner is not None:
             result = result.agg(agg_outer, axis=1)
