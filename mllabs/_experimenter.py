@@ -284,6 +284,29 @@ class Experimenter():
         self._save()
         return collector
 
+    def get_collect_status(self, collector, nodes=None):
+        if isinstance(collector, str):
+            collector = self.collectors[collector]
+        all_node_names = self.pipeline.get_node_names(nodes)
+        head_nodes = [
+            n for n in all_node_names
+            if n is not None and self.pipeline.get_node_attrs(n).get('role') == 'head'
+            and collector.connector.match(self.pipeline.get_node_attrs(n))
+        ]
+        result = {}
+        for node in head_nodes:
+            if collector.has_node(node):
+                result[node] = 'collected'
+            else:
+                node_status = self.get_status(node)
+                if node_status == 'finalized':
+                    result[node] = 'finalized'
+                elif node_status == 'error':
+                    result[node] = 'error'
+                else:
+                    result[node] = 'not_collected'
+        return result
+
     def get_trainer(self, name):
         return self.trainers.get(name)
 
