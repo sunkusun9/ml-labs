@@ -27,13 +27,13 @@ class SHAPCollector(Collector):
 
         if self.data_filter is not None:
             train_data = self.data_filter(train_data)
-            valid_data = self.data_filter(valid_data)
-
+            if valid_data is not None:
+                valid_data = self.data_filter(valid_data)
         return {
             'train': explainer.shap_values(unwrap(train_data['X'])),
-            'valid': explainer.shap_values(unwrap(valid_data['X'])),
+            'valid': explainer.shap_values(unwrap(valid_data['X'])) if valid_data is not None and 'X' in valid_data else None,
             'train_index': train_data['X'].get_index(),
-            'valid_index': valid_data['X'].get_index(),
+            'valid_index': valid_data['X'].get_index() if valid_data is not None and 'X' in valid_data else None,
             'columns': list(context['processor'].X_),
         }
 
@@ -112,7 +112,7 @@ class SHAPCollector(Collector):
         result = []
         for inner_idx in self._get_inner_idxs(node, idx):
             data = self._load_result(node, idx, inner_idx)
-            result.append(self._shap_to_importance(data['valid'], data['columns']).rename(inner_idx))
+            result.append(self._shap_to_importance(data['train'], data['columns']).rename(inner_idx))
         return result
 
     def get_feature_importance_agg(self, node, agg_inner='mean', agg_outer='mean'):

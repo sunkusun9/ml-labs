@@ -43,6 +43,8 @@ class ModelAttrCollector(Collector):
     def _load_results(self, node):
         if node in self._cache:
             return self._cache[node]
+        if self.path is None:
+            return None
         p = self.path / f'{node}.pkl'
         if not p.exists():
             return None

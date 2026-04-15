@@ -539,33 +539,3 @@ def desc_status(exp):
             lines.append("")
 
     return "\n".join(lines)
-
-
-def desc_obj_vars(exp, obj_vars):
-    # 첫 번째 항목 사용 (가장 빈도 높은 것)
-    input_vars, output_vars, fold_indices = obj_vars
-
-    # 입력 변수 DataFrame 생성
-    input_data = []
-    for var in input_vars:
-        if '__' in var:
-            node = var.split('__')[0]
-        else:
-            node = 'DataSource'
-        input_data.append({'node': node, 'name': var})
-
-    if input_data:
-        input_df = pd.DataFrame(input_data)
-        # 노드별로 일련번호 부여
-        input_df['seq'] = input_df.groupby('node').cumcount()
-        input_df = input_df.set_index(['node', 'seq'])[['name']]
-    else:
-        input_df = pd.DataFrame(columns=['name'])
-
-    # 출력 변수 DataFrame 생성
-    if output_vars:
-        output_df = pd.DataFrame({'name': output_vars})
-    else:
-        output_df = pd.DataFrame(columns=['name'])
-
-    return input_df, output_df
