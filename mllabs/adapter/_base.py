@@ -66,6 +66,8 @@ class ModelAdapter(ABC):
             fit_params['X'] = unwrap(train_data['X'])
         if 'y' in train_data:
             fit_params['y'] = unwrap(train_data['y'].squeeze())
+        if 'sample_weight' in train_data:
+            fit_params['sample_weight'] = unwrap(train_data['sample_weight'].squeeze())
         return fit_params
 
     def get_process_data(self, data):

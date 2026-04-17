@@ -43,9 +43,10 @@ class CatBoostAdapter(ModelAdapter):
         if gpu is not None and gpu_id_list:
             params['task_type'] = 'GPU'
             params['devices'] = str(gpu_id_list[0])
-
+        """
         if not single_worker:
             params['thread_count'] = 1
+        """
         return params
 
     def get_process_data(self, data):
@@ -70,6 +71,8 @@ class CatBoostAdapter(ModelAdapter):
             fit_params['X'] = _maybe_to_pandas(fit_params['X'])
         if 'y' in fit_params:
             fit_params['y'] = _maybe_to_pandas(fit_params['y'])
+        if 'sample_weight' in fit_params:
+            fit_params['sample_weight'] = _maybe_to_pandas(fit_params['sample_weight'])
 
         train_v_X = valid_data.get('X') if valid_data else None
         train_v_y = valid_data.get('y') if valid_data else None

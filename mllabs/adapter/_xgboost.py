@@ -71,10 +71,10 @@ class XGBoostAdapter(ModelAdapter):
             if monitor is not None:
                 callbacks.append(ProgressCallback(n_estimators, self.verbose, monitor))
             params['callbacks'] = callbacks
-
+        """
         if not single_worker:
             params['n_jobs'] = 1
-
+        """
         return params
 
     def get_fit_params(self, train_data, valid_data=None, params=None, monitor=None, single_worker=False):

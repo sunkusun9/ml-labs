@@ -17,7 +17,7 @@ class LMAdapter(ModelAdapter):
             idx = [0]
         else:
             if hasattr(processor.obj, 'intercept_'):
-                coef_ = np.concatenate([coef_, np.expand_dims(processor.obj.intercept_, axis=0)], axis=1)
+                coef_ = np.concatenate([coef_, np.expand_dims(processor.obj.intercept_, axis=1)], axis=1)
                 coef_name = list(processor.X_) + ['intercept']
             else:
                 coef_ = processor.obj.coef_

@@ -190,6 +190,63 @@ exp.close_exp()   # open → closed
 exp.reopen_exp()   # closed → open (+ rebuild)
 ```
 
+### Parallel Execution and GPU
+
+`build()` and `exp()` accept `n_jobs` and `gpu_id_list` to enable parallel and GPU-accelerated execution.
+
+```python
+exp.exp(n_jobs=4, gpu_id_list=[0, 1])
+```
+
+#### Worker assignment
+
+Workers are numbered `0 .. n_jobs-1`. The first `len(gpu_id_list)` workers are **GPU workers**; the rest are **CPU workers**.
+
+| `n_jobs` | `gpu_id_list` | GPU workers | CPU workers |
+|----------|---------------|-------------|-------------|
+| 1 | `[0]` | worker 0 (GPU 0) | — |
+| 2 | `[0]` | worker 0 (GPU 0) | worker 1 |
+| 4 | `[0, 1]` | workers 0, 1 | workers 2, 3 |
+| 2 | `[]` or `None` | — | workers 0, 1 |
+
+#### Node routing
+
+Each node is routed to a GPU or CPU worker based on `adapter.get_gpu_usage(params)`:
+
+- Returns `GPU_NO` → CPU worker queue
+- Returns `GPU_YES` → GPU worker queue
+
+**A node must have `'gpu': 'yes'` in its params to be routed to a GPU worker.** Without this, nodes default to `'gpu': 'auto'` which resolves to `GPU_NO` for most adapters and stays on CPU workers.
+
+```python
+# CPU only (default)
+exp.set_node('lgbm_v1', grp='lgbm', params={'n_estimators': 1000})
+
+# GPU worker
+exp.set_node('lgbm_v2', grp='lgbm', params={'n_estimators': 1000, 'gpu': 'yes'})
+
+# Explicitly disabled
+exp.set_node('lgbm_v3', grp='lgbm', params={'n_estimators': 1000, 'gpu': None})
+```
+
+Fallback behavior (default): if the target queue is busy, nodes fall back to the other queue (`gpu_fallback_cpu=True`, `cpu_fallback_gpu=True`).
+
+#### Mixing GPU and CPU nodes
+
+A common pattern is to dedicate one worker to GPU models and run CPU models in parallel:
+
+```python
+exp.set_node('xgb_node', grp='xgb', params={'n_estimators': 5000, 'gpu': 'yes'})
+exp.set_node('lgbm_node', grp='lgbm', params={'n_estimators': 5000, 'gpu': 'yes'})
+exp.set_node('lr_node', grp='lr')   # CPU only
+
+exp.exp(n_jobs=3, gpu_id_list=[0])  # worker 0: GPU, workers 1-2: CPU
+```
+
+See [Adapters](adapters.md#gpu-settings) for framework-specific GPU param details.
+
+---
+
 ### Adding and Using Collectors
 
 Collectors capture data during `exp()` for each matched Head node.

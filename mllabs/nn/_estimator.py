@@ -147,15 +147,20 @@ class _NNBase(BaseEstimator):
         buf = n if self.shuffle_buffer == -1 else self.shuffle_buffer
         return ds.shuffle(buf, seed=self.random_state)
 
-    def _split_val(self, X, y_encoded):
+    def _split_val(self, X, y_encoded, sample_weight=None):
         n = len(y_encoded)
         n_val = max(1, int(n * self.validation_fraction))
         rng = np.random.RandomState(self.random_state)
         idx = rng.permutation(n)
         val_idx, train_idx = idx[:n_val], idx[n_val:]
+        sw_tr = None
+        if sample_weight is not None:
+            sw_arr = np.asarray(sample_weight)
+            sw_tr = sw_arr[train_idx]
         return (
             _iloc(X, train_idx), y_encoded[train_idx],
             _iloc(X, val_idx),   y_encoded[val_idx],
+            sw_tr,
         )
 
     # ------------------------------------------------------------------
@@ -186,7 +191,7 @@ class _NNBase(BaseEstimator):
     # fit
     # ------------------------------------------------------------------
 
-    def fit(self, X, y, eval_set=None, callbacks=None):
+    def fit(self, X, y, eval_set=None, callbacks=None, sample_weight=None):
         if tf is None:
             scope = contextlib.nullcontext()
         elif self.device == 'mirror':
@@ -197,9 +202,9 @@ class _NNBase(BaseEstimator):
             scope = contextlib.nullcontext()
 
         with scope:
-            return self._fit(X, y, eval_set=eval_set, callbacks=callbacks)
+            return self._fit(X, y, eval_set=eval_set, callbacks=callbacks, sample_weight=sample_weight)
 
-    def _fit(self, X, y, eval_set=None, callbacks=None):
+    def _fit(self, X, y, eval_set=None, callbacks=None, sample_weight=None):
         self._fit_encoder(X)
         y_encoded = self._prepare_target(y)
         self.model_ = self._build_model(X, self._n_output())
@@ -213,18 +218,18 @@ class _NNBase(BaseEstimator):
             X_val, y_val = eval_set[0]
             y_val = self._encode_y(y_val)
             train_ds = self._shuffled(
-                _make_tf_dataset(X, self.var_specs_, y_encoded), len(y_encoded)
+                _make_tf_dataset(X, self.var_specs_, y_encoded, sample_weight=sample_weight), len(y_encoded)
             ).batch(self.batch_size)
             val_ds = _make_tf_dataset(X_val, self.var_specs_, y_val).batch(self.batch_size)
         elif self.validation_fraction > 0:
-            X_tr, y_tr, X_val, y_val = self._split_val(X, y_encoded)
+            X_tr, y_tr, X_val, y_val, sw_tr = self._split_val(X, y_encoded, sample_weight=sample_weight)
             train_ds = self._shuffled(
-                _make_tf_dataset(X_tr, self.var_specs_, y_tr), len(y_tr)
+                _make_tf_dataset(X_tr, self.var_specs_, y_tr, sample_weight=sw_tr), len(y_tr)
             ).batch(self.batch_size)
             val_ds = _make_tf_dataset(X_val, self.var_specs_, y_val).batch(self.batch_size)
         else:
             train_ds = self._shuffled(
-                _make_tf_dataset(X, self.var_specs_, y_encoded), len(y_encoded)
+                _make_tf_dataset(X, self.var_specs_, y_encoded, sample_weight=sample_weight), len(y_encoded)
             ).batch(self.batch_size)
             val_ds = None
 

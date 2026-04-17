@@ -259,7 +259,7 @@ class _DatasetInputModel(_keras_base):
         })
         return config
 
-def _make_tf_dataset(X, var_specs, y=None):
+def _make_tf_dataset(X, var_specs, y=None, sample_weight=None):
     if tf is None:
         raise ImportError("tensorflow is required")
 
@@ -273,6 +273,8 @@ def _make_tf_dataset(X, var_specs, y=None):
 
     if y is None:
         return tf.data.Dataset.from_tensor_slices(tensors)
+    if sample_weight is not None:
+        return tf.data.Dataset.from_tensor_slices((tensors, y, np.asarray(sample_weight, dtype=np.float32)))
     return tf.data.Dataset.from_tensor_slices((tensors, y))
 
 def _make_input_model(X, var_specs):

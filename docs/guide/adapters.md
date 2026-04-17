@@ -113,6 +113,66 @@ For `NNClassifier` and `NNRegressor`. Passes the inner-validation fold as `eval_
 
 ---
 
+## GPU Settings
+
+The `gpu` key in node `params` controls GPU routing and injection. It is stripped before passing to the model constructor.
+
+| `'gpu'` value | Meaning |
+|---------------|---------|
+| `'auto'` (default) | Framework-specific detection — usually CPU unless a native GPU param is set |
+| `'yes'` | Enable GPU: node is routed to a GPU worker and the adapter injects GPU device params |
+| `None` | Disable GPU explicitly |
+
+**Adapters inject GPU device params automatically when `'gpu': 'yes'` and a `gpu_id` is assigned by the worker:**
+
+| Adapter | Injected params |
+|---------|----------------|
+| `XGBoostAdapter` | `device='cuda:{gpu_id}'` |
+| `CatBoostAdapter` | `task_type='GPU'`, `devices='{gpu_id}'` |
+| `NNAdapter` | `device='/GPU:{gpu_id}'` |
+| `LightGBMAdapter` | _(no injection — set `device='gpu'` or `device='cuda'` directly in params)_ |
+
+### LightGBM
+
+LightGBM uses its own `device` param. To enable GPU:
+
+```python
+exp.set_node('lgbm_gpu', grp='lgbm', params={
+    'n_estimators': 5000,
+    'device': 'cuda',   # or 'gpu'
+    'gpu': 'yes',       # routes to GPU worker
+})
+```
+
+### XGBoost
+
+```python
+exp.set_node('xgb_gpu', grp='xgb', params={
+    'n_estimators': 5000,
+    'gpu': 'yes',   # injects device='cuda:{gpu_id}' automatically
+})
+```
+
+### CatBoost
+
+```python
+exp.set_node('cb_gpu', grp='cb', params={
+    'n_estimators': 5000,
+    'gpu': 'yes',   # injects task_type='GPU', devices='{gpu_id}' automatically
+})
+```
+
+### NNClassifier / NNRegressor
+
+```python
+exp.set_node('nn_gpu', grp='nn', params={
+    'epochs': 200,
+    'gpu': 'yes',   # injects device='/GPU:{gpu_id}' automatically
+})
+```
+
+---
+
 ## Custom Adapter
 
 ```python
