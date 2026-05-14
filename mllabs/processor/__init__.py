@@ -1,5 +1,6 @@
 from ._categorical import CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder
 from ._type import TypeConverter
+from ._crossfit import CrossFitTransformer
 
 __all__ = [
     "CatConverter",
@@ -7,6 +8,7 @@ __all__ = [
     "CatOOVFilter",
     "FrequencyEncoder",
     "TypeConverter",
+    "CrossFitTransformer",
 ]
 
 try:
