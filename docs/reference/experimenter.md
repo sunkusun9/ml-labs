@@ -22,6 +22,7 @@
         - get_collector
         - remove_collector
         - collect
+        - get_collect_status
         - add_trainer
         - get_trainer
         - remove_trainer

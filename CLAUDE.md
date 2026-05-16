@@ -90,6 +90,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `add_collector(collector)`: Collector 등록 (path 설정, save)
 - `get_collector(name)`: Collector 반환 (없으면 None)
 - `remove_collector(name)`: Collector 제거 후 `_save()`
+- `get_collect_status(collector, nodes=None)`: `{node: status}` 반환 — `'collected'`/`'not_collected'`/`'finalized'`/`'error'`
 - `get_trainer(name)`: Trainer 반환 (없으면 None)
 - `remove_trainer(name)`: Trainer 제거 후 `_save()`
 - `collect(collector, nodes=None, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, nodes로 범위 제한 가능, progress 포함)
@@ -272,7 +273,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## 보조 모듈
 - **_data_wrapper.py**: DataWrapper (wrap/unwrap/squeeze/mean/mode/simple) — pandas/polars/cudf/numpy 통합
   - `PolarsWrapper.get_columns()`: `pl.DataFrame`이면 `.columns`, `pl.Series`이면 `.name` 반환
-- **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
+- **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node
 - **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress, rename_progress)
 - **col.py**: 컬럼 선택 유틸리티
 - **_connector.py**: Connector (노드 매칭)
