@@ -143,8 +143,9 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ### Inferencer (`_inferencer.py`)
 - 생성자: `(pipeline, selected_stages, selected_heads, n_splits, node_objs, v=None)`
 - `node_objs`: `{name: [processor_split0, processor_split1, ...]}` — Processor 리스트 (Trainer 독립)
-- `process(data, agg='mean')`: split 결과 자동 집계
+- `process(data, agg='mean', nodes=None)`: split 결과 자동 집계
   - `agg`: `'mean'`/`'mode'`/callable/`None`(list 반환). 단일 split이면 집계 없이 반환
+  - `nodes`: str/list — 출력할 head 노드 선택 (None=전체). 미등록 노드 지정 시 ValueError
 - 저장/로드: `save(path)`, `load(cls, path)` — 단일 `__inferencer.pkl`에 node_objs 포함
 
 ### TrainObj (`_trainobj.py`)
@@ -167,6 +168,8 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `__init__(name, connector)`, `path`는 add_collector 시 설정
   - 라이프사이클: `_start(node)`, `_collect(node, idx, inner_idx, context)`, `_end_idx(node, idx)`, `_end(node)`
   - 에러 처리: `_collect`/`_end_idx`는 `_safe_collector_call`(`_expobj.py`)로 try/except 래핑; `_start`/`_end`는 직접 호출 — 에러 시 예외 전파 대신 `warnings` 리스트에 저장 (`{method, node, type, message, traceback}`) 후 warning 로그
+  - `on_attach(experimenter)`: `add_collector`/`collect` 호출 시 자동 실행 — experimenter identity 비교로 중복 재계산 방지; `_on_attach(experimenter)` no-op 훅을 subclass에서 override
+  - `_experimenter`: pickle 제외 (save/load 시 None으로 초기화)
   - `has(node)`: 수집 결과 보유 여부 (has_node에 위임)
   - `has_node(node)`, `reset_nodes(nodes)`, `save()`, `load(cls, path)`
   - `_get_nodes(nodes, available)`: None/list/str(regex) 패턴 매칭
@@ -175,15 +178,23 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **MetricCollector** (`_metric.py`): 메트릭 수집
   - `output_var`, `metric_func`, `include_train`
   - target: `context['input']['y']`, 예측값: `resolve_columns(output_valid, output_var)`
+  - `_on_attach`: `metric_func`에 `on_attach`가 있으면 자동 전파
   - 쿼리: `get_metric(node)`, `get_metrics(nodes)`, `get_metrics_agg(nodes, inner_fold, outer_fold, include_std)`
 
+- **ProbToLabel** (`_metric.py`): predict_proba → label 변환 후 metric 적용
+  - `__init__(metric_func, var, thresholds=None)` — `metric_func`를 래핑하는 callable class
+  - `var`: edges 표현법 — str(`'target'`), tuple(`(None, 'target')`), list
+  - `thresholds`: None=argmax, float=binary threshold, list=multiclass per-class threshold
+  - `on_attach`에서 experimenter로부터 label classes 추출 (정렬 순서 = predict_proba 열 순서)
+  - binary: 2D proba `(n, 2)` 자동 처리 (col 1 추출), 1D sigmoid도 지원
+  - multiclass per-class threshold: threshold 초과 클래스 중 최대 확률 선택, 없으면 argmax fallback
+
 - **StackingCollector** (`_stacking.py`): 스태킹 데이터 수집
-  - `__init__(name, connector, output_var, experimenter, method='mean')`
-  - 생성 시 `experimenter`에서 `_index`, `_target`(ndarray), `_target_columns` 구축
+  - `__init__(name, connector, output_var, method='mean')` — experimenter 불필요
+  - `_on_attach`에서 experimenter로부터 `_index`, `_target`(ndarray), `_target_columns`, `_data_cls` 구축
   - `output_var`, `method`(mean/mode/simple)
   - `_aggregate()`: `DataWrapper` 대신 `_data_cls`(입력 데이터 타입)의 static 메서드 사용
-  - path 있으면 파일 저장, 없으면 `_mem_data`에 메모리 저장
-  - 쿼리: `get_dataset(nodes=None, include_target=True)` — experimenter 불필요
+  - 쿼리: `get_dataset(nodes=None, include_target=True)`
 
 - **ModelAttrCollector** (`_model_attr.py`): 모델 속성 수집 (feature_importances 등)
   - `result_key`, `adapter`(default=None, `get_adapter(connector.processor)`로 자동 설정), `params`

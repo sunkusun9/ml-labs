@@ -16,6 +16,8 @@
         - get_metrics
         - get_metrics_agg
 
+::: mllabs.collector.ProbToLabel
+
 ::: mllabs.collector.StackingCollector
     options:
       members:

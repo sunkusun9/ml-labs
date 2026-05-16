@@ -48,6 +48,20 @@ predictions = inferencer.process(test_df, agg='mean')
 
 Input can be any pandas/polars/numpy object that the pipeline was trained on.
 
+### Selecting Head Nodes
+
+By default `process()` runs all selected Head nodes and concatenates their outputs column-wise. Pass `nodes` to restrict to a subset:
+
+```python
+# Single head
+predictions = inferencer.process(test_df, nodes='lgbm_v1')
+
+# Subset of heads
+predictions = inferencer.process(test_df, nodes=['lgbm_v1', 'lgbm_v2'])
+```
+
+`nodes` must be a name or list of names from `inferencer.selected_heads`. An unknown name raises `ValueError`.
+
 ## Aggregation Strategies
 
 | `agg` | Behaviour | Use when |

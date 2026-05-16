@@ -180,6 +180,35 @@ mean, std = mc.get_metrics_agg(
 )
 ```
 
+#### ProbToLabel
+
+When a node outputs class probabilities (`predict_proba`), use `ProbToLabel` to convert to labels before computing label-based metrics. Probability columns are assumed to be in sorted label order (sklearn convention).
+
+```python
+from mllabs import MetricCollector, ProbToLabel
+from sklearn.metrics import accuracy_score, f1_score
+
+# Binary — default threshold 0.5
+mc = MetricCollector('acc', Connector(),
+    metric_func=ProbToLabel(accuracy_score, var='target'))
+
+# Binary — custom threshold
+mc = MetricCollector('acc', Connector(),
+    metric_func=ProbToLabel(accuracy_score, var='target', thresholds=0.3))
+
+# Multiclass — argmax (default)
+mc = MetricCollector('f1', Connector(),
+    metric_func=ProbToLabel(f1_score, var='target'))
+
+# Multiclass — per-class thresholds; falls back to argmax when no class exceeds its threshold
+mc = MetricCollector('f1', Connector(),
+    metric_func=ProbToLabel(f1_score, var='target', thresholds=[0.4, 0.5, 0.3]))
+
+exp.add_collector(mc)
+```
+
+`var` accepts the same variable spec as edges: a string shorthand (`'target'`), a `(node_name, var_spec)` tuple, or a list of such tuples. The label classes are fetched from the experimenter automatically at `add_collector` time.
+
 ---
 
 ### StackingCollector
@@ -193,7 +222,6 @@ sc = StackingCollector(
     name='stacking',
     connector=Connector(edges={'y': [(None, 'target')]}),
     output_var=None,          # columns to collect from output
-    experimenter=exp,         # used to build index and target
     method='mean',            # how to aggregate inner folds: 'mean', 'mode', 'simple'
 )
 exp.add_collector(sc)
@@ -332,14 +360,13 @@ pc = ProcessCollector(
     name='test_preds',
     connector=Connector(role='head'),  # head nodes only
     ext_data=test_df,                  # external dataset to predict on
-    experimenter=exp,                  # used to run upstream stage transforms
     output_var=None,                   # column selector for processor output
     method='mean',                     # inner-fold aggregation: 'mean', 'mode', 'simple'
 )
 exp.add_collector(pc)
 ```
 
-`ext_data` and `experimenter` are not persisted — pass them again if you reload the collector after saving.
+`ext_data` is not persisted — pass it again on `add_collector` if you reload the experimenter from disk.
 
 **Querying results:**
 
