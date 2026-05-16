@@ -119,6 +119,8 @@ class ProcessCollector(Collector):
             result, cols = self._load_node(node, agg)
             arrays.append(result.to_array())
             columns.extend(cols if cols is not None else [])
+        if not arrays:
+            return None
         all_data = np.concatenate(arrays, axis=1)
         return self._data_cls.from_output(all_data, columns).to_native()
 

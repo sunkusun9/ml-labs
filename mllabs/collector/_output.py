@@ -42,7 +42,6 @@ class OutputCollector(Collector):
     def push(self, node, outer_idx, inner_idx, result):
         node_dir = self.path / node
         node_dir.mkdir(parents=True, exist_ok=True)
-        print("result", result)
         with open(node_dir / f'{outer_idx}_{inner_idx}.pkl', 'wb') as f:
             pickle.dump(result, f)
 
@@ -75,13 +74,16 @@ class OutputCollector(Collector):
         return [n for n in available if re.search(nodes, n)]
 
     def get_output(self, node, outer_idx, inner_idx):
-        with open(self.path / node / f'{outer_idx}_{inner_idx}.pkl', 'rb') as f:
+        p = self.path / node / f'{outer_idx}_{inner_idx}.pkl'
+        if not p.exists():
+            return None
+        with open(p, 'rb') as f:
             return pickle.load(f)
 
     def get_outputs(self, node):
         p = self.path / node
         if not p.is_dir():
-            raise FileNotFoundError(f"No outputs found for node '{node}'")
+            return {}
         result = {}
         for f in p.glob('*.pkl'):
             outer_idx, inner_idx = map(int, f.stem.split('_'))

@@ -36,7 +36,17 @@ class Inferencer:
             flow.add_node(name, self.node_objs[name][split_idx], node_attrs['edges'])
         return flow
 
-    def process(self, data, agg='mean'):
+    def _resolve_heads(self, nodes):
+        if nodes is None:
+            return self.selected_heads
+        if isinstance(nodes, str):
+            nodes = [nodes]
+        unknown = [n for n in nodes if n not in self.selected_heads]
+        if unknown:
+            raise ValueError(f"Unknown head node(s): {unknown}")
+        return [n for n in self.selected_heads if n in set(nodes)]
+
+    def process(self, data, agg='mean', nodes=None):
         """Run inference on new data and aggregate across splits.
 
         Args:
@@ -45,17 +55,20 @@ class Inferencer:
                 ``'mean'`` (default), ``'mode'``, a callable receiving a list of
                 per-split DataFrames, or ``None`` (returns list).
                 Ignored when ``n_splits == 1``.
+            nodes (str | list[str] | None): Head node(s) to include.
+                ``None`` (default) uses all selected heads.
 
         Returns:
             DataFrame | list: Aggregated predictions, or a list of per-split
             predictions when ``agg=None``.
         """
+        target_heads = self._resolve_heads(nodes)
         data = wrap(data)
         results = []
         for split_idx in range(self.n_splits):
             flow = self._make_flow(split_idx)
             head_outputs = []
-            for name in self.selected_heads:
+            for name in target_heads:
                 output = flow._resolve(data, name)
                 if output is None:
                     continue

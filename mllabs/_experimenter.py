@@ -16,7 +16,7 @@ from sklearn.model_selection import ShuffleSplit
 from ._data_wrapper import wrap, unwrap, DataWrapperProvider
 from ._flow import TrainDataFlow
 from ._store import NodeStore
-from ._describer import desc_spec, desc_status, desc_obj_vars
+from ._describer import desc_spec, desc_status
 from ._logger import DefaultLogger
 
 from ._pipeline import Pipeline
@@ -275,6 +275,7 @@ class Experimenter():
 
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
+        collector.on_attach(self)
         collector._setup(
             len(self.outer_folds), len(self.outer_folds[0].train_data_flows)
         )
@@ -283,6 +284,29 @@ class Experimenter():
         self.collect(collector)
         self._save()
         return collector
+
+    def get_collect_status(self, collector, nodes=None):
+        if isinstance(collector, str):
+            collector = self.collectors[collector]
+        all_node_names = self.pipeline.get_node_names(nodes)
+        head_nodes = [
+            n for n in all_node_names
+            if n is not None and self.pipeline.get_node_attrs(n).get('role') == 'head'
+            and collector.connector.match(self.pipeline.get_node_attrs(n))
+        ]
+        result = {}
+        for node in head_nodes:
+            if collector.has_node(node):
+                result[node] = 'collected'
+            else:
+                node_status = self.get_status(node)
+                if node_status == 'finalized':
+                    result[node] = 'finalized'
+                elif node_status == 'error':
+                    result[node] = 'error'
+                else:
+                    result[node] = 'not_collected'
+        return result
 
     def get_trainer(self, name):
         return self.trainers.get(name)
@@ -456,11 +480,23 @@ class Experimenter():
             ``'built'``, ``'finalized'``, ``'error'``, ``None`` (init),
             or ``'inconsistent'``.
         """
-        statuses = {
-            artifact_store.status(node_name)
-            for outer_fold in self.outer_folds
-            for artifact_store in outer_fold.artifact_stores
-        }
+        
+        node = self.pipeline.get_node(node_name)
+        if node is None:
+            return
+        grp = self.pipeline.get_grp(node.grp)
+        if grp.role == 'stage':
+            statuses = {
+                store.status(node_name)
+                for outer_fold in self.outer_folds
+                for store in outer_fold.train_data_flows
+            }
+        else:
+            statuses = {
+                store.status(node_name)
+                for outer_fold in self.outer_folds
+                for store in outer_fold.artifact_stores
+            }
         return statuses.pop() if len(statuses) == 1 else 'inconsistent'
 
     def finalize(self, nodes):
@@ -483,7 +519,7 @@ class Experimenter():
                     self.logger.info(f"Finalize '{i}'")
                     for outer_fold in self.outer_folds:
                         for artifact_store in outer_fold.artifact_stores:
-                            artifact_store.finalize(i)
+                            artifact_store.finalize(i)  
 
     def reinitialize(self, nodes):
         self._check_open()
@@ -492,11 +528,16 @@ class Experimenter():
             if i is None:
                 continue
             node = self.pipeline.get_node(i)
+            if node is None:
+                return
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'stage':
-                if i in self.node_objs and self.node_objs[i].status == 'finalized':
-                    self.logger.info(f"reinitialize '{i}'")
-                    del self.node_objs[i]
+                reinitialized = False
+                for outer_fold in self.outer_folds:
+                    for data_flow in outer_fold.train_data_flows:
+                        if data_flow.status(i) == 'finalized':
+                            data_flow.reset_node(i)
+                            reinitialized = True
             else:
                 reinitialized = False
                 for outer_fold in self.outer_folds:
@@ -504,8 +545,8 @@ class Experimenter():
                         if artifact_store.status(i) == 'finalized':
                             artifact_store.reset_node(i)
                             reinitialized = True
-                if reinitialized:
-                    self.logger.info(f"reinitialize '{i}'")
+            if reinitialized:
+                self.logger.info(f"reinitialize '{i}'")
 
     def close_exp(self):
         """Finalize all built nodes and mark the experiment as closed.
@@ -775,6 +816,7 @@ class Experimenter():
         if not target_nodes:
             return collector
 
+        collector.on_attach(self)
         collector._setup(len(self.outer_folds), len(self.outer_folds[0].train_data_flows))
         monitor = ProgressMonitor()
         n_total = self.get_n_splits() * len(target_nodes)
@@ -981,7 +1023,7 @@ class Experimenter():
 
         exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.outer_folds)} fold(s)")
         return exp
-    
+
     def export_pipeline(self):
         return self.pipeline.copy()
 
@@ -995,10 +1037,6 @@ class Experimenter():
 
     def desc_spec(self):
         return desc_spec(self)
-
-    def desc_obj_vars(self, node_name, idx):
-        obj_vars = self.get_obj_vars(node_name, idx)
-        return desc_obj_vars(self, obj_vars[0])
 
     def desc_pipeline(self, max_depth=None, direction='TD'):
         return self.pipeline.desc_pipeline(max_depth, direction)

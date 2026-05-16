@@ -13,6 +13,16 @@ class Collector:
         self._n_outer = None
         self._n_inner = None
         self._buf = {}  # {node: {outer_idx: {inner_idx: result}}}
+        self._experimenter = None
+
+    def on_attach(self, experimenter):
+        if experimenter is self._experimenter:
+            return
+        self._on_attach(experimenter)
+        self._experimenter = experimenter
+
+    def _on_attach(self, experimenter):
+        pass
 
     def _setup(self, n_outer, n_inner):
         self._n_outer = n_outer
@@ -42,17 +52,18 @@ class Collector:
         self._buf.pop(node, None)
 
     def __getstate__(self):
-        exclude = self._SAVE_EXCLUDE.keys()
+        exclude = set(self._SAVE_EXCLUDE.keys()) | {'_experimenter'}
         return {k: v for k, v in self.__dict__.items() if k not in exclude}
 
     def __setstate__(self, state):
         self.__dict__.update(state)
         for attr, factory in self._SAVE_EXCLUDE.items():
             setattr(self, attr, factory())
+        self._experimenter = None
 
     def save(self):
         self.path.mkdir(parents=True, exist_ok=True)
-        exclude = self._SAVE_EXCLUDE.keys()
+        exclude = set(self._SAVE_EXCLUDE.keys()) | {'_experimenter'}
         state = {k: v for k, v in self.__dict__.items() if k not in exclude}
         with open(self.path / '__config.pkl', 'wb') as f:
             pickle.dump(state, f)
