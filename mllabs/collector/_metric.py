@@ -1,10 +1,61 @@
 import pickle
 import re
 
+import numpy as np
 import pandas as pd
 
 from ._base import Collector
 from .._node_processor import resolve_columns
+
+
+class ProbToLabel:
+    def __init__(self, metric_func, var, thresholds=None):
+        self.metric_func = metric_func
+        self.var = var
+        self.thresholds = thresholds
+        self._classes = None
+
+    def _normalize_var(self):
+        v = self.var
+        if isinstance(v, str):
+            return [(None, v)]
+        if isinstance(v, tuple) and len(v) == 2 and not isinstance(v[0], tuple):
+            return [v]
+        return v  # already list
+
+    def on_attach(self, experimenter):
+        edges = {'_y': self._normalize_var()}
+        data_dict = experimenter.get_test_data(edges, o_idx=0, i_idx=0)
+        y_arr = data_dict['_y'].to_array().ravel()
+        # np.unique returns sorted order — matches predict_proba column order
+        self._classes = np.unique(y_arr)
+
+    def _convert(self, y_prob):
+        y_prob = np.asarray(y_prob)
+        n_classes = len(self._classes)
+
+        if n_classes == 2:
+            if y_prob.ndim == 2:
+                y_prob = y_prob[:, 1]
+            threshold = self.thresholds if isinstance(self.thresholds, (int, float)) else 0.5
+            indices = (y_prob >= threshold).astype(int)
+        else:
+            if self.thresholds is not None:
+                thresholds = np.asarray(self.thresholds)  # shape (n_classes,)
+                above = y_prob >= thresholds
+                masked = np.where(above, y_prob, -np.inf)
+                indices = np.where(
+                    above.any(axis=1),
+                    np.argmax(masked, axis=1),
+                    np.argmax(y_prob, axis=1),
+                )
+            else:
+                indices = np.argmax(y_prob, axis=1)
+
+        return self._classes[indices]
+
+    def __call__(self, y_true, y_prob):
+        return self.metric_func(y_true, self._convert(y_prob))
 
 
 class MetricCollector(Collector):
@@ -16,6 +67,10 @@ class MetricCollector(Collector):
         self.metric_func = metric_func
         self.include_train = include_train
         self._cache = {}  # {node: {(outer_idx, inner_idx): result}}
+
+    def _on_attach(self, experimenter):
+        if hasattr(self.metric_func, 'on_attach'):
+            self.metric_func.on_attach(experimenter)
 
     def collect(self, context):
         cols = resolve_columns(context['output_test'], self.output_var)

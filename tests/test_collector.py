@@ -267,15 +267,14 @@ class TestMetricCollector:
 
 class TestStackingCollector:
     def test_collect_basic(self, built_exp):
-        sc = StackingCollector('stk', Connector(), output_var=None,
-                               experimenter=built_exp)
+        sc = StackingCollector('stk', Connector(), output_var=None)
         built_exp.add_collector(sc)
         assert sc.has_node('dt')
 
     def test_get_dataset(self, built_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, experimenter=built_exp)
+        ), output_var=None)
         built_exp.add_collector(sc)
         ds = sc.get_dataset()
         assert isinstance(ds, pd.DataFrame)
@@ -283,8 +282,7 @@ class TestStackingCollector:
         assert 'target' in ds.columns
 
     def test_get_dataset_no_target(self, built_exp):
-        sc = StackingCollector('stk', Connector(), output_var=None,
-                               experimenter=built_exp)
+        sc = StackingCollector('stk', Connector(), output_var=None)
         built_exp.add_collector(sc)
         ds = sc.get_dataset(include_target=False)
         assert isinstance(ds, pd.DataFrame)
@@ -293,7 +291,7 @@ class TestStackingCollector:
     def test_get_dataset_multi_nodes(self, multi_head_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, experimenter=multi_head_exp)
+        ), output_var=None)
         multi_head_exp.add_collector(sc)
         ds = sc.get_dataset()
         assert ds.shape[1] > 2
@@ -301,7 +299,7 @@ class TestStackingCollector:
     def test_get_dataset_node_filter(self, multi_head_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, experimenter=multi_head_exp)
+        ), output_var=None)
         multi_head_exp.add_collector(sc)
         ds = sc.get_dataset(nodes=['dt1'])
         assert isinstance(ds, pd.DataFrame)
@@ -309,13 +307,12 @@ class TestStackingCollector:
     def test_method_mean(self, built_exp_inner):
         sc = StackingCollector('stk_mean', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, experimenter=built_exp_inner, method='mean')
+        ), output_var=None, method='mean')
         built_exp_inner.add_collector(sc)
         assert sc.has_node('dt')
 
     def test_reset_nodes(self, built_exp):
-        sc = StackingCollector('stk', Connector(), output_var=None,
-                               experimenter=built_exp)
+        sc = StackingCollector('stk', Connector(), output_var=None)
         built_exp.add_collector(sc)
         assert sc.has_node('dt')
         sc.reset_nodes(['dt'])
@@ -324,7 +321,7 @@ class TestStackingCollector:
     def test_save_load(self, built_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, experimenter=built_exp)
+        ), output_var=None)
         built_exp.add_collector(sc)
         loaded = StackingCollector.load(sc.path)
         assert loaded.has_node('dt')
@@ -335,7 +332,7 @@ class TestStackingCollector:
     def test_index_preserved(self, built_exp):
         sc = StackingCollector('stk', Connector(
             edges={'y': [(None, 'target')]}
-        ), output_var=None, experimenter=built_exp)
+        ), output_var=None)
         built_exp.add_collector(sc)
         ds = sc.get_dataset()
         all_valid_idx = np.concatenate([

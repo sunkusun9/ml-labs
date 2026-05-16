@@ -275,6 +275,7 @@ class Experimenter():
 
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
+        collector.on_attach(self)
         collector._setup(
             len(self.outer_folds), len(self.outer_folds[0].train_data_flows)
         )
@@ -815,6 +816,7 @@ class Experimenter():
         if not target_nodes:
             return collector
 
+        collector.on_attach(self)
         collector._setup(len(self.outer_folds), len(self.outer_folds[0].train_data_flows))
         monitor = ProgressMonitor()
         n_total = self.get_n_splits() * len(target_nodes)

@@ -12,15 +12,16 @@ from .._data_wrapper import DataWrapper
 class StackingCollector(Collector):
     _SAVE_EXCLUDE = {'_buf': dict, '_outer_buf': dict}
 
-    def __init__(self, name, connector, output_var, experimenter, method='mean'):
+    def __init__(self, name, connector, output_var, method='mean'):
         super().__init__(name, connector)
         self.output_var = output_var
         self.method = method
+        self._outer_buf = {}  # {node: {outer_idx: aggregated_DataWrapper}}
 
+    def _on_attach(self, experimenter):
         self._data_cls = type(experimenter.data)
         self._index = self._build_index(experimenter)
         self._target, self._target_columns = self._build_target(experimenter)
-        self._outer_buf = {}  # {node: {outer_idx: aggregated_DataWrapper}}
 
     def _build_index(self, experimenter):
         all_valid_idx = np.concatenate([

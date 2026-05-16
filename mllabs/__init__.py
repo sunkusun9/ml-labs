@@ -5,7 +5,7 @@ from ._experimenter import Experimenter
 from ._inferencer import Inferencer
 from ._connector import Connector
 from ._pipeline import ColSelector
-from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
+from .collector import Collector, MetricCollector, ProbToLabel, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
 from .filter import DataFilter, RandomFilter, IndexFilter
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     'Connector',
     'Collector',
     'MetricCollector',
+    'ProbToLabel',
     'StackingCollector',
     'ModelAttrCollector',
     'SHAPCollector',
