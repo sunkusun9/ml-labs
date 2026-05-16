@@ -10,6 +10,8 @@
 
 ::: mllabs.processor.TypeConverter
 
+::: mllabs.processor.CrossFitTransformer
+
 ::: mllabs.processor.PolarsLoader
 
 ::: mllabs.processor.ExprProcessor

@@ -90,6 +90,49 @@ FrequencyEncoder(normalize=True)   # True → proportion, False → count
 
 Output column names are `{col}_freq`. Unseen values at transform time receive `0`.
 
+### CrossFitTransformer
+
+Generates out-of-fold (OOF) predictions from a classifier or regressor during `fit_transform`, and uses a full-data fitted model during `transform`. Useful for creating meta-features for stacking within a Stage node.
+
+```python
+from mllabs.processor import CrossFitTransformer
+from lightgbm import LGBMClassifier
+
+CrossFitTransformer(
+    estimator=LGBMClassifier(),
+    cv=5,                    # number of folds (int) or a CV splitter instance
+    method='predict_proba',  # 'predict_proba', 'predict', or any estimator method name
+    stratified=True,         # use StratifiedKFold when cv is int (ignored for regression)
+)
+```
+
+**Behaviour:**
+
+| Call | What happens |
+|------|-------------|
+| `fit_transform(X, y)` | Fits full estimator on all data; generates OOF predictions via CV splits; returns OOF array |
+| `transform(X)` | Applies the full estimator fitted during `fit_transform` |
+| `fit(X, y)` | Fits full estimator only (no OOF — use `fit_transform` in training pipelines) |
+
+**Output column names** are derived from the estimator class name and output type:
+
+```python
+# predict_proba with classes [0, 1, 2]  →  ['lgbmclassifier_0', 'lgbmclassifier_1', 'lgbmclassifier_2']
+# predict                                →  ['lgbmclassifier_pred']
+```
+
+Column names are accessible via `get_feature_names_out()`.
+
+**Usage in a Stage node:**
+
+```python
+exp.pipeline.set_node('meta_lgbm', role='stage', processor=CrossFitTransformer(
+    LGBMClassifier(n_estimators=100), cv=5, method='predict_proba'
+), edges={'X': [...], 'y': [(None, 'target')]})
+```
+
+The Stage node will produce OOF features during `exp()` and full-model predictions when used in `Trainer` or `Inferencer`.
+
 ---
 
 ## Polars-Optional Processors

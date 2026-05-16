@@ -279,9 +279,15 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras, `_nn.py` (NNAdapter)
-- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder, ColSelector, TypeConverter
+- **processor/**: CatConverter, CatPairCombiner, CatOOVFilter, FrequencyEncoder, ColSelector, TypeConverter, CrossFitTransformer
   - `CatPairCombiner`: pair(2) → N-way 그룹 조합으로 확장. `pairs` 요소를 N개 컬럼 인덱스/이름 그룹으로 지정 가능
   - `TypeConverter`: 모든 컬럼을 지정 타입(`str`/`int`/`float`)으로 변환. pandas: `astype`, polars: cast, numpy: `astype`. `get_feature_names_out` 지원
+  - `CrossFitTransformer`: sklearn-compatible stacking meta-feature 생성기
+    - `__init__(estimator, cv=5, method='predict_proba', stratified=True)`
+    - `fit_transform`: CV로 OOF 예측 생성 + 전체 데이터로 full estimator fit
+    - `transform`: full estimator로 예측 (fit_transform 이후)
+    - 출력 컬럼명: `{estimator_class_lower}_{class}` (predict_proba) / `{estimator_class_lower}_pred` (predict)
+    - Stage 노드로 사용 시 Experimenter는 OOF, Trainer/Inferencer는 full model 경로로 동작
   - polars 설치 시: PolarsLoader, ExprProcessor, PandasConverter 추가
   - `_dproc.py`: `get_type_df` (수치형만 f32/i32/i16/i8 판정), `get_type_pl`, `get_type_pd`, `merge_type_df`
 
