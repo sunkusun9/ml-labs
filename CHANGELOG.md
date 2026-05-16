@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-05-16
+
+### Added
+
+- `CrossFitTransformer` (`mllabs/processor/_crossfit.py`): sklearn-compatible OOF meta-feature generator for stacking
+  - `fit_transform`: generates OOF predictions via CV splits; fits full estimator on all data
+  - `transform`: applies full estimator fitted during `fit_transform`
+  - Supports `predict_proba`, `predict`, and any estimator method; output column names derived from estimator class and classes
+- `ProbToLabel` (`mllabs/collector/_metric.py`): wraps a label-based metric function with `predict_proba` → label conversion
+  - `var` accepts edges-compatible variable spec (`str`, tuple, list) to fetch label classes from experimenter via `on_attach`
+  - `thresholds`: `None` = argmax, `float` = binary threshold, `list` = per-class multiclass thresholds with argmax fallback
+- `Inferencer.process(nodes=...)`: optional parameter to select a subset of head nodes; preserves ordering, raises `ValueError` on unknown names
+- `Experimenter.get_collect_status(collector, nodes=None)`: returns `{node: status}` for collector-matched head nodes; statuses: `'collected'`/`'not_collected'`/`'finalized'`/`'error'`
+- `sample_weight` edge key support: passed automatically to `fit()` via adapter pipeline; polars→pandas conversion applied in `LightGBMAdapter` and `CatBoostAdapter`; `NNClassifier`/`NNRegressor` propagate through `_make_tf_dataset`, `fit`, `_split_val`
+
+### Changed
+
+- `Collector` base class: `on_attach(experimenter)` / `_on_attach(experimenter)` lifecycle hooks added
+  - `Experimenter.add_collector` and `collect` both call `on_attach`; experimenter identity check skips redundant re-init on repeated calls
+  - `_experimenter` excluded from pickle (`save()` and `__getstate__`); reset to `None` on load
+- `StackingCollector`: `experimenter` removed from constructor; index/target/data_cls init moved to `_on_attach`
+
+### Fixed
+
+- `MetricCollector`, `ModelAttrCollector`, `SHAPCollector`, `OutputCollector`, `ProcessCollector`: return `None` instead of raising errors when node data is absent (e.g., finalized before collect ran)
+- `LMAdapter` multiclass coef concatenation: `intercept_` `expand_dims` axis corrected from 0 to 1 for multiclass `LogisticRegression`
+
 ## [0.7.0] - 2026-04-10
 
 ### Added
