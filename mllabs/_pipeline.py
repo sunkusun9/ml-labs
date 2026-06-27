@@ -714,7 +714,7 @@ class Pipeline:
             return []
 
         node = self.nodes[node_name]
-        if node.grp is None:
+        if node.grp is None or node.grp == '__datasource__':
             return []
 
         result = []

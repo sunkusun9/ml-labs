@@ -498,8 +498,8 @@ class TestCatOOVFilter:
         filt = CatOOVFilter()
         filt.fit(oov_polars_df)
         result = filt.transform(oov_polars_df)
-        assert result["cat1"].dtype == pl.Categorical
-        assert result["cat2"].dtype == pl.Categorical
+        assert result["cat1"].dtype == pl.Enum(filt.categories_["cat1"])
+        assert result["cat2"].dtype == pl.Enum(filt.categories_["cat2"])
 
     @requires_polars
     def test_polars_oov_filter(self, oov_polars_df):
