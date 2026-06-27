@@ -33,6 +33,7 @@ def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_li
             warn_msgs = [f"{w.category.__name__}: {w.message}" for w in caught]
             info = {
                 'build_id': str(uuid.uuid4()),
+                'node_serial': node_attrs.get('serial'),
                 'fit_time': time.time() - start_time,
                 'train_shape': None,
                 'edges': node_attrs.get('edges'),
@@ -52,6 +53,7 @@ def _process(node_attrs, train_data, valid_data, fit_process, monitor, gpu_id_li
     ref_data = train_data[_ref_key]
     info = {
         'build_id': str(uuid.uuid4()),
+        'node_serial': node_attrs.get('serial'),
         'fit_time': elapsed_time,
         'train_shape': ref_data.get_shape() if ref_data is not None else None,
         'edges': node_attrs.get('edges'),

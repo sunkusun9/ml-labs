@@ -300,7 +300,6 @@ class CatConverter(BaseEstimator, TransformerMixin):
 
 
 class CatOOVFilter(BaseEstimator, TransformerMixin):
-
     def __init__(
         self,
         columns=None,
@@ -422,6 +421,7 @@ class CatOOVFilter(BaseEstimator, TransformerMixin):
         exprs = []
         for col in self.columns_:
             allowed = set(self.categories_[col])
+            cats = self._get_dtype_categories(col)
             mv = self.missing_value
             tes = self.treat_empty_string_as_missing
 
@@ -438,7 +438,7 @@ class CatOOVFilter(BaseEstimator, TransformerMixin):
             exprs.append(
                 pl.col(col)
                 .map_elements(_map, return_dtype=pl.Utf8)
-                .cast(pl.Categorical)
+                .cast(pl.Enum(cats))
                 .alias(col)
             )
         return X.with_columns(exprs)
