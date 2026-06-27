@@ -31,14 +31,14 @@ def exp(tmp_path, sample_data):
         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
     )
-    e.set_grp('scale', role='stage', processor=StandardScaler,
+    e.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
               method='transform', edges={'X': [(None, ['f1', 'f2', 'f3'])]})
-    e.set_node('scaler', grp='scale')
-    e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    e.pipeline.set_node('scaler', grp='scale')
+    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.set_node('dt', grp='model')
+    e.pipeline.set_node('dt', grp='model')
     e.build()
     e.exp()
     return e
@@ -106,11 +106,11 @@ class TestProcess:
         assert len(results) == inf.n_splits
 
     def test_v_parameter(self, exp, sample_data):
-        exp.set_grp('model_proba', role='head', processor=DecisionTreeClassifier,
+        exp.pipeline.set_grp('model_proba', role='head', processor=DecisionTreeClassifier,
                     method='predict_proba',
                     edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
                     params={'max_depth': 3, 'random_state': 42})
-        exp.set_node('dt_proba', grp='model_proba')
+        exp.pipeline.set_node('dt_proba', grp='model_proba')
         exp.build()
         exp.exp()
         trainer = exp.add_trainer('t_proba')

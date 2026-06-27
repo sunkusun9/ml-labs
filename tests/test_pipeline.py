@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from mllabs._pipeline import Pipeline, PipelineGroup, PipelineNode
+from mllabs._pipeline import Pipeline, PipelineGroup, PipelineNode, DataSourceNode, VAR_TYPES
 
 
 class DummyStage:
@@ -35,8 +35,12 @@ class TestInit:
         assert None in p.nodes
         assert p.nodes[None].name == 'Data_Source'
 
-    def test_empty_grps(self, p):
-        assert p.grps == {}
+    def test_datasource_grp_exists(self, p):
+        assert '__datasource__' in p.grps
+        assert p.grps['__datasource__'].role == 'datasource'
+
+    def test_datasource_is_datasource_node(self, p):
+        assert isinstance(p.nodes[None], DataSourceNode)
 
 
 class TestSetGrp:
@@ -329,6 +333,23 @@ class TestNodeAttrs:
         a1 = p.nodes['n1'].get_attrs(p.grps)
         a2 = p.nodes['n1'].get_attrs(p.grps)
         assert a1 is a2
+
+    def test_attrs_includes_serial(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        attrs = p.get_node_attrs('n1')
+        assert 'serial' in attrs
+        assert attrs['serial'] == p.nodes['n1'].serial
+
+    def test_attrs_serial_updated_after_bump(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        old_serial = p.get_node_attrs('n1')['serial']
+        p._bump_serials(['n1'])
+        new_serial = p.get_node_attrs('n1')['serial']
+        assert new_serial != old_serial
 
 
 class TestNameValidation:
@@ -846,3 +867,201 @@ class TestAdapterAttrsCacheInvalidation:
         p.set_grp('gp', role='stage', adapter=self.DummyAdapter('b'), exist='replace')
         attrs = p.nodes['n1'].get_attrs(p.grps)
         assert attrs['adapter'].mode == 'b'
+
+
+class TestNodeSerial:
+    def _is_uuid(self, s):
+        import uuid
+        try:
+            uuid.UUID(s)
+            return True
+        except (ValueError, AttributeError):
+            return False
+
+    def test_node_has_serial_at_creation(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        assert self._is_uuid(p.nodes['n1'].serial)
+
+    def test_datasource_has_serial(self, p):
+        assert self._is_uuid(p.nodes[None].serial)
+
+    def test_different_nodes_have_different_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.set_node('n2', grp='g1')
+        assert p.nodes['n1'].serial != p.nodes['n2'].serial
+
+    def test_copy_preserves_serial(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        cp = p.copy()
+        assert cp.nodes['n1'].serial == serial_before
+
+    def test_set_node_no_change_preserves_serial(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        p.set_node('n1', grp='g1')  # exist='diff', no change
+        assert p.nodes['n1'].serial == serial_before
+
+    def test_set_node_update_changes_serial(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        p.set_node('n1', grp='g1', params={'with_std': False})
+        assert p.nodes['n1'].serial != serial_before
+
+    def test_set_node_update_bumps_descendant_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.set_grp('g2', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [('n1', None)]})
+        p.set_node('n2', grp='g2')
+        p.set_grp('g3', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [('n2', None)]})
+        p.set_node('n3', grp='g3')
+        serial_n2 = p.nodes['n2'].serial
+        serial_n3 = p.nodes['n3'].serial
+        p.set_node('n1', grp='g1', params={'with_std': False})
+        assert p.nodes['n2'].serial != serial_n2
+        assert p.nodes['n3'].serial != serial_n3
+
+    def test_set_node_skip_preserves_descendant_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.set_grp('g2', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [('n1', None)]})
+        p.set_node('n2', grp='g2')
+        serial_n1 = p.nodes['n1'].serial
+        serial_n2 = p.nodes['n2'].serial
+        p.set_node('n1', grp='g1', exist='skip')
+        assert p.nodes['n1'].serial == serial_n1
+        assert p.nodes['n2'].serial == serial_n2
+
+    def test_set_grp_no_change_preserves_node_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})  # exist='diff', no change
+        assert p.nodes['n1'].serial == serial_before
+
+    def test_set_grp_update_bumps_node_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        p.set_grp('g1', role='stage', processor=AnotherProcessor, method='transform',
+                  edges={'X': [(None, None)]}, exist='replace')
+        assert p.nodes['n1'].serial != serial_before
+
+    def test_set_grp_update_bumps_descendant_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.set_grp('g2', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [('n1', None)]})
+        p.set_node('n2', grp='g2')
+        serial_n2 = p.nodes['n2'].serial
+        p.set_grp('g1', role='stage', processor=AnotherProcessor, method='transform',
+                  edges={'X': [(None, None)]}, exist='replace')
+        assert p.nodes['n2'].serial != serial_n2
+
+
+SCHEMA_SIMPLE = {'f1': 'numerical', 'f2': 'nominal', 'target': 'binary'}
+
+
+class TestDataSourceNode:
+    def test_get_node_attrs_works(self, p):
+        attrs = p.get_node_attrs(None)
+        assert attrs['role'] == 'datasource'
+        assert attrs['name'] == 'Data_Source'
+        assert 'serial' in attrs
+        assert 'schema' in attrs
+        assert 'targets' in attrs
+
+    def test_datasource_property(self, p):
+        assert p.datasource is p.nodes[None]
+        assert isinstance(p.datasource, DataSourceNode)
+
+    def test_set_datasource_basic(self, p):
+        result = p.set_datasource(SCHEMA_SIMPLE, targets=['target'])
+        assert result == 'update'
+        assert p.datasource.schema == SCHEMA_SIMPLE
+        assert p.datasource.targets == ['target']
+
+    def test_set_datasource_skip_when_unchanged(self, p):
+        p.set_datasource(SCHEMA_SIMPLE, targets=['target'])
+        serial_before = p.datasource.serial
+        result = p.set_datasource(SCHEMA_SIMPLE, targets=['target'])
+        assert result == 'skip'
+        assert p.datasource.serial == serial_before
+
+    def test_set_datasource_bumps_serial_on_schema_change(self, p):
+        p.set_datasource(SCHEMA_SIMPLE)
+        serial_before = p.datasource.serial
+        p.set_datasource({**SCHEMA_SIMPLE, 'f3': 'ordinal'})
+        assert p.datasource.serial != serial_before
+
+    def test_set_datasource_bumps_serial_on_targets_change(self, p):
+        p.set_datasource(SCHEMA_SIMPLE, targets=[])
+        serial_before = p.datasource.serial
+        p.set_datasource(SCHEMA_SIMPLE, targets=['target'])
+        assert p.datasource.serial != serial_before
+
+    def test_set_datasource_bumps_downstream_node_serials(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        p.set_datasource(SCHEMA_SIMPLE)
+        assert p.nodes['n1'].serial != serial_before
+
+    def test_set_datasource_invalid_type(self, p):
+        with pytest.raises(ValueError, match='Invalid type'):
+            p.set_datasource({'col': 'unknown_type'})
+
+    def test_set_datasource_target_not_in_schema(self, p):
+        with pytest.raises(ValueError, match='not in schema'):
+            p.set_datasource(SCHEMA_SIMPLE, targets=['missing_col'])
+
+    def test_all_var_types_accepted(self, p):
+        schema = {t: t for t in VAR_TYPES}
+        result = p.set_datasource(schema)
+        assert result == 'update'
+
+    def test_attrs_serial_reflects_datasource_serial(self, p):
+        p.set_datasource(SCHEMA_SIMPLE)
+        attrs = p.get_node_attrs(None)
+        assert attrs['serial'] == p.datasource.serial
+
+    def test_attrs_cache_invalidated_after_set_datasource(self, p):
+        p.set_datasource(SCHEMA_SIMPLE)
+        old_attrs = p.get_node_attrs(None)
+        p.set_datasource({**SCHEMA_SIMPLE, 'f3': 'datetime'})
+        new_attrs = p.get_node_attrs(None)
+        assert new_attrs is not old_attrs
+        assert 'f3' in new_attrs['schema']
+
+    def test_copy_preserves_schema_and_targets(self, p):
+        p.set_datasource(SCHEMA_SIMPLE, targets=['target'])
+        cp = p.copy()
+        assert cp.datasource.schema == SCHEMA_SIMPLE
+        assert cp.datasource.targets == ['target']
+        assert cp.datasource.serial == p.datasource.serial
+
+    def test_copy_is_independent(self, p):
+        p.set_datasource(SCHEMA_SIMPLE)
+        cp = p.copy()
+        cp.set_datasource({**SCHEMA_SIMPLE, 'extra': 'text'})
+        assert 'extra' not in p.datasource.schema

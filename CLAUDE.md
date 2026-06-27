@@ -7,6 +7,8 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한다.
 커밋 메시지에 "Co-Authored-By" 넣지 마라. PR에 "Generated with Claude Code" 같은 광고성 메시지 넣지 마라.
 
+코드 검증은 `tests/`에서 적절한 `.py`를 찾아 테스트 케이스를 추가하여 진행한다. `python -c` 같은 임시 실행은 하지 않는다.
+
 ## CLI 버전
 - git 2.43.0
 - gh 2.45.0
@@ -21,24 +23,25 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## 아키텍처 개요
 - **Pipeline** (`_pipeline.py`): 노드 그래프 자료구조 (ML 관심사 분리)
 - **Experimenter** (`_experimenter.py`): 실험 실행/관리 (Pipeline 사용)
-- **ExpObj** (`_expobj.py`): 노드별 빌드/실험 객체 관리
 - **Trainer** (`_trainer.py`): 학습 실행/관리 (split 기반)
 - **Inferencer** (`_inferencer.py`): 학습된 파이프라인을 새 데이터에 적용
+- **NodeStore** (`_store.py`): 노드 아티팩트 읽기/쓰기 (obj.pkl / result.pkl / info.pkl)
+- **DataFlow / TrainDataFlow** (`_flow.py`): fold별 데이터 흐름 및 stage 빌드
+- **_executor.py**: `_build_flow_single/multi`, `_experiment_single/multi` — 실제 빌드/실험 실행
 
 ## Node/Experiment 상태 모델
 
 ### Node 4-State
 `init → built → finalized` / `init → error → (reset) → init`
 
-| 상태 | Disk | Memory | 설명 |
-|------|------|--------|------|
-| **init** | - | - | Pipeline에 정의만 된 상태 |
-| **built** | O | Stage: O / Head: X | 빌드 완료, 결과 추출 가능 |
-| **finalized** | X | X | 결과 추출 완료, 리소스 해제 (Head 전용) |
-| **error** | - | 에러 정보 | 빌드/실험 중 에러 발생, 내역 보존 |
+| 상태 | Disk | 설명 |
+|------|------|------|
+| **init** | - | Pipeline에 정의만 된 상태 |
+| **built** | O | 빌드 완료, 결과 추출 가능 |
+| **finalized** | info only | 결과 추출 완료, obj/result 삭제 (Head 전용) |
+| **error** | info only | 빌드/실험 중 에러 발생, 내역 보존 |
 
 - Stage는 finalize 불가 (하위 노드에 데이터 지속 공급)
-- 상위 Stage가 error면 하위 노드도 자연스럽게 error (별도 전파 로직 불필요)
 
 ### Experiment 2-State
 `open → closed`
@@ -48,22 +51,31 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## 핵심 클래스
 
 ### Node 역할
-- **DataSource** (None): 원본 데이터 제공, Pipeline에 명시적 노드 없음
+- **DataSource** (`DataSourceNode`, key=`None`): 원본 데이터 스키마 및 target 정의
 - **Stage**: 전처리/변환 (TransformProcessor) — 하위 노드에 데이터 공급
 - **Head**: 모델링/예측 (PredictProcessor) — 최종 결과 생산
 
 ### Pipeline 계층 (`_pipeline.py`)
+- `VAR_TYPES = frozenset({'numerical', 'ordinal', 'nominal', 'text', 'binary', 'datetime'})`
 - **`_params_equal(a, b)`**: params dict 안전 비교 헬퍼
   - dict → key별 재귀 비교
   - `__dict__` 있는 객체 → `__dict__` 재귀 비교 (lgb_early_stopping 등 콜백 처리)
   - `__dict__` 없는 객체(primitive, C-ext) → `==` fallback (try/except)
   - 같은 타입이어야 equal 가능, 다른 타입 → False
 - **Pipeline**: 노드 그래프 관리
-  - `nodes`: `{name: PipelineNode}` (None=DataSource), `grps`: `{name: PipelineGroup}`
+  - `nodes`: `{name: PipelineNode}` (`None` → `DataSourceNode`), `grps`: `{name: PipelineGroup}` (`'__datasource__'` 항상 존재)
+  - `datasource`: `nodes[None]` 반환 property
+  - `set_datasource(schema, targets=None)`: DataSource 스키마/target 설정, 변경 시 downstream serial 자동 bump
   - `set_grp(exist='diff'|'skip'|'error'|'replace')`, `set_node(exist=...)`, `rename_grp`, `remove_grp`, `remove_node`
   - `get_node_names(query)`, `get_node_attrs(name)`, `_get_affected_nodes(nodes)`
+  - `_bump_serials(node_names)`: 지정 노드들의 serial을 새 UUID로 교체
   - `copy()`, `copy_stage()`, `copy_nodes(node_names)` — 선택적 복사
   - `compare_nodes(nodes)` → `{processor_name: DataFrame}` (params 차이 + edges['X'] stage별 변수 차이)
+
+- **DataSourceNode** (`PipelineNode` 서브클래스):
+  - `schema`: `{col: var_type}` — var_type은 VAR_TYPES 중 하나
+  - `targets`: `list[str]` — 타겟 컬럼 목록 (타입과 별도)
+  - `get_attrs(grps)`: role='datasource', serial, schema, targets 반환 (processor/edges/method/params 없음)
 
 - **PipelineGroup**: 노드 그룹 (stage/head 역할)
   - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`, `desc`
@@ -72,20 +84,21 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `diff(processor, edges, method, parent, adapter, params)`: 달라진 필드명 리스트 반환 (`desc` 제외 → desc-only 변경은 rebuild 미유발)
 
 - **PipelineNode**: 개별 노드
-  - 속성: `name`, `grp`, `processor`, `edges`, `method`, `adapter`, `params`, `desc`
+  - 속성: `name`, `grp`, `processor`, `edges`, `method`, `adapter`, `params`, `desc`, **`serial`** (UUID str)
+  - `serial`: 노드 정의가 변경될 때마다 `_bump_serials`에 의해 새 UUID로 교체 → 아티팩트 무결성 추적
   - `output_edges`: 이 노드를 입력으로 사용하는 노드명 리스트
-  - `get_attrs(grps)`: 그룹 속성과 노드 속성 병합
+  - `get_attrs(grps)`: 그룹 속성과 노드 속성 병합 (`serial` 포함)
   - `diff(grp, processor, edges, method, adapter, params)`: 달라진 필드명 리스트 반환 (`desc` 제외)
   - `set_grp`/`set_node`: `desc` 파라미터 수락; exist='diff' skip 경로에서도 `desc`는 업데이트됨
 
 ### Experimenter (`_experimenter.py`)
 - 생성자: `(data, path, ..., cache_maxsize=4GB, logger, aug_data=None)`
-- `pipeline`: Pipeline 인스턴스
-- `node_objs`: `{node_name: StageObj}` — stage 노드만; head 노드 상태는 `get_head_status`로 on-demand 조회
+- `pipeline`: Pipeline 인스턴스 — **Pipeline 편집은 반드시 `exp.pipeline.*` 을 통해 수행**
 - `cache`: DataCache (LRU, 용량 기반)
 - 실행: `build(nodes, rebuild=False)` (stage), `exp(nodes, finalize=False, include_train=True)` (head)
+  - build/exp 시작 시 serial mismatch 노드 자동 감지 → `reset_nodes()` 후 재빌드
 - `close_exp()`: open→closed 전환, Stage 객체 일괄 정리 (Collector 데이터 유지)
-- 상태관리: `reset_nodes(nodes)` - node_objs, cache, collectors 초기화
+- 상태관리: `reset_nodes(nodes)` - cache, collectors 초기화
 - 에러 조회: `show_error_nodes(nodes=None, traceback=False)` - error 상태 노드 출력
 - `add_collector(collector)`: Collector 등록 (path 설정, save)
 - `get_collector(name)`: Collector 반환 (없으면 None)
@@ -106,36 +119,34 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `get_data(node, typ, idx)`, `put_data(node, typ, idx, data)`
 - `clear_nodes(nodes)`: 특정 노드들의 캐시 삭제
 
-### ExpObj (`_expobj.py`)
-- **StageObj**: stage 역할 노드의 빌드 객체
-  - `status`: None(init) / 'built' / 'finalized' / 'error'
-  - `error`: 에러 정보 dict `{type, message, traceback, fold}` (error 상태 시)
-  - `load()`, `start_build()`, `build_idx()`, `end_build()`, `get_objs(idx)`, `finalize()`
+### NodeStore (`_store.py`)
+- fold 경로 아래 노드별 아티팩트 관리: `{path}/{node_name}/`
+  - `obj.pkl` — processor 객체
+  - `result.pkl` — fit_transform/fit_predict 출력
+  - `info.pkl` — `{status, build_id, node_serial, fit_time, edges, train_shape, ...}`
+- `status(name)`: `None`(init) / `'built'` / `'finalized'` / `'error'`
+- `get_info(name)`: info dict (lazy cache), `node_serial` 키로 serial 추적
+- `finalize(name)`: obj/result 삭제, info status → 'finalized'
+- `reset_node(name)`: 디렉토리 전체 삭제, cache 무효화
 
-- **Head 노드 함수 기반 관리** (HeadObj 없음):
-  - `get_head_status(path, name)` → `None`(init) / `'built'` / `'finalized'` / `'error'` — 디스크 on-demand 조회
-    - dir 없음 또는 빈 dir → `None`, `obj0_0.pkl` 존재 → `'built'`, `finalized.pkl` 존재 → `'finalized'`, `error.txt` 존재 → `'error'`
-  - `get_head_error(path, name)` → error dict 또는 None
-  - `set_head_error(path, name, error_info)` → `error.txt` 기록
-  - `finalize_head(path, name)` → obj pkl에서 spec 추출 → `finalized.pkl` 저장 → obj pkl 삭제
-  - `get_head_objs(path, name, idx)` → generator, `(obj, train_, spec)` yield
-  - `exp_node(node_attrs, data_dict_it, idx, logger, collectors, finalize, include_train, include_input)`:
-    - 이미 빌드된 경우(first_file 존재): 디스크에서 로드 후 collector dispatch
-    - 신규 빌드: `_build_iter_output` 호출, warning 캐치 + 에러 시 `set_head_error` 기록
-    - 반환값: `True`(성공) / `False`(에러)
-  - `_safe_collector_call(collector, node, method, logger, *args)`: `_collect`/`_end_idx`용 safe wrapper
-  - `_start`/`_end`는 Experimenter에서 직접 호출 (safe wrapper 없음)
-
-- **에러 처리**: build/exp 중 노드별 try/except, error 시 나머지 노드 계속 진행
+### DataFlow / TrainDataFlow (`_flow.py`)
+- **DataFlow** (NodeStore 상속): 디스크에서 stage processor 로드, 소스 데이터를 stage 그래프로 변환
+  - `node_objs`: `{name: (obj, result, info)}`, `_node_edges`: `{name: edges}`
+  - `load()`: 초기화 시 디스크에서 built 노드 자동 로드
+  - `get_data(source_data, edges)` → `{key: data}`
+- **TrainDataFlow** (DataFlow 상속): stage 빌드 기능 추가
+  - `data_source`: DataWrapperProvider (train/valid 제공)
+  - `set_objs(name, obj, result, info)`: 빌드 완료 후 메모리에 등록
+  - `get_train(edges)`, `get_valid(edges)`: train/valid 데이터 반환
+  - `get_missing_stages(pipeline)`: 미빌드 stage 목록
 
 ### Trainer (`_trainer.py`)
 - 생성자: `(name, pipeline, data, path, splitter, splitter_params, cache, logger)`
-- `split_indices`: 생성자에서 `_make_splits()` 호출하여 생성. `splitter=None`이면 `None` (전체 데이터, split 없음)
+- `train_folds`: `[TrainFold]` — split별 `(TrainDataFlow, NodeStore)` 쌍
 - `selected_stages`, `selected_heads`: `select_head(nodes)`로 설정
-- `node_objs`: `{node_name: TrainStageObj|TrainHeadObj}`
-- `cache`: Experimenter에서 전달받은 DataCache 공유 (type key: `"train_all"`)
-- `select_head(nodes)`: head 노드 지정 + upstream stage 자동 수집, `_get_affected_nodes`로 순서 정렬
-- `train()`: 미빌드 노드만 대상, 노드별 전체 split 처리 후 다음 노드로 진행
+- `cache`: Experimenter에서 전달받은 DataCache 공유
+- `select_head(nodes)`: head 노드 지정 + upstream stage 자동 수집, 위상 순서 정렬
+- `train()`: serial mismatch 자동 감지 후 미빌드 노드만 대상으로 학습
 - `process(data, v=None)`: generator, split마다 head output을 v로 필터 후 concat하여 yield
 - `to_inferencer(v=None)`: 학습된 Processor를 추출하여 Inferencer 생성
 - `reset_nodes(nodes)`: 하위 종속 노드 포함 초기화
@@ -149,16 +160,6 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - `nodes`: str/list — 출력할 head 노드 선택 (None=전체). 미등록 노드 지정 시 ValueError
 - 저장/로드: `save(path)`, `load(cls, path)` — 단일 `__inferencer.pkl`에 node_objs 포함
 
-### TrainObj (`_trainobj.py`)
-- `_train_build(node_attrs, data_dict, logger)`: Processor 생성 → fit/fit_process → `(obj, result, info)` 반환
-- **TrainStageObj**: stage 노드용, `objs_` dict에 메모리 보관
-  - `get_obj()`: generator, split 순서대로 `(obj, result, info)` yield
-  - 파일: `obj{split_idx}.pkl`
-- **TrainHeadObj**: head 노드용, 디스크에서 lazy load
-  - `get_obj()`: generator, 파일에서 순차 로드하여 yield
-  - 파일: `obj{split_idx}.pkl`
-- Trainer용 `data_dict`: `{key: (train, valid)}` (Experimenter의 `((train, train_v), valid)`과 다름)
-
 ### Connector (`_connector.py`)
 - `__init__(node_query=None, edges=None, processor=None, role=None)` — 4요소 선택적 매칭
 - `match(node_name, node_attrs)`: 설정된 요소만 검사, 모두 충족 시 True
@@ -168,7 +169,7 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - **Collector** (`_base.py`): 기본 클래스
   - `__init__(name, connector)`, `path`는 add_collector 시 설정
   - 라이프사이클: `_start(node)`, `_collect(node, idx, inner_idx, context)`, `_end_idx(node, idx)`, `_end(node)`
-  - 에러 처리: `_collect`/`_end_idx`는 `_safe_collector_call`(`_expobj.py`)로 try/except 래핑; `_start`/`_end`는 직접 호출 — 에러 시 예외 전파 대신 `warnings` 리스트에 저장 (`{method, node, type, message, traceback}`) 후 warning 로그
+  - 에러 처리: `_collect`/`_end_idx`는 safe wrapper로 try/except 래핑; `_start`/`_end`는 직접 호출 — 에러 시 `warnings` 리스트에 저장 후 warning 로그
   - `on_attach(experimenter)`: `add_collector`/`collect` 호출 시 자동 실행 — experimenter identity 비교로 중복 재계산 방지; `_on_attach(experimenter)` no-op 훅을 subclass에서 override
   - `_experimenter`: pickle 제외 (save/load 시 None으로 초기화)
   - `has(node)`: 수집 결과 보유 여부 (has_node에 위임)
@@ -236,8 +237,23 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `'error'`: 이미 존재하면 ValueError
 - `'replace'`: 기존 객체를 무조건 업데이트
 
-### set_grp replace 동작
-- `edges`, `params` 모두 `None→{}` 변환 후 모든 필드 직접 대입 (기존 값 유지 없음)
+### set_grp 업데이트 동작 (중요)
+`exist='diff'`에서 변경이 감지되면 **제공된 모든 값으로 전체 필드를 대입**한다.
+`None`/빈 값은 그대로 `None`/`{}`으로 덮어쓰므로, **유지하려는 필드도 반드시 명시**해야 한다.
+```python
+# 잘못된 예 — processor/edges/method가 None으로 덮어써짐
+exp.pipeline.set_grp('scale', params={'with_std': False})
+
+# 올바른 예
+exp.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
+                     method='transform', edges={'X': [(None, cols)]},
+                     params={'with_std': False})
+```
+
+## Serial 무결성 추적
+- 노드 정의(`set_grp`/`set_node`/`set_datasource`) 변경 시 영향받는 노드들의 `serial`이 새 UUID로 자동 교체 (`_bump_serials`)
+- 아티팩트 `info.pkl`에 `node_serial` 저장
+- `build()`, `exp()`, `train()` 시작 시 현재 serial vs 저장된 serial 비교 → 불일치 노드 자동 reset 후 재빌드
 
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
@@ -295,23 +311,23 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 ## 저장 구조
 ```
 {experimenter.path}/
-  __exp.pkl                    # pipeline, node_obj_keys, collector_keys, 메타정보
+  __exp.pkl                         # pipeline, collector_keys, trainer_keys, 메타정보
   __collector/{name}/
-    __config.pkl               # Collector 설정 + 데이터
-    {node}.pkl                 # StackingCollector 노드별 데이터
-    {node}/{idx}_{inner_idx}.pkl  # OutputCollector fold별 데이터
-  {grp_path}/{node_name}/
-    obj{idx}_{no}.pkl          # 빌드 결과 (StageObj: obj+train+spec / head: obj+result+info)
-    finalized.pkl              # head finalize 후: {(outer, inner): spec} dict
-    error.txt                  # head 에러 시: {type, message, traceback, fold}
+    __config.pkl                    # Collector 설정 + 데이터
+    {node}.pkl                      # StackingCollector 노드별 데이터
+    {node}/{idx}_{inner_idx}.pkl    # OutputCollector fold별 데이터
+  __folds/{outer_idx}/{inner_idx}/{node_name}/
+    obj.pkl                         # processor 객체
+    result.pkl                      # fit_transform/fit_predict 출력
+    info.pkl                        # {status, build_id, node_serial, fit_time, edges, ...}
 
 {trainer.path}/
-  __trainer.pkl                # name, splitter, selected_stages/heads, node_obj_keys, split_indices
-  {grp_path}/{node_name}/
-    obj{split_idx}.pkl         # 빌드 결과 (TrainStageObj/TrainHeadObj)
+  __trainer.pkl                     # name, splitter, selected_stages/heads, split_indices
+  {split_idx}/{node_name}/
+    obj.pkl / result.pkl / info.pkl
 
 {inferencer_path}/
-  __inferencer.pkl             # pipeline, selected_stages/heads, n_splits, node_objs, v (단일 파일)
+  __inferencer.pkl                  # pipeline, selected_stages/heads, n_splits, node_objs, v (단일 파일)
 ```
 
 ## 패키지 정보
@@ -335,6 +351,3 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
     - CLS token prepend + N × FTBlock (pre-LN, MHA + FFN/GELU, residual dropout) → CLS token 반환
     - 파라미터: `d_model=192`, `n_heads=8`, `n_layers=3`, `ffn_factor=4/3`, `attention_dropout=0.2`, `ffn_dropout=0.1`, `residual_dropout=0.0`
 - `NNAdapter` (`adapter/_nn.py`): eval_set 전달 + `_ProgressCallback` (epoch 진행률 로깅) + `evals_result` result_obj
-
-## 향후 방향
-- v0.7.0: TBD

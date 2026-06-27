@@ -1,7 +1,11 @@
 import re
+import uuid
 import pandas as pd
 from ._describer import desc_pipeline, desc_node
 from .adapter  import get_adapter
+
+
+VAR_TYPES = frozenset({'numerical', 'ordinal', 'nominal', 'text', 'binary', 'datetime'})
 
 
 class ColSelector:
@@ -164,6 +168,7 @@ class PipelineNode:
         self.adapter = adapter
         self.params = params if params is not None else {}
         self.desc = desc
+        self.serial = str(uuid.uuid4())
 
         self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
         self.attrs = None
@@ -173,6 +178,7 @@ class PipelineNode:
             self.name, self.grp, self.processor, self.edges.copy(),
             self.method, self.adapter, self.params.copy(), self.desc
         )
+        ret.serial = self.serial
         ret.output_edges = self.output_edges.copy()
         return ret
 
@@ -205,7 +211,8 @@ class PipelineNode:
             'adapter': adapter,
             'params': params,
             'method': grp_attrs.get('method') if self.method is None else self.method,
-            'role': grp_attrs['role']
+            'role': grp_attrs['role'],
+            'serial': self.serial,
         }
 
         return self.attrs
@@ -230,6 +237,41 @@ class PipelineNode:
         return changed
 
 
+class DataSourceNode(PipelineNode):
+    """DataSource node that defines input schema and target columns.
+
+    Attributes:
+        schema (dict[str, str]): {col_name: var_type} where var_type is one of VAR_TYPES.
+        targets (list[str]): Column names designated as targets.
+    """
+
+    def __init__(self):
+        super().__init__("Data_Source", '__datasource__', None, None, None, None)
+        self.schema = {}
+        self.targets = []
+
+    def get_attrs(self, grps):
+        if self.attrs is not None:
+            return self.attrs
+        self.attrs = {
+            'name': self.name,
+            'grp': self.grp,
+            'role': 'datasource',
+            'serial': self.serial,
+            'schema': self.schema.copy(),
+            'targets': list(self.targets),
+        }
+        return self.attrs
+
+    def copy(self):
+        ret = DataSourceNode()
+        ret.serial = self.serial
+        ret.schema = self.schema.copy()
+        ret.targets = list(self.targets)
+        ret.output_edges = self.output_edges.copy()
+        return ret
+
+
 class Pipeline:
     """Node graph that describes an ML workflow.
 
@@ -243,9 +285,51 @@ class Pipeline:
     """
 
     def __init__(self):
-        self.nodes = {}
-        self.grps = {}
-        self.nodes = {None: PipelineNode("Data_Source", None, None, None, None, None)}
+        self.grps = {'__datasource__': PipelineGroup('__datasource__', role='datasource')}
+        self.nodes = {None: DataSourceNode()}
+
+    @property
+    def datasource(self):
+        return self.nodes[None]
+
+    def set_datasource(self, schema, targets=None):
+        """Define the input data schema and target columns.
+
+        Args:
+            schema (dict[str, str]): {col_name: var_type}. var_type must be one of
+                'numerical', 'ordinal', 'nominal', 'text', 'binary', 'datetime'.
+            targets (list[str], optional): Target column names. Must all exist in schema.
+
+        Returns:
+            str: ``'update'`` if schema/targets changed, ``'skip'`` if unchanged.
+
+        Raises:
+            ValueError: If any type is invalid or any target column is not in schema.
+        """
+        if targets is None:
+            targets = []
+        targets = list(targets)
+
+        for col, typ in schema.items():
+            if typ not in VAR_TYPES:
+                raise ValueError(
+                    f"Invalid type '{typ}' for column '{col}'. Must be one of {sorted(VAR_TYPES)}"
+                )
+        for col in targets:
+            if col not in schema:
+                raise ValueError(f"Target column '{col}' not in schema")
+
+        ds = self.nodes[None]
+        if ds.schema == schema and ds.targets == targets:
+            return 'skip'
+
+        ds.schema = dict(schema)
+        ds.targets = targets
+        ds.serial = str(uuid.uuid4())
+        ds.update_attrs()
+
+        self._bump_serials(self._get_affected_nodes([None]))
+        return 'update'
 
     def copy(self):
         """Return a deep copy of the entire pipeline.
@@ -421,6 +505,12 @@ class Pipeline:
             self.grps[child_name].update_attrs()
             self._cascade_clear_attrs(child_name)
 
+    def _bump_serials(self, node_names):
+        for name in node_names:
+            if name is not None and name in self.nodes:
+                self.nodes[name].serial = str(uuid.uuid4())
+                self.nodes[name].update_attrs()
+
     def _get_affected_nodes(self, nodes):
         priorities = {}
         queue = []
@@ -480,6 +570,8 @@ class Pipeline:
                 raise ValueError(f"Parent group '{parent}' not found")
             if role is None:
                 role = self.grps[parent].role
+        if role is None and name in self.grps:
+            role = self.grps[name].role
         if role not in ['stage', 'head']:
             raise ValueError(f"Role must be 'stage' or 'head', got '{role}'")
 
@@ -565,6 +657,8 @@ class Pipeline:
                 if node_name in self.nodes:
                     self.nodes[node_name].update_attrs()
 
+        self._bump_serials(self._get_affected_nodes(affected_nodes))
+
         return {
             "result": "update", "affected_nodes": affected_nodes, "old_grp": old_grp, "grp": grp
         }
@@ -620,7 +714,7 @@ class Pipeline:
             return []
 
         node = self.nodes[node_name]
-        if node.grp is None:
+        if node.grp is None or node.grp == '__datasource__':
             return []
 
         result = []
@@ -793,6 +887,9 @@ class Pipeline:
             affected_nodes = list()
 
         self.nodes[name] = node
+
+        if is_update:
+            self._bump_serials(affected_nodes)
 
         return {
             'result': 'update' if is_update else 'new',

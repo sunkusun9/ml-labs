@@ -294,11 +294,11 @@ class TestTrainerAugData:
             sp=ShuffleSplit(n_splits=1, test_size=0.2, random_state=42),
             sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         return e
 
     def test_add_trainer_stores_aug_data(self, exp, aug_df):

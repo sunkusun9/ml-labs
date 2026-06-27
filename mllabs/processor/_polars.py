@@ -3,17 +3,18 @@ import polars as pl
 from ._dproc import get_type_df, get_type_pl, merge_type_df
 
 class PolarsLoader(TransformerMixin, BaseEstimator):
-    def __init__(self, predefined_types = {}, read_method = 'read_csv'):
+    def __init__(self, predefined_types = {}, read_method = 'read_csv', infer_schema_length = 100):
         self.predefined_types = predefined_types
         self.read_method = read_method
-    
+        self.infer_schema_length = infer_schema_length
+
     def fit(self, X, y = None):
         if type(X) is list:
             self.df_type_ = merge_type_df([
-                pl.scan_csv(i).pipe(get_type_df) for i in X
+                pl.scan_csv(i, infer_schema_length=self.infer_schema_length).pipe(get_type_df) for i in X
             ])
         else:
-            self.df_type_ = pl.scan_csv(X).pipe(get_type_df)
+            self.df_type_ = pl.scan_csv(X, infer_schema_length=self.infer_schema_length).pipe(get_type_df)
         self.pl_type_ = get_type_pl(
             self.df_type_, self.predefined_types
         )
@@ -32,7 +33,8 @@ class PolarsLoader(TransformerMixin, BaseEstimator):
     def get_params(self, deep = True):
         return {
             'predefined_types': self.predefined_types,
-            'read_method': self.read_method
+            'read_method': self.read_method,
+            'infer_schema_length': self.infer_schema_length,
         }
         
     def set_output(self, transform = 'polars'):

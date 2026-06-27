@@ -40,14 +40,14 @@ def exp(tmp_path, sample_data):
         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
     )
-    e.set_grp('scale', role='stage', processor=StandardScaler,
-              method='transform', edges={'X': [(None, ['f1', 'f2', 'f3'])]})
-    e.set_node('scaler', grp='scale')
-    e.set_grp('model', role='head', processor=DecisionTreeClassifier,
-              method='predict',
-              edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
-              params={'max_depth': 3, 'random_state': 42})
-    e.set_node('dt', grp='model')
+    e.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
+                       method='transform', edges={'X': [(None, ['f1', 'f2', 'f3'])]})
+    e.pipeline.set_node('scaler', grp='scale')
+    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                       method='predict',
+                       edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
+                       params={'max_depth': 3, 'random_state': 42})
+    e.pipeline.set_node('dt', grp='model')
     e.build()
     e.exp()
     return e
@@ -92,11 +92,11 @@ class TestSelectHead:
         assert 'scaler' in trainer.selected_stages
 
     def test_select_head_multiple(self, exp):
-        exp.set_grp('model2', role='head', processor=DecisionTreeClassifier,
-                    method='predict',
-                    edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
-                    params={'max_depth': 5, 'random_state': 0})
-        exp.set_node('dt2', grp='model2')
+        exp.pipeline.set_grp('model2', role='head', processor=DecisionTreeClassifier,
+                             method='predict',
+                             edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
+                             params={'max_depth': 5, 'random_state': 0})
+        exp.pipeline.set_node('dt2', grp='model2')
         trainer = exp.add_trainer('t1')
         trainer.select_head(['dt'])
         trainer.select_head(['dt2'])
@@ -135,10 +135,10 @@ class TestTrain:
         assert trainer.get_status('dt') == 'built'
 
     def test_train_error(self, exp):
-        exp.set_grp('bad', role='head', processor=BadProcessor,
-                    method='transform',
-                    edges={'X': [(None, ['f1'])]})
-        exp.set_node('bad_node', grp='bad')
+        exp.pipeline.set_grp('bad', role='head', processor=BadProcessor,
+                             method='transform',
+                             edges={'X': [(None, ['f1'])]})
+        exp.pipeline.set_node('bad_node', grp='bad')
         trainer = exp.add_trainer('t_err')
         trainer.select_head(['bad_node'])
         trainer.train()
@@ -148,10 +148,10 @@ class TestTrain:
         assert 'intentional error' in err['message']
 
     def test_train_error_continues_other_nodes(self, exp):
-        exp.set_grp('bad', role='head', processor=BadProcessor,
-                    method='transform',
-                    edges={'X': [(None, ['f1'])]})
-        exp.set_node('bad_node', grp='bad')
+        exp.pipeline.set_grp('bad', role='head', processor=BadProcessor,
+                             method='transform',
+                             edges={'X': [(None, ['f1'])]})
+        exp.pipeline.set_node('bad_node', grp='bad')
         trainer = exp.add_trainer('t_mixed')
         trainer.select_head(['dt', 'bad_node'])
         trainer.train()
@@ -165,6 +165,74 @@ class TestTrain:
         trainer.train()
         for fold in trainer.train_folds:
             assert fold.artifact_stores[0].status('dt') == 'built'
+
+    def test_serial_in_info(self, exp):
+        trainer = exp.add_trainer('t1')
+        trainer.select_head(['dt'])
+        trainer.train()
+        expected_serial = exp.pipeline.nodes['dt'].serial
+        for fold in trainer.train_folds:
+            info = fold.artifact_stores[0].get_info('dt')
+            assert info['node_serial'] == expected_serial
+
+    def test_serial_mismatch_triggers_reset(self, exp):
+        trainer = exp.add_trainer('t1')
+        trainer.select_head(['dt'])
+        trainer.train()
+
+        build_ids_before = [
+            fold.artifact_stores[0].get_info('dt')['build_id']
+            for fold in trainer.train_folds
+        ]
+
+        exp.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                             method='predict',
+                             edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
+                             params={'max_depth': 5, 'random_state': 42})
+        trainer.train()
+
+        build_ids_after = [
+            fold.artifact_stores[0].get_info('dt')['build_id']
+            for fold in trainer.train_folds
+        ]
+        assert build_ids_before != build_ids_after
+
+    def test_serial_mismatch_stage_cascades(self, exp):
+        trainer = exp.add_trainer('t1')
+        trainer.select_head(['dt'])
+        trainer.train()
+
+        build_ids_before = {
+            name: [fold.artifact_stores[0].get_info(name)['build_id'] for fold in trainer.train_folds]
+            for name in ['scaler', 'dt']
+        }
+
+        exp.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
+                             method='transform',
+                             edges={'X': [(None, ['f1', 'f2', 'f3'])]},
+                             params={'with_std': False})
+        trainer.train()
+
+        for name in ['scaler', 'dt']:
+            build_ids_after = [fold.artifact_stores[0].get_info(name)['build_id'] for fold in trainer.train_folds]
+            assert build_ids_before[name] != build_ids_after
+
+    def test_no_serial_mismatch_skips_rebuild(self, exp):
+        trainer = exp.add_trainer('t1')
+        trainer.select_head(['dt'])
+        trainer.train()
+
+        build_ids_before = [
+            fold.artifact_stores[0].get_info('dt')['build_id']
+            for fold in trainer.train_folds
+        ]
+        trainer.train()
+
+        build_ids_after = [
+            fold.artifact_stores[0].get_info('dt')['build_id']
+            for fold in trainer.train_folds
+        ]
+        assert build_ids_before == build_ids_after
 
 
 class TestProcess:

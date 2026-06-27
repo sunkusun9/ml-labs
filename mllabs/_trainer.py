@@ -194,6 +194,19 @@ class Trainer:
     # train
     # ------------------------------------------------------------------
 
+    def _reset_serial_stale_nodes(self, node_names):
+        stale = []
+        for name in node_names:
+            current_serial = self.pipeline.nodes[name].serial
+            for fold in self.train_folds:
+                info = fold.artifact_stores[0].get_info(name)
+                if info is not None and info.get('node_serial') != current_serial:
+                    stale.append(name)
+                    break
+        if stale:
+            self.reset_nodes(stale)
+            self.logger.info(f"Serial mismatch: reset {len(stale)} node(s): {sorted(stale)}")
+
     def train(self, n_jobs=1, gpu_id_list=None):
         """Train all unbuilt selected nodes across all splits.
 
@@ -205,6 +218,9 @@ class Trainer:
         """
         from ._executor import _build_flow_single, _build_flow_multi, _experiment_single, _experiment_multi
         from ._tracker import LoggerExecuteTracker
+
+        candidate_nodes = self.selected_stages + self.selected_heads
+        self._reset_serial_stale_nodes(candidate_nodes)
 
         target_stages = [
             n for n in self.selected_stages

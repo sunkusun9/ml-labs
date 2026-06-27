@@ -368,107 +368,6 @@ class Experimenter():
         self._save()
         return trainer
 
-    def _validate_name(self, name):
-        """Node 또는 NodeGroup 이름 검증
-
-        Args:
-            name: 검증할 이름
-
-        Raises:
-            ValueError: 이름이 유효하지 않을 경우
-        """
-        if name is None:
-            return
-
-        # '__' 포함 금지
-        if '__' in name:
-            raise ValueError(f"Name '{name}' cannot contain '__'")
-
-        # 파일/폴더명으로 사용 불가한 문자 금지
-        invalid_chars = ['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*']
-        for char in invalid_chars:
-            if char in name:
-                raise ValueError(f"Name '{name}' cannot contain '{char}'")
-
-    def get_grp_path(self, grp):
-        if self.path is None:
-            return None
-        if isinstance(grp, str):
-            grp = self.pipeline.get_grp(grp)
-        path_parts = [grp.name]
-        current = self.pipeline.get_grp(grp.parent)
-        while current is not None:
-            path_parts.insert(0, current.name)
-            current = self.pipeline.get_grp(current.parent)
-        return self.path / '/'.join(path_parts)
-
-    def get_node_path(self, node):
-        if isinstance(node, str):
-            node = self.pipeline.get_node(node)
-        grp_path = self.get_grp_path(node.grp)
-        return grp_path / node.name
-
-    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, desc=None, exist='diff'):
-        self._check_open()
-        result_obj = self.pipeline.set_grp(
-            name, role, processor, edges, method, parent, adapter, params, desc=desc, exist=exist
-        )
-        
-        affected_nodes = result_obj['affected_nodes']
-        self.reset_nodes(affected_nodes)
-        new_grp_path = self.get_grp_path(result_obj['grp'])
-        if "old_grp" in result_obj:
-            old_grp_path = self.get_grp_path(result_obj['old_grp'])
-            if old_grp_path != new_grp_path:
-                os.makedirs(new_grp_path, exist_ok=True)
-                for fname in os.listdir(old_grp_path):
-                    src_path = os.path.join(old_grp_path, fname)
-                    dst_path = os.path.join(new_grp_path, fname)
-                    shutil.move(src_path, dst_path)
-
-            self.logger.info(f"Group '{name}' updated, {len(affected_nodes)} node(s) affected")
-        self._save()
-        return result_obj
-
-    def rename_grp(self, name_from, name_to):
-        self._check_open()
-        old_grp_path = self.get_grp_path(name_from)
-        self.pipeline.rename_grp(name_from, name_to)
-        new_grp_path = self.get_grp_path(name_to)
-        if old_grp_path.exists():
-            os.makedirs(new_grp_path, exist_ok=True)
-            for fname in os.listdir(old_grp_path):
-                src_path = os.path.join(old_grp_path, fname)
-                dst_path = os.path.join(new_grp_path, fname)
-                shutil.move(src_path, dst_path)
-            shutil.rmtree(old_grp_path)
-        self._save()
-    
-    def remove_grp(self, name):
-        self._check_open()
-        self.pipeline.remove_grp(name)
-
-        self.logger.info(f"Group '{name}' removed")
-        self._save()
-
-
-    def remove_node(self, name):
-        """노드를 제거
-
-        Args:
-            name: 제거할 노드 이름
-
-        Raises:
-            ValueError: 노드가 존재하지 않거나, 자식 노드가 있는 경우
-        """
-        self._check_open()
-        self.pipeline.remove_node(name)
-        for v in self.collectors.values():
-            v.reset_nodes([name])
-
-        self.logger.info(f"Node '{name}' removed")
-        self._save()
-
     def get_status(self, node_name):
         """Return the disk status of a head node across all folds.
 
@@ -595,25 +494,6 @@ class Experimenter():
         self.build()
         self._save()
 
-    def set_node(
-        self, name, grp, processor=None, edges=None,
-        method=None, adapter=None, params=None, desc=None, exist='diff'
-    ):
-        self._check_open()
-        result_obj = self.pipeline.set_node(
-            name, grp, processor, edges, method, adapter, params, desc=desc, exist=exist
-        )
-
-        # 기존 노드를 업데이트한 경우, 하위 노드들도 재빌드
-        if len(result_obj['affected_nodes']) > 0:
-            affected_nodes = result_obj['affected_nodes']
-            self.logger.info(f"Affected {len(affected_nodes)} dependent node(s): {sorted(affected_nodes)}")
-            self.reset_nodes(affected_nodes)
-        if result_obj['result'] == 'update':
-            self.reset_nodes([name])
-        self._save()
-        return result_obj
-
     def reset_nodes(self, nodes):
         """Reset nodes to ``init`` state.
 
@@ -645,6 +525,27 @@ class Experimenter():
 
         for v in self.trainers.values():
             v.reset_nodes(nodes)
+
+    def _reset_serial_stale_nodes(self, node_names):
+        stale = []
+        for name in node_names:
+            current_serial = self.pipeline.nodes[name].serial
+            node = self.pipeline.get_node(name)
+            grp = self.pipeline.get_grp(node.grp)
+            stores = []
+            for outer_fold in self.outer_folds:
+                if grp.role == 'stage':
+                    stores.extend(outer_fold.train_data_flows)
+                else:
+                    stores.extend(outer_fold.artifact_stores)
+            for store in stores:
+                info = store.get_info(name)
+                if info is not None and info.get('node_serial') != current_serial:
+                    stale.append(name)
+                    break
+        if stale:
+            self.reset_nodes(stale)
+            self.logger.info(f"Serial mismatch: reset {len(stale)} node(s): {sorted(stale)}")
 
     def show_error_nodes(self, nodes=None, traceback=False):
         """Print nodes in ``error`` state.
@@ -708,6 +609,7 @@ class Experimenter():
         if rebuild:
             self.reset_nodes(target_nodes)
         else:
+            self._reset_serial_stale_nodes(target_nodes)
             target_nodes = [
                 i for i in target_nodes
                 if self.get_status(i) not in ['built', 'finalized']
@@ -753,12 +655,16 @@ class Experimenter():
         from ._tracker import LoggerExecuteTracker
         self._check_open()
         node_names = set(self.pipeline.get_node_names(nodes))
-        target_nodes = [
+        candidate_nodes = [
             i for i in self.pipeline._get_affected_nodes([None])
             if i is not None
             and i in node_names
             and self.pipeline.grps[self.pipeline.nodes[i].grp].role == 'head'
-            and self.get_status(i) not in ['built', 'finalized']
+        ]
+        self._reset_serial_stale_nodes(candidate_nodes)
+        target_nodes = [
+            i for i in candidate_nodes
+            if self.get_status(i) not in ['built', 'finalized']
         ]
         if not target_nodes:
             self.logger.info("No head nodes to experiment")
