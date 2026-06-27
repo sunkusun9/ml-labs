@@ -45,14 +45,14 @@ def built_exp(tmp_path, sample_data):
         path=tmp_path / 'exp',
         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
     )
-    e.set_grp('scale', role='stage', processor=StandardScaler,
+    e.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
               method='transform', edges={'X': [(None, ['f1', 'f2', 'f3'])]})
-    e.set_node('scaler', grp='scale')
-    e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    e.pipeline.set_node('scaler', grp='scale')
+    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.set_node('dt', grp='model')
+    e.pipeline.set_node('dt', grp='model')
     e.build()
     e.exp()
     return e
@@ -66,11 +66,11 @@ def built_exp_inner(tmp_path, sample_data):
         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
     )
-    e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.set_node('dt', grp='model')
+    e.pipeline.set_node('dt', grp='model')
     e.build()
     e.exp()
     return e
@@ -83,12 +83,12 @@ def multi_head_exp(tmp_path, sample_data):
         path=tmp_path / 'exp_multi',
         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
     )
-    e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.set_node('dt1', grp='model')
-    e.set_node('dt2', grp='model', params={'max_depth': 5})
+    e.pipeline.set_node('dt1', grp='model')
+    e.pipeline.set_node('dt2', grp='model', params={'max_depth': 5})
     e.build()
     e.exp()
     return e
@@ -680,11 +680,11 @@ class TestCollectorErrorHandling:
             path=tmp_path / 'exp_pre',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         e.build()
         return e
 
@@ -838,11 +838,11 @@ class TestProcessCollector:
             path=tmp_path / 'exp_proba',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict_proba',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         e.build()
         e.exp()
         return e
@@ -878,11 +878,11 @@ class TestFinalizedBeforeCollect:
             path=tmp_path / 'exp_fin',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         e.build()
         e.exp()
         e.finalize('dt')
@@ -948,11 +948,11 @@ class TestGetCollectStatus:
             path=tmp_path / 'exp_notexp',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         e.build()
         return e
 
@@ -963,11 +963,11 @@ class TestGetCollectStatus:
             path=tmp_path / 'exp_fin2',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         e.build()
         e.exp()
         e.finalize('dt')
@@ -980,10 +980,10 @@ class TestGetCollectStatus:
             path=tmp_path / 'exp_err',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=FailPredictor,
+        e.pipeline.set_grp('model', role='head', processor=FailPredictor,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]})
-        e.set_node('dt', grp='model')
+        e.pipeline.set_node('dt', grp='model')
         e.build()
         e.exp()
         return e
@@ -1034,12 +1034,12 @@ class TestGetCollectStatus:
             path=tmp_path / 'exp_mixed',
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
         )
-        e.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.set_node('dt1', grp='model')
-        e.set_node('dt2', grp='model', params={'max_depth': 5})
+        e.pipeline.set_node('dt1', grp='model')
+        e.pipeline.set_node('dt2', grp='model', params={'max_depth': 5})
         e.build()
         e.exp('dt1')
         e.exp('dt2')
