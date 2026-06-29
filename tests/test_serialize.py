@@ -123,6 +123,7 @@ class TestSerializeObjects:
             serialize_value(local)
 
     def test_instance_in_params(self):
+        pytest.importorskip("lightgbm")
         from mllabs.adapter import LightGBMAdapter
         adapter = LightGBMAdapter()
         result = serialize_value(adapter)
@@ -213,6 +214,7 @@ class TestRoundtrip:
         assert restored.with_std is True
 
     def test_adapter_roundtrip(self):
+        pytest.importorskip("lightgbm")
         from mllabs.adapter import LightGBMAdapter
         adapter = LightGBMAdapter(eval_mode='train', verbose=0.5)
         restored = self._rt(adapter)
