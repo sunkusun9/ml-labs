@@ -1065,3 +1065,313 @@ class TestDataSourceNode:
         cp = p.copy()
         cp.set_datasource({**SCHEMA_SIMPLE, 'extra': 'text'})
         assert 'extra' not in p.datasource.schema
+
+
+class TestPipelineSQLite:
+    def test_init_creates_db(self, tmp_path):
+        p = Pipeline(path=tmp_path, name='test')
+        assert (tmp_path / 'test.db').exists()
+
+    def test_path_none_no_db(self):
+        p = Pipeline()
+        assert p._db_path is None
+
+    def test_copy_no_db(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        cp = p.copy()
+        assert cp._db_path is None
+
+    def test_set_grp_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('scale', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 'scale' in p2.grps
+        assert p2.grps['scale'].role == 'stage'
+        assert p2.grps['scale'].processor is StandardScaler
+        assert p2.grps['scale'].method == 'transform'
+
+    def test_set_node_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('scale', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('scaler', grp='scale')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 'scaler' in p2.nodes
+        assert p2.nodes['scaler'].grp == 'scale'
+        assert 'scaler' in p2.grps['scale'].nodes
+
+    def test_node_serial_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('scale', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('scaler', grp='scale')
+        serial = p.nodes['scaler'].serial
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['scaler'].serial == serial
+
+    def test_set_datasource_persists(self, tmp_path):
+        p = Pipeline(path=tmp_path, name='test')
+        schema = {'f1': 'numerical', 'f2': 'nominal', 'target': 'binary'}
+        p.set_datasource(schema, targets=['target'])
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.datasource.schema == schema
+        assert p2.datasource.targets == ['target']
+
+    def test_datasource_serial_persists(self, tmp_path):
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_datasource({'f1': 'numerical', 'target': 'binary'})
+        serial = p.datasource.serial
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.datasource.serial == serial
+
+    def test_remove_grp_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('scale', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.remove_grp('scale')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 'scale' not in p2.grps
+
+    def test_remove_node_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('scale', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('scaler', grp='scale')
+        p.remove_node('scaler')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 'scaler' not in p2.nodes
+        assert 'scaler' not in p2.grps['scale'].nodes
+
+    def test_rename_grp_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('scale', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('scaler', grp='scale')
+        p.rename_grp('scale', 'scaler_grp')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 'scale' not in p2.grps
+        assert 'scaler_grp' in p2.grps
+        assert p2.nodes['scaler'].grp == 'scaler_grp'
+        assert 'scaler' in p2.grps['scaler_grp'].nodes
+
+    def test_output_edges_reconstructed(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('s1', grp='g1')
+        p.set_grp('g2', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [('s1', None)]})
+        p.set_node('s2', grp='g2')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 's2' in p2.nodes['s1'].output_edges
+
+    def test_children_reconstructed(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('parent', role='stage')
+        p.set_grp('child', role='stage', parent='parent', processor=StandardScaler,
+                  method='transform', edges={'X': [(None, None)]})
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert 'child' in p2.grps['parent'].children
+
+    def test_bump_serial_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p._bump_serials(['n1'])
+        new_serial = p.nodes['n1'].serial
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].serial == new_serial
+
+    def test_edges_with_list_var_roundtrip(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, ['f1', 'f2'])]})
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.grps['g1'].edges == {'X': [(None, ['f1', 'f2'])]}
+
+    def test_params_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]}, params={'with_std': False})
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.grps['g1'].params == {'with_std': False}
+
+    def test_set_grp_update_serial_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]}, params={'with_std': False}, exist='replace')
+        serial = p.nodes['n1'].serial
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].serial == serial
+
+    def test_parent_grp_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('parent', role='stage')
+        p.set_grp('child', role='stage', parent='parent', processor=StandardScaler,
+                  method='transform', edges={'X': [(None, None)]})
+        p.set_node('n1', grp='child')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.grps['child'].parent == 'parent'
+        assert p2.nodes['n1'].grp == 'child'
+
+
+class TestPipelineSync:
+    def _make(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        return p
+
+    def test_sync_no_db_raises(self):
+        p = Pipeline()
+        with pytest.raises(ValueError):
+            p.sync()
+
+    def test_sync_no_change(self, tmp_path):
+        p = self._make(tmp_path)
+        result = p.sync()
+        assert result['datasource'] == 'skip'
+        assert result['grps'] == {'added': [], 'removed': [], 'updated': []}
+        assert result['nodes'] == {'added': [], 'removed': [], 'updated': []}
+
+    def test_sync_datasource_updated(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        schema = {'f1': 'numerical', 'target': 'binary'}
+        # B changes datasource
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_datasource(schema, targets=['target'])
+        # A syncs
+        result = p.sync()
+        assert result['datasource'] == 'updated'
+        assert p.datasource.schema == schema
+        assert p.datasource.targets == ['target']
+
+    def test_sync_grp_added(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B adds a new group
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g2', role='stage', processor=StandardScaler, method='transform',
+                   edges={'X': [('n1', None)]})
+        # A syncs
+        result = p.sync()
+        assert 'g2' in result['grps']['added']
+        assert 'g2' in p.grps
+        assert p.grps['g2'].processor is StandardScaler
+
+    def test_sync_grp_removed(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B removes the group
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.remove_node('n1')
+        p2.remove_grp('g1')
+        # A syncs
+        result = p.sync()
+        assert 'g1' in result['grps']['removed']
+        assert 'g1' not in p.grps
+
+    def test_sync_grp_updated(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B updates params
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                   edges={'X': [(None, None)]}, params={'with_std': False}, exist='replace')
+        # A syncs
+        result = p.sync()
+        assert 'g1' in result['grps']['updated']
+        assert p.grps['g1'].params == {'with_std': False}
+
+    def test_sync_node_added(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B adds a node
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_node('n2', grp='g1')
+        # A syncs
+        result = p.sync()
+        assert 'n2' in result['nodes']['added']
+        assert 'n2' in p.nodes
+
+    def test_sync_node_removed(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B removes the node
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.remove_node('n1')
+        # A syncs
+        result = p.sync()
+        assert 'n1' in result['nodes']['removed']
+        assert 'n1' not in p.nodes
+
+    def test_sync_node_updated(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        old_serial = p.nodes['n1'].serial
+        # B updates grp (bumps n1 serial)
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                   edges={'X': [(None, None)]}, params={'with_std': False}, exist='replace')
+        # A syncs
+        result = p.sync()
+        assert 'n1' in result['nodes']['updated']
+        assert p.nodes['n1'].serial != old_serial
+        assert p.nodes['n1'].serial == p2.nodes['n1'].serial
+
+    def test_sync_rebuilds_output_edges(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B adds g2/n2 that references n1
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g2', role='stage', processor=StandardScaler, method='transform',
+                   edges={'X': [('n1', None)]})
+        p2.set_node('n2', grp='g2')
+        # A syncs
+        p.sync()
+        assert 'n2' in p.nodes['n1'].output_edges
+
+    def test_sync_rebuilds_children(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B adds child group
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g1child', role='stage', parent='g1', processor=StandardScaler,
+                   method='transform', edges={'X': [(None, None)]})
+        # A syncs
+        p.sync()
+        assert 'g1child' in p.grps['g1'].children
+
+    def test_sync_rebuilds_grp_nodes(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        # B adds another node to g1
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_node('n2', grp='g1')
+        # A syncs
+        p.sync()
+        assert 'n2' in p.grps['g1'].nodes

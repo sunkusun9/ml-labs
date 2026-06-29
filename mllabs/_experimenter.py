@@ -418,7 +418,7 @@ class Experimenter():
                     self.logger.info(f"Finalize '{i}'")
                     for outer_fold in self.outer_folds:
                         for artifact_store in outer_fold.artifact_stores:
-                            artifact_store.finalize(i)  
+                            artifact_store.finalize(i)
 
     def reinitialize(self, nodes):
         self._check_open()
@@ -761,13 +761,6 @@ class Experimenter():
             self.logger.remove_session(1)
             self.logger.remove_session(0)
         return collector
-
-    def process_ext(self, data, node_name, outer_idx):
-        node_attrs = self.pipeline.get_node_attrs(node_name)
-        edges = node_attrs['edges']
-        ext_wrapped = wrap(data)
-        for train_flow in self.outer_folds[outer_idx].train_data_flows:
-            yield train_flow.get_data(ext_wrapped, edges)
 
     def get_train_data(self, edges, o_idx=0, i_idx=0):
         return self.outer_folds[o_idx].train_data_flows[i_idx].get_train(edges)

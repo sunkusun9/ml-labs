@@ -108,7 +108,6 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
 - `remove_trainer(name)`: Trainer 제거 후 `_save()`
 - `collect(collector, nodes=None, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, nodes로 범위 제한 가능, progress 포함)
 - `get_node_output(node, idx, v=None)`, `get_node_train_output(node, idx, v=None)`, `get_node_valid_output(node, idx, v=None)`: 노드 출력 추출 (파라미터 순서: node → idx)
-- `process_ext(data, node, idx)`: 임의 외부 데이터를 outer fold `idx`의 upstream stage들에 통과시켜 node 입력 데이터를 inner split 수만큼 yield — ProcessCollector에서 사용
 - `aug_data`: 외부 데이터를 DataSource 수준에서 inner train split에 append — 미퍼시스트, create/load 시 전달
 - `add_trainer(name, ..., aug_data=None)`: Trainer 생성 시 aug_data 전달 가능
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
@@ -217,11 +216,11 @@ Git 관련 내용(커밋 메시지, PR, 이슈 코멘트)은 영어로 작성한
   - 쿼리: `get_output(node, idx, inner_idx)`, `get_outputs(node)`
 
 - **ProcessCollector** (`_process.py`): 외부(테스트) 데이터에 대한 예측 수집
-  - `__init__(name, connector, ext_data, experimenter, output_var=None, method='mean')`
-  - `_collect`: `experimenter.process_ext(ext_data, node, idx)`로 inner fold별 upstream stage 통과 → `context['processor'].process()` 호출
+  - `__init__(name, connector, ext_data, output_var=None, method='mean')`
+  - `collect`: `context['output_ext']`에서 결과 추출 → `output_var`로 컬럼 필터
   - inner fold 결과는 `method`(mean/mode/simple)로 outer fold별 집계, 파일 저장: `{path}/{node}/{idx}.pkl`
   - 쿼리: `get_output(nodes=None, agg='mean')` — nodes 필터(None/list/regex) + outer fold 집계 후 column-wise concat 반환
-  - save/load 시 `ext_data`, `experimenter`는 미저장 (런타임 전달)
+  - save/load 시 `ext_data`는 미저장 (런타임 전달)
 
 ## edges 구조
 - dict 형태: `{key: [(node_name, var_spec), ...], ...}`
