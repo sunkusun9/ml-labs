@@ -293,6 +293,8 @@ class Pipeline:
         self.grps = {'__datasource__': PipelineGroup('__datasource__', role='datasource')}
         self.nodes = {None: DataSourceNode()}
         self._db_path = None
+        self.pipeline_id = str(uuid.uuid4())
+        self.trainers = {}
 
         if path is not None:
             db_path = Path(path) / f'{name}.db'
@@ -346,11 +348,16 @@ class Pipeline:
             (json.dumps(ds.schema), json.dumps(ds.targets), ds.serial)
         )
         conn.execute("INSERT INTO meta (key, value) VALUES ('version', '1')")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('pipeline_id', ?)", (self.pipeline_id,))
 
     def _load_db(self):
         from ._serialize import deserialize_from_json
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
+
+            row = conn.execute("SELECT value FROM meta WHERE key = 'pipeline_id'").fetchone()
+            if row:
+                self.pipeline_id = row['value']
 
             row = conn.execute("SELECT * FROM datasource WHERE id = 1").fetchone()
             if row:
@@ -1409,6 +1416,63 @@ class Pipeline:
             result[proc_name] = df
 
         return result
+
+    def add_trainer(self, name, data, splitter=None, splitter_params=None, path=None,
+                    cache=None, logger=None, aug_data=None, exist='skip'):
+        """Create and register a Trainer on this Pipeline.
+
+        Args:
+            name (str): Trainer name.
+            data: Training dataset.
+            splitter: sklearn splitter, or ``None`` (train on full dataset).
+            splitter_params (dict): Column mappings for the splitter.
+            path (str | Path): Artifact directory. Defaults to
+                ``{pipeline_dir}/__trainers/{name}`` when Pipeline has a DB path.
+            cache: DataCache instance. Creates a fresh one if ``None``.
+            logger: Logger instance. Creates a DefaultLogger if ``None``.
+            aug_data: Augmentation data appended to inner train split.
+            exist (str): ``'skip'`` returns existing; ``'error'`` raises.
+
+        Returns:
+            Trainer: The newly created (or existing) Trainer.
+        """
+        if name in self.trainers:
+            if exist == 'skip':
+                return self.trainers[name]
+            elif exist == 'error':
+                raise ValueError(f"Trainer '{name}' already exists")
+
+        if path is None:
+            if self._db_path is not None:
+                path = self._db_path.parent / '__trainers' / name
+            else:
+                raise ValueError("path is required when Pipeline has no DB path")
+
+        from ._cache import DataCache
+        from ._logger import DefaultLogger
+        from ._trainer import Trainer
+        from ._data_wrapper import wrap
+
+        trainer = Trainer(
+            name=name,
+            pipeline=self,
+            data=wrap(data),
+            path=path,
+            splitter=splitter,
+            splitter_params=splitter_params if splitter_params is not None else {},
+            logger=logger if logger is not None else DefaultLogger(level=['info', 'progress']),
+            cache=cache if cache is not None else DataCache(),
+            aug_data=aug_data,
+        )
+        self.trainers[name] = trainer
+        return trainer
+
+    def get_trainer(self, name):
+        return self.trainers.get(name)
+
+    def remove_trainer(self, name):
+        if name in self.trainers:
+            del self.trainers[name]
 
     def desc_node(self, node_name, direction='TD', show_params=False):
         """특정 노드까지의 연결 구조를 Mermaid Markdown으로 반환
