@@ -295,6 +295,7 @@ class Pipeline:
         self._db_path = None
         self.pipeline_id = str(uuid.uuid4())
         self.trainers = {}
+        self.experiments = {}
 
         if path is not None:
             db_path = Path(path) / f'{name}.db'
@@ -1418,7 +1419,7 @@ class Pipeline:
         return result
 
     def add_trainer(self, name, data, splitter=None, splitter_params=None, path=None,
-                    cache=None, logger=None, aug_data=None, exist='skip'):
+                    cache=None, logger=None, aug_data=None, tags=None, exist='skip'):
         """Create and register a Trainer on this Pipeline.
 
         Args:
@@ -1464,6 +1465,15 @@ class Pipeline:
             cache=cache if cache is not None else DataCache(),
             aug_data=aug_data,
         )
+        if tags is not None:
+            matching = [
+                n for n, node in self.nodes.items()
+                if n is not None and self.grps[node.grp].role == 'head'
+                and set(node.tag) & set(tags)
+            ]
+            if matching:
+                trainer.select_head(matching)
+
         self.trainers[name] = trainer
         return trainer
 
@@ -1473,6 +1483,69 @@ class Pipeline:
     def remove_trainer(self, name):
         if name in self.trainers:
             del self.trainers[name]
+
+    def _check_data_compatibility(self, data):
+        from ._data_wrapper import wrap
+        schema_cols = set(self.datasource.schema.keys())
+        if not schema_cols:
+            return
+        data_cols = set(wrap(data).get_columns())
+        missing = schema_cols - data_cols
+        if missing:
+            raise ValueError(
+                f"Data is missing columns defined in datasource schema: {sorted(missing)}"
+            )
+
+    def add_experiment(self, name, data, sp=None, sp_v=None, splitter_params=None,
+                       collectors=None, tags=None, path=None, exist='skip',
+                       data_key=None, cache_maxsize=4 * 1024 ** 3, logger=None, aug_data=None):
+        if name in self.experiments:
+            if exist == 'skip':
+                return self.experiments[name]
+            elif exist == 'error':
+                raise ValueError(f"Experiment '{name}' already exists")
+
+        self._check_data_compatibility(data)
+
+        if path is None:
+            if self._db_path is not None:
+                path = self._db_path.parent / '__experiments' / name
+            else:
+                raise ValueError("path is required when Pipeline has no DB path")
+
+        from ._experimenter import Experimenter
+        from ._logger import DefaultLogger
+        from sklearn.model_selection import ShuffleSplit as _SS
+
+        e = Experimenter(
+            data=data,
+            path=path,
+            sp=sp if sp is not None else _SS(n_splits=1, random_state=1),
+            sp_v=sp_v,
+            splitter_params=splitter_params if splitter_params is not None else {},
+            data_key=data_key,
+            cache_maxsize=cache_maxsize,
+            logger=logger if logger is not None else DefaultLogger(level=['info', 'progress']),
+            aug_data=aug_data,
+        )
+        e.attach(self)
+
+        if collectors:
+            for c in collectors:
+                e.add_collector(c)
+
+        if tags is not None:
+            e.tags = tags
+
+        self.experiments[name] = e
+        return e
+
+    def get_experiment(self, name):
+        return self.experiments.get(name)
+
+    def remove_experiment(self, name):
+        if name in self.experiments:
+            del self.experiments[name]
 
     def desc_node(self, node_name, direction='TD', show_params=False):
         """특정 노드까지의 연결 구조를 Mermaid Markdown으로 반환
