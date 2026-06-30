@@ -161,7 +161,7 @@ class PipelineNode:
     """
 
     def __init__(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, tag=None
     ):
         self.name = name
         self.grp = grp  # group name (str)
@@ -171,6 +171,7 @@ class PipelineNode:
         self.adapter = adapter
         self.params = params if params is not None else {}
         self.desc = desc
+        self.tag = tag if tag is not None else []
         self.serial = str(uuid.uuid4())
 
         self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
@@ -179,7 +180,7 @@ class PipelineNode:
     def copy(self):
         ret = PipelineNode(
             self.name, self.grp, self.processor, self.edges.copy(),
-            self.method, self.adapter, self.params.copy(), self.desc
+            self.method, self.adapter, self.params.copy(), self.desc, list(self.tag)
         )
         ret.serial = self.serial
         ret.output_edges = self.output_edges.copy()
@@ -216,6 +217,7 @@ class PipelineNode:
             'method': grp_attrs.get('method') if self.method is None else self.method,
             'role': grp_attrs['role'],
             'serial': self.serial,
+            'tag': list(self.tag),
         }
 
         return self.attrs
@@ -328,7 +330,8 @@ class Pipeline:
                 adapter TEXT,
                 params TEXT,
                 desc TEXT,
-                serial TEXT NOT NULL
+                serial TEXT NOT NULL,
+                tag TEXT DEFAULT '[]' NOT NULL
             );
             CREATE TABLE IF NOT EXISTS datasource (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -391,6 +394,7 @@ class Pipeline:
                     adapter=deserialize_from_json(row['adapter']),
                     params=deserialize_from_json(row['params']) or {},
                     desc=row['desc'],
+                    tag=json.loads(row['tag']) if row['tag'] else [],
                 )
                 node.serial = row['serial']
                 self.nodes[row['name']] = node
@@ -433,8 +437,8 @@ class Pipeline:
         from ._serialize import serialize_to_json
         conn.execute(
             "INSERT OR REPLACE INTO nodes "
-            "(name, grp, processor, edges, method, adapter, params, desc, serial) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(name, grp, processor, edges, method, adapter, params, desc, serial, tag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (node.name, node.grp,
              serialize_to_json(node.processor) if node.processor is not None else None,
              serialize_to_json(node.edges),
@@ -442,7 +446,8 @@ class Pipeline:
              serialize_to_json(node.adapter) if node.adapter is not None else None,
              serialize_to_json(node.params),
              node.desc,
-             node.serial)
+             node.serial,
+             json.dumps(node.tag))
         )
 
     def _write_datasource(self, conn):
@@ -552,6 +557,7 @@ class Pipeline:
                     'params': deserialize_from_json(row['params']) or {},
                     'desc': row['desc'],
                     'serial': row['serial'],
+                    'tag': json.loads(row['tag']) if row['tag'] else [],
                 }
 
             mem_node_names = set(self.nodes.keys()) - {None}
@@ -566,7 +572,7 @@ class Pipeline:
                 node = PipelineNode(
                     name=name, grp=d['grp'], processor=d['processor'],
                     edges=d['edges'], method=d['method'], adapter=d['adapter'],
-                    params=d['params'], desc=d['desc'],
+                    params=d['params'], desc=d['desc'], tag=d['tag'],
                 )
                 node.serial = d['serial']
                 self.nodes[name] = node
@@ -583,6 +589,7 @@ class Pipeline:
                     node.adapter = d['adapter']
                     node.params = d['params']
                     node.desc = d['desc']
+                    node.tag = d['tag']
                     node.serial = d['serial']
                     node.update_attrs()
                     changes['nodes']['updated'].append(name)
@@ -1146,7 +1153,7 @@ class Pipeline:
                             parent_node.output_edges.append(node_name)
 
     def set_node(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, exist='diff'
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, tag=None, exist='diff'
     ):
         """Create or update a node.
 
@@ -1193,8 +1200,10 @@ class Pipeline:
                 old_node = self.nodes[name]
                 if not old_node.diff(grp, processor, edges, method, adapter, params):
                     old_node.desc = desc
+                    old_node.tag = tag if tag is not None else []
                     self._db_write(lambda conn: conn.execute(
-                        "UPDATE nodes SET desc = ? WHERE name = ?", (desc, name)
+                        "UPDATE nodes SET desc = ?, tag = ? WHERE name = ?",
+                        (desc, json.dumps(old_node.tag), name)
                     ))
                     return {'result': 'skip', 'affected_nodes': [], 'old_obj': old_node, 'obj': old_node}
 
@@ -1207,7 +1216,7 @@ class Pipeline:
             old_output_edges = old_node.output_edges
 
         node = PipelineNode(
-            name, grp, processor, edges, method=method, adapter=adapter, params=params, desc=desc
+            name, grp, processor, edges, method=method, adapter=adapter, params=params, desc=desc, tag=tag
         )
 
         grp_obj = self.grps[grp]
@@ -1261,6 +1270,36 @@ class Pipeline:
 
     def get_node(self, name):
         return self.nodes.get(name, None)
+
+    def add_tag(self, name, *tags):
+        if name not in self.nodes or name is None:
+            raise ValueError(f"Node '{name}' not found")
+        node = self.nodes[name]
+        changed = False
+        for tag in tags:
+            if tag not in node.tag:
+                node.tag.append(tag)
+                changed = True
+        if changed:
+            node.update_attrs()
+            self._db_write(lambda conn: conn.execute(
+                "UPDATE nodes SET tag = ? WHERE name = ?", (json.dumps(node.tag), name)
+            ))
+
+    def remove_tag(self, name, *tags):
+        if name not in self.nodes or name is None:
+            raise ValueError(f"Node '{name}' not found")
+        node = self.nodes[name]
+        changed = False
+        for tag in tags:
+            if tag in node.tag:
+                node.tag.remove(tag)
+                changed = True
+        if changed:
+            node.update_attrs()
+            self._db_write(lambda conn: conn.execute(
+                "UPDATE nodes SET tag = ? WHERE name = ?", (json.dumps(node.tag), name)
+            ))
 
     def get_node_attrs(self, name):
         """Return fully resolved attributes for a node (group hierarchy merged).

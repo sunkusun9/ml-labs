@@ -229,6 +229,99 @@ class TestSetNode:
         p.set_node('n1', grp='g1', params={'b': 2})
         assert p.nodes['n1'].params == {'b': 2}
 
+    def test_tag_default_empty(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        assert p.nodes['n1'].tag == []
+
+    def test_tag_set_on_creation(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv', 'holdout'])
+        assert p.nodes['n1'].tag == ['cv', 'holdout']
+
+    def test_tag_change_alone_no_serial_bump(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        r = p.set_node('n1', grp='g1', tag=['new_tag'])
+        assert r['result'] == 'skip'
+        assert p.nodes['n1'].serial == serial_before
+
+    def test_tag_updated_in_diff_skip_path(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['old'])
+        p.set_node('n1', grp='g1', tag=['new'])
+        assert p.nodes['n1'].tag == ['new']
+
+
+class TestAddRemoveTag:
+    def test_add_tag_basic(self, sp):
+        sp.add_tag('h1', 'cv')
+        assert 'cv' in sp.nodes['h1'].tag
+
+    def test_add_multiple_tags(self, sp):
+        sp.add_tag('h1', 'cv', 'holdout')
+        assert sp.nodes['h1'].tag == ['cv', 'holdout']
+
+    def test_add_tag_no_duplicate(self, sp):
+        sp.add_tag('h1', 'cv')
+        sp.add_tag('h1', 'cv')
+        assert sp.nodes['h1'].tag.count('cv') == 1
+
+    def test_add_tag_no_serial_bump(self, sp):
+        serial_before = sp.nodes['h1'].serial
+        sp.add_tag('h1', 'cv')
+        assert sp.nodes['h1'].serial == serial_before
+
+    def test_add_tag_invalidates_attrs_cache(self, sp):
+        sp.nodes['h1'].get_attrs(sp.grps)
+        sp.add_tag('h1', 'cv')
+        assert sp.nodes['h1'].attrs is None
+
+    def test_add_tag_node_not_found(self, sp):
+        with pytest.raises(ValueError):
+            sp.add_tag('no_exist', 'cv')
+
+    def test_remove_tag_basic(self, sp):
+        sp.add_tag('h1', 'cv', 'holdout')
+        sp.remove_tag('h1', 'cv')
+        assert 'cv' not in sp.nodes['h1'].tag
+        assert 'holdout' in sp.nodes['h1'].tag
+
+    def test_remove_multiple_tags(self, sp):
+        sp.add_tag('h1', 'cv', 'holdout')
+        sp.remove_tag('h1', 'cv', 'holdout')
+        assert sp.nodes['h1'].tag == []
+
+    def test_remove_tag_nonexistent_ignored(self, sp):
+        sp.remove_tag('h1', 'no_such_tag')
+        assert sp.nodes['h1'].tag == []
+
+    def test_remove_tag_no_serial_bump(self, sp):
+        sp.add_tag('h1', 'cv')
+        serial_before = sp.nodes['h1'].serial
+        sp.remove_tag('h1', 'cv')
+        assert sp.nodes['h1'].serial == serial_before
+
+    def test_remove_tag_node_not_found(self, sp):
+        with pytest.raises(ValueError):
+            sp.remove_tag('no_exist', 'cv')
+
+    def test_add_remove_tag_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.add_tag('n1', 'cv', 'holdout')
+        p.remove_tag('n1', 'holdout')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].tag == ['cv']
+
 
 class TestGroupHierarchy:
     def test_edges_extend(self, p):
@@ -350,6 +443,21 @@ class TestNodeAttrs:
         p._bump_serials(['n1'])
         new_serial = p.get_node_attrs('n1')['serial']
         assert new_serial != old_serial
+
+    def test_attrs_includes_tag(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv'])
+        attrs = p.get_node_attrs('n1')
+        assert attrs['tag'] == ['cv']
+
+    def test_attrs_tag_is_copy(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv'])
+        attrs = p.get_node_attrs('n1')
+        attrs['tag'].append('mutated')
+        assert p.nodes['n1'].tag == ['cv']
 
 
 class TestNameValidation:
@@ -1212,6 +1320,24 @@ class TestPipelineSQLite:
         p2 = Pipeline(path=tmp_path, name='test')
         assert p2.grps['g1'].params == {'with_std': False}
 
+    def test_node_tag_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv', 'holdout'])
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].tag == ['cv', 'holdout']
+
+    def test_node_tag_default_empty_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].tag == []
+
     def test_set_grp_update_serial_persists(self, tmp_path):
         from sklearn.preprocessing import StandardScaler
         p = Pipeline(path=tmp_path, name='test')
@@ -1375,3 +1501,24 @@ class TestPipelineSync:
         # A syncs
         p.sync()
         assert 'n2' in p.grps['g1'].nodes
+
+    def test_sync_node_added_with_tag(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_node('n2', grp='g1', tag=['cv'])
+        p.sync()
+        assert p.nodes['n2'].tag == ['cv']
+
+    def test_sync_node_updated_tag_applied(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                   edges={'X': [(None, None)]}, params={'with_std': False}, exist='replace')
+        p2.nodes['n1'].tag = ['cv']
+        p2._db_write(lambda conn: conn.execute(
+            "UPDATE nodes SET tag = ? WHERE name = ?", ('["cv"]', 'n1')
+        ))
+        p.sync()
+        assert p.nodes['n1'].tag == ['cv']
