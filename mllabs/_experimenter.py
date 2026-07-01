@@ -1,6 +1,4 @@
-import re
 import os
-import sys
 import uuid
 import pickle as pkl
 import shutil
@@ -9,7 +7,6 @@ import warnings
 from pathlib import Path
 
 import pandas as pd
-from cachetools import LRUCache
 
 from sklearn.model_selection import ShuffleSplit
 
@@ -18,12 +15,12 @@ from ._flow import TrainDataFlow
 from ._store import NodeStore
 from ._describer import desc_spec, desc_status
 from ._logger import DefaultLogger
+from ._cache import DataCache
 
 from ._pipeline import Pipeline
 from ._node_processor import resolve_columns
 from ._connector import Connector
 from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector, ProcessCollector
-from ._trainer import Trainer
 
 
 class OuterFold:
@@ -70,48 +67,6 @@ class OuterFold:
         return self.get_data(test_source, edges, inner_idx)
 
 
-
-def _get_data_size(data):
-    if data is None:
-        return 0
-    if isinstance(data, list):
-        return sum(_get_data_size(item) for item in data)
-    if isinstance(data, tuple):
-        return sum(_get_data_size(item) for item in data)
-    if hasattr(data, 'nbytes'):
-        return data.nbytes
-    if hasattr(data, 'memory_usage'):
-        return data.memory_usage(deep=True).sum()
-    return sys.getsizeof(data)
-
-class DataCache():
-    """LRU cache for Stage node outputs, keyed by ``(node, type, fold_idx)``.
-
-    Capacity is measured in bytes using ``nbytes`` / ``memory_usage``.
-
-    Args:
-        maxsize (int): Maximum cache capacity in bytes. Default 4 GB.
-    """
-
-    def __init__(self, maxsize=4 * 1024 ** 3):  # 4GB 기본값
-        self.cache_dic = LRUCache(maxsize=maxsize, getsizeof=_get_data_size)
-
-    def get_data(self, node, outer_idx, inner_idx, typ):
-        key = (node, outer_idx, inner_idx, typ)
-        return self.cache_dic.get(key, None)
-
-    def put_data(self, node, outer_idx, inner_idx, typ, data):
-        key = (node, outer_idx, inner_idx, typ)
-        self.cache_dic[key] = data
-
-    def clear(self):
-        self.cache_dic.clear()
-
-    def clear_nodes(self, nodes):
-        node_set = set(nodes)
-        keys_to_delete = [k for k in self.cache_dic.keys() if k[0] in node_set]
-        for k in keys_to_delete:
-            del self.cache_dic[k]
 
 class Experimenter():
     """Executes and manages a Pipeline experiment on a single dataset.
@@ -186,7 +141,8 @@ class Experimenter():
                 inner_folds = [(outer_train_idx, None)]
             raw_splits.append((test_idx, inner_folds))
 
-        self.pipeline = Pipeline()
+        self.pipeline = None
+        self.pipeline_id = None
         self.cache = DataCache(maxsize=cache_maxsize)
 
         self.outer_folds = [
@@ -202,10 +158,36 @@ class Experimenter():
             for i, (test_idx, inner_folds) in enumerate(raw_splits)
         ]
         self.collectors = {}
-        self.trainers = {}
         self.status = "open"
         if _save:
             self._save()
+
+    def attach(self, pipeline):
+        """Attach a Pipeline to this Experimenter.
+
+        If this Experimenter has already been associated with a pipeline,
+        the given pipeline must have the same pipeline_id.
+
+        Args:
+            pipeline (Pipeline): Pipeline instance to attach.
+
+        Raises:
+            ValueError: If pipeline_id does not match the previously recorded one.
+        """
+        if self.pipeline_id is not None and pipeline.pipeline_id != self.pipeline_id:
+            raise ValueError(
+                f"Pipeline ID mismatch: expected '{self.pipeline_id}', got '{pipeline.pipeline_id}'"
+            )
+        self.pipeline = pipeline
+        self.pipeline_id = pipeline.pipeline_id
+        self.logger.info(
+            f"Attached: {len(self.pipeline.nodes) - 1} node(s), "
+            f"{len(self.pipeline.grps)} group(s), {len(self.outer_folds)} fold(s)"
+        )
+
+    def _check_pipeline(self):
+        if self.pipeline is None:
+            raise RuntimeError("No pipeline attached. Call attach(pipeline) first.")
 
     def _check_open(self):
         """상태가 open인지 확인하고, 아니면 에러 발생"""
@@ -308,65 +290,6 @@ class Experimenter():
                     result[node] = 'not_collected'
         return result
 
-    def get_trainer(self, name):
-        return self.trainers.get(name)
-
-    def remove_trainer(self, name):
-        if name in self.trainers:
-            del self.trainers[name]
-            self._save()
-
-    def add_trainer(self, name, data=None, splitter="same", splitter_params=None, exist='skip', aug_data=None):
-        """Create and register a Trainer.
-
-        Args:
-            name (str): Trainer name.
-            data: Dataset for the Trainer. ``None`` → use Experimenter's data.
-            splitter: Splitter to use. ``'same'`` reuses ``sp_v``; pass a
-                sklearn splitter object for a custom split strategy; ``None``
-                trains on the full dataset.
-            splitter_params (dict): Column mappings for the splitter. Must be
-                ``None`` when ``splitter='same'``.
-            exist (str): ``'skip'`` (default) returns existing if name already
-                registered; ``'error'`` raises.
-
-        Returns:
-            Trainer: The newly created (or existing) Trainer.
-        """
-        if name in self.trainers:
-            if exist == 'skip':
-                return self.trainers[name]
-            elif exist == 'error':
-                raise RuntimeError(f"Trainer '{name}' already exists")
-
-        if data is None:
-            trainer_data = self.data
-        else:
-            trainer_data = wrap(data)
-
-        if splitter == 'same':
-            if splitter_params is not None:
-                raise ValueError("splitter_params must be None when splitter='same'")
-            trainer_splitter = self.sp_v
-            trainer_splitter_params = self.splitter_params
-        else:
-            trainer_splitter = splitter
-            trainer_splitter_params = splitter_params if splitter_params is not None else {}
-
-        trainer = Trainer(
-            name=name,
-            pipeline=self.pipeline,
-            data=trainer_data,
-            path=self.path / '__trainer' / name,
-            splitter=trainer_splitter,
-            splitter_params=trainer_splitter_params,
-            logger=self.logger,
-            cache=self.cache,
-            aug_data=aug_data,
-        )
-        self.trainers[name] = trainer
-        self._save()
-        return trainer
 
     def get_status(self, node_name):
         """Return the disk status of a head node across all folds.
@@ -521,9 +444,6 @@ class Experimenter():
         self.cache.clear_nodes(nodes)
 
         for v in self.collectors.values():
-            v.reset_nodes(nodes)
-
-        for v in self.trainers.values():
             v.reset_nodes(nodes)
 
     def _reset_serial_stale_nodes(self, node_names):
@@ -693,7 +613,6 @@ class Experimenter():
             self.logger.info(f"Exp complete: {n_ok}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
             self.logger.info(f"Exp complete: {len(target_nodes)} node(s)")
-        self._save()
 
     def collect(self, collector, nodes=None, exist='skip'):
         """Run a Collector ad-hoc over already-built Head nodes.
@@ -832,9 +751,8 @@ class Experimenter():
             'splitter_params': self.splitter_params,
             'cache_maxsize': self.cache_maxsize,
             'exp_id': self.exp_id,
-            'pipeline': self.pipeline,
+            'pipeline_id': self.pipeline_id,
             'collector_keys': {name: type(c).__name__ for name, c in self.collectors.items()},
-            'trainer_keys': list(self.trainers.keys()),
             'status': self.status
         }
 
@@ -892,7 +810,7 @@ class Experimenter():
             logger = logger
         )
         exp.exp_id = save_data['exp_id']
-        exp.pipeline = save_data['pipeline']
+        exp.pipeline_id = save_data.get('pipeline_id')
         exp.status = save_data['status']
 
         # Collector 복원
@@ -906,39 +824,12 @@ class Experimenter():
                 collector = cls.load(coll_path)
                 exp.collectors[coll_name] = collector
 
-        # Trainer 복원
-        from ._trainer import Trainer
-        for trainer_name in save_data.get('trainer_keys', []):
-            trainer_path = filepath / '__trainer' / trainer_name
-            if (trainer_path / '__trainer.pkl').exists():
-                trainer = Trainer._load(
-                    trainer_path,
-                    pipeline=exp.pipeline,
-                    data=exp.data,
-                    cache=exp.cache,
-                    logger=exp.logger,
-                )
-                exp.trainers[trainer_name] = trainer
-
-        exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.outer_folds)} fold(s)")
+        exp.logger.info(f"Loaded. Call attach(pipeline) to complete.")
         return exp
 
-    def export_pipeline(self):
-        return self.pipeline.copy()
-
-    def import_pipeline(self, pipeline):
-        if len(self.pipeline.nodes) > 0 or len(self.pipeline.grps) > 0:
-            raise RuntimeError("")
-        self.pipeline = pipeline.copy()
-    
     def desc_status(self):
         return desc_status(self)
 
     def desc_spec(self):
         return desc_spec(self)
 
-    def desc_pipeline(self, max_depth=None, direction='TD'):
-        return self.pipeline.desc_pipeline(max_depth, direction)
-
-    def desc_node(self, node_name, direction='TD', show_params=False):
-        return self.pipeline.desc_node(node_name, direction, show_params)

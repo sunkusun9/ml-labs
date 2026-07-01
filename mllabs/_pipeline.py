@@ -161,7 +161,7 @@ class PipelineNode:
     """
 
     def __init__(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, tag=None
     ):
         self.name = name
         self.grp = grp  # group name (str)
@@ -171,6 +171,7 @@ class PipelineNode:
         self.adapter = adapter
         self.params = params if params is not None else {}
         self.desc = desc
+        self.tag = tag if tag is not None else []
         self.serial = str(uuid.uuid4())
 
         self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
@@ -179,7 +180,7 @@ class PipelineNode:
     def copy(self):
         ret = PipelineNode(
             self.name, self.grp, self.processor, self.edges.copy(),
-            self.method, self.adapter, self.params.copy(), self.desc
+            self.method, self.adapter, self.params.copy(), self.desc, list(self.tag)
         )
         ret.serial = self.serial
         ret.output_edges = self.output_edges.copy()
@@ -216,6 +217,7 @@ class PipelineNode:
             'method': grp_attrs.get('method') if self.method is None else self.method,
             'role': grp_attrs['role'],
             'serial': self.serial,
+            'tag': list(self.tag),
         }
 
         return self.attrs
@@ -291,6 +293,9 @@ class Pipeline:
         self.grps = {'__datasource__': PipelineGroup('__datasource__', role='datasource')}
         self.nodes = {None: DataSourceNode()}
         self._db_path = None
+        self.pipeline_id = str(uuid.uuid4())
+        self.trainers = {}
+        self.experiments = {}
 
         if path is not None:
             db_path = Path(path) / f'{name}.db'
@@ -328,7 +333,8 @@ class Pipeline:
                 adapter TEXT,
                 params TEXT,
                 desc TEXT,
-                serial TEXT NOT NULL
+                serial TEXT NOT NULL,
+                tag TEXT DEFAULT '[]' NOT NULL
             );
             CREATE TABLE IF NOT EXISTS datasource (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -343,11 +349,16 @@ class Pipeline:
             (json.dumps(ds.schema), json.dumps(ds.targets), ds.serial)
         )
         conn.execute("INSERT INTO meta (key, value) VALUES ('version', '1')")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('pipeline_id', ?)", (self.pipeline_id,))
 
     def _load_db(self):
         from ._serialize import deserialize_from_json
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
+
+            row = conn.execute("SELECT value FROM meta WHERE key = 'pipeline_id'").fetchone()
+            if row:
+                self.pipeline_id = row['value']
 
             row = conn.execute("SELECT * FROM datasource WHERE id = 1").fetchone()
             if row:
@@ -391,6 +402,7 @@ class Pipeline:
                     adapter=deserialize_from_json(row['adapter']),
                     params=deserialize_from_json(row['params']) or {},
                     desc=row['desc'],
+                    tag=json.loads(row['tag']) if row['tag'] else [],
                 )
                 node.serial = row['serial']
                 self.nodes[row['name']] = node
@@ -433,8 +445,8 @@ class Pipeline:
         from ._serialize import serialize_to_json
         conn.execute(
             "INSERT OR REPLACE INTO nodes "
-            "(name, grp, processor, edges, method, adapter, params, desc, serial) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(name, grp, processor, edges, method, adapter, params, desc, serial, tag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (node.name, node.grp,
              serialize_to_json(node.processor) if node.processor is not None else None,
              serialize_to_json(node.edges),
@@ -442,7 +454,8 @@ class Pipeline:
              serialize_to_json(node.adapter) if node.adapter is not None else None,
              serialize_to_json(node.params),
              node.desc,
-             node.serial)
+             node.serial,
+             json.dumps(node.tag))
         )
 
     def _write_datasource(self, conn):
@@ -552,6 +565,7 @@ class Pipeline:
                     'params': deserialize_from_json(row['params']) or {},
                     'desc': row['desc'],
                     'serial': row['serial'],
+                    'tag': json.loads(row['tag']) if row['tag'] else [],
                 }
 
             mem_node_names = set(self.nodes.keys()) - {None}
@@ -566,7 +580,7 @@ class Pipeline:
                 node = PipelineNode(
                     name=name, grp=d['grp'], processor=d['processor'],
                     edges=d['edges'], method=d['method'], adapter=d['adapter'],
-                    params=d['params'], desc=d['desc'],
+                    params=d['params'], desc=d['desc'], tag=d['tag'],
                 )
                 node.serial = d['serial']
                 self.nodes[name] = node
@@ -583,6 +597,7 @@ class Pipeline:
                     node.adapter = d['adapter']
                     node.params = d['params']
                     node.desc = d['desc']
+                    node.tag = d['tag']
                     node.serial = d['serial']
                     node.update_attrs()
                     changes['nodes']['updated'].append(name)
@@ -1146,7 +1161,7 @@ class Pipeline:
                             parent_node.output_edges.append(node_name)
 
     def set_node(
-        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, exist='diff'
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, desc=None, tag=None, exist='diff'
     ):
         """Create or update a node.
 
@@ -1193,8 +1208,10 @@ class Pipeline:
                 old_node = self.nodes[name]
                 if not old_node.diff(grp, processor, edges, method, adapter, params):
                     old_node.desc = desc
+                    old_node.tag = tag if tag is not None else []
                     self._db_write(lambda conn: conn.execute(
-                        "UPDATE nodes SET desc = ? WHERE name = ?", (desc, name)
+                        "UPDATE nodes SET desc = ?, tag = ? WHERE name = ?",
+                        (desc, json.dumps(old_node.tag), name)
                     ))
                     return {'result': 'skip', 'affected_nodes': [], 'old_obj': old_node, 'obj': old_node}
 
@@ -1207,7 +1224,7 @@ class Pipeline:
             old_output_edges = old_node.output_edges
 
         node = PipelineNode(
-            name, grp, processor, edges, method=method, adapter=adapter, params=params, desc=desc
+            name, grp, processor, edges, method=method, adapter=adapter, params=params, desc=desc, tag=tag
         )
 
         grp_obj = self.grps[grp]
@@ -1261,6 +1278,36 @@ class Pipeline:
 
     def get_node(self, name):
         return self.nodes.get(name, None)
+
+    def add_tag(self, name, *tags):
+        if name not in self.nodes or name is None:
+            raise ValueError(f"Node '{name}' not found")
+        node = self.nodes[name]
+        changed = False
+        for tag in tags:
+            if tag not in node.tag:
+                node.tag.append(tag)
+                changed = True
+        if changed:
+            node.update_attrs()
+            self._db_write(lambda conn: conn.execute(
+                "UPDATE nodes SET tag = ? WHERE name = ?", (json.dumps(node.tag), name)
+            ))
+
+    def remove_tag(self, name, *tags):
+        if name not in self.nodes or name is None:
+            raise ValueError(f"Node '{name}' not found")
+        node = self.nodes[name]
+        changed = False
+        for tag in tags:
+            if tag in node.tag:
+                node.tag.remove(tag)
+                changed = True
+        if changed:
+            node.update_attrs()
+            self._db_write(lambda conn: conn.execute(
+                "UPDATE nodes SET tag = ? WHERE name = ?", (json.dumps(node.tag), name)
+            ))
 
     def get_node_attrs(self, name):
         """Return fully resolved attributes for a node (group hierarchy merged).
@@ -1370,6 +1417,135 @@ class Pipeline:
             result[proc_name] = df
 
         return result
+
+    def add_trainer(self, name, data, splitter=None, splitter_params=None, path=None,
+                    cache=None, logger=None, aug_data=None, tags=None, exist='skip'):
+        """Create and register a Trainer on this Pipeline.
+
+        Args:
+            name (str): Trainer name.
+            data: Training dataset.
+            splitter: sklearn splitter, or ``None`` (train on full dataset).
+            splitter_params (dict): Column mappings for the splitter.
+            path (str | Path): Artifact directory. Defaults to
+                ``{pipeline_dir}/__trainers/{name}`` when Pipeline has a DB path.
+            cache: DataCache instance. Creates a fresh one if ``None``.
+            logger: Logger instance. Creates a DefaultLogger if ``None``.
+            aug_data: Augmentation data appended to inner train split.
+            exist (str): ``'skip'`` returns existing; ``'error'`` raises.
+
+        Returns:
+            Trainer: The newly created (or existing) Trainer.
+        """
+        if name in self.trainers:
+            if exist == 'skip':
+                return self.trainers[name]
+            elif exist == 'error':
+                raise ValueError(f"Trainer '{name}' already exists")
+
+        if path is None:
+            if self._db_path is not None:
+                path = self._db_path.parent / '__trainers' / name
+            else:
+                raise ValueError("path is required when Pipeline has no DB path")
+
+        from ._cache import DataCache
+        from ._logger import DefaultLogger
+        from ._trainer import Trainer
+        from ._data_wrapper import wrap
+
+        trainer = Trainer(
+            name=name,
+            pipeline=self,
+            data=wrap(data),
+            path=path,
+            splitter=splitter,
+            splitter_params=splitter_params if splitter_params is not None else {},
+            logger=logger if logger is not None else DefaultLogger(level=['info', 'progress']),
+            cache=cache if cache is not None else DataCache(),
+            aug_data=aug_data,
+        )
+        if tags is not None:
+            matching = [
+                n for n, node in self.nodes.items()
+                if n is not None and self.grps[node.grp].role == 'head'
+                and set(node.tag) & set(tags)
+            ]
+            if matching:
+                trainer.select_head(matching)
+
+        self.trainers[name] = trainer
+        return trainer
+
+    def get_trainer(self, name):
+        return self.trainers.get(name)
+
+    def remove_trainer(self, name):
+        if name in self.trainers:
+            del self.trainers[name]
+
+    def _check_data_compatibility(self, data):
+        from ._data_wrapper import wrap
+        schema_cols = set(self.datasource.schema.keys())
+        if not schema_cols:
+            return
+        data_cols = set(wrap(data).get_columns())
+        missing = schema_cols - data_cols
+        if missing:
+            raise ValueError(
+                f"Data is missing columns defined in datasource schema: {sorted(missing)}"
+            )
+
+    def add_experiment(self, name, data, sp=None, sp_v=None, splitter_params=None,
+                       collectors=None, tags=None, path=None, exist='skip',
+                       data_key=None, cache_maxsize=4 * 1024 ** 3, logger=None, aug_data=None):
+        if name in self.experiments:
+            if exist == 'skip':
+                return self.experiments[name]
+            elif exist == 'error':
+                raise ValueError(f"Experiment '{name}' already exists")
+
+        self._check_data_compatibility(data)
+
+        if path is None:
+            if self._db_path is not None:
+                path = self._db_path.parent / '__experiments' / name
+            else:
+                raise ValueError("path is required when Pipeline has no DB path")
+
+        from ._experimenter import Experimenter
+        from ._logger import DefaultLogger
+        from sklearn.model_selection import ShuffleSplit as _SS
+
+        e = Experimenter(
+            data=data,
+            path=path,
+            sp=sp if sp is not None else _SS(n_splits=1, random_state=1),
+            sp_v=sp_v,
+            splitter_params=splitter_params if splitter_params is not None else {},
+            data_key=data_key,
+            cache_maxsize=cache_maxsize,
+            logger=logger if logger is not None else DefaultLogger(level=['info', 'progress']),
+            aug_data=aug_data,
+        )
+        e.attach(self)
+
+        if collectors:
+            for c in collectors:
+                e.add_collector(c)
+
+        if tags is not None:
+            e.tags = tags
+
+        self.experiments[name] = e
+        return e
+
+    def get_experiment(self, name):
+        return self.experiments.get(name)
+
+    def remove_experiment(self, name):
+        if name in self.experiments:
+            del self.experiments[name]
 
     def desc_node(self, node_name, direction='TD', show_params=False):
         """특정 노드까지의 연결 구조를 Mermaid Markdown으로 반환

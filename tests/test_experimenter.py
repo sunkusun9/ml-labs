@@ -7,7 +7,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
-from mllabs._experimenter import Experimenter, DataCache
+from mllabs._experimenter import Experimenter
+from mllabs._cache import DataCache
 from mllabs._store import NodeStore
 from mllabs._flow import DataFlow
 from mllabs._pipeline import Pipeline
@@ -64,12 +65,18 @@ def sample_data():
 
 
 @pytest.fixture
-def exp(tmp_path, sample_data):
+def pipeline():
+    return Pipeline()
+
+
+@pytest.fixture
+def exp(tmp_path, sample_data, pipeline):
     e = Experimenter(
         data=sample_data,
         path=tmp_path / 'exp',
         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
     )
+    e.attach(pipeline)
     return e
 
 
@@ -150,6 +157,7 @@ class TestExperimenterInit:
             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
             sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
         )
+        e.attach(Pipeline())
         assert e.get_n_splits() == 2
         assert e.get_n_splits_inner() == 3
         flow = e.outer_folds[0].train_data_flows[0]
@@ -170,6 +178,7 @@ class TestExperimenterInit:
 
     def test_data_key(self, tmp_path, sample_data):
         e = Experimenter(data=sample_data, path=tmp_path / 'dk', data_key='test_key')
+        e.attach(Pipeline())
         assert e.data_key == 'test_key'
 
 
@@ -462,6 +471,7 @@ class TestStateManagement:
         exp.close_exp()
 
         loaded = Experimenter.load(exp.path, sample_data)
+        loaded.attach(exp.pipeline)
         assert loaded.status == 'closed'
 
     def test_reopen_exp_after_save_load(self, exp, sample_data):
@@ -474,6 +484,7 @@ class TestStateManagement:
         exp.close_exp()
 
         loaded = Experimenter.load(exp.path, sample_data)
+        loaded.attach(exp.pipeline)
         assert loaded.status == 'closed'
         loaded.reopen_exp()
         assert loaded.status == 'open'
@@ -497,6 +508,7 @@ class TestSaveLoad:
         path = exp.path
 
         loaded = Experimenter.load(path, sample_data)
+        loaded.attach(exp.pipeline)
         assert set(loaded.pipeline.grps.keys()) == set(exp.pipeline.grps.keys())
         flow = loaded.outer_folds[0].train_data_flows[0]
         assert 'scaler' in flow.node_objs
@@ -504,8 +516,8 @@ class TestSaveLoad:
         assert loaded.get_status('dt') == 'built'
 
     def test_load_data_key_mismatch(self, tmp_path, sample_data):
-        e = Experimenter(data=sample_data, path=tmp_path / 'dk',
-                        data_key='key_a')
+        e = Experimenter(data=sample_data, path=tmp_path / 'dk', data_key='key_a')
+        e.attach(Pipeline())
         with pytest.raises(ValueError, match='data_key'):
             Experimenter.load(tmp_path / 'dk', sample_data, data_key='key_b')
 
@@ -513,6 +525,7 @@ class TestSaveLoad:
         _setup_stage(exp)
         path = exp.path
         loaded = Experimenter.load(path, sample_data)
+        loaded.attach(exp.pipeline)
         assert loaded.get_n_splits() == exp.get_n_splits()
         assert loaded.get_n_splits_inner() == exp.get_n_splits_inner()
 

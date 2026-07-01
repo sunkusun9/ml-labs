@@ -3,6 +3,10 @@ import pandas as pd
 from mllabs._pipeline import Pipeline, PipelineGroup, PipelineNode, DataSourceNode, VAR_TYPES
 
 
+def _dummy_metric(y, p):
+    return 0.5
+
+
 class DummyStage:
     __name__ = 'DummyStage'
 
@@ -229,6 +233,99 @@ class TestSetNode:
         p.set_node('n1', grp='g1', params={'b': 2})
         assert p.nodes['n1'].params == {'b': 2}
 
+    def test_tag_default_empty(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        assert p.nodes['n1'].tag == []
+
+    def test_tag_set_on_creation(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv', 'holdout'])
+        assert p.nodes['n1'].tag == ['cv', 'holdout']
+
+    def test_tag_change_alone_no_serial_bump(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        serial_before = p.nodes['n1'].serial
+        r = p.set_node('n1', grp='g1', tag=['new_tag'])
+        assert r['result'] == 'skip'
+        assert p.nodes['n1'].serial == serial_before
+
+    def test_tag_updated_in_diff_skip_path(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['old'])
+        p.set_node('n1', grp='g1', tag=['new'])
+        assert p.nodes['n1'].tag == ['new']
+
+
+class TestAddRemoveTag:
+    def test_add_tag_basic(self, sp):
+        sp.add_tag('h1', 'cv')
+        assert 'cv' in sp.nodes['h1'].tag
+
+    def test_add_multiple_tags(self, sp):
+        sp.add_tag('h1', 'cv', 'holdout')
+        assert sp.nodes['h1'].tag == ['cv', 'holdout']
+
+    def test_add_tag_no_duplicate(self, sp):
+        sp.add_tag('h1', 'cv')
+        sp.add_tag('h1', 'cv')
+        assert sp.nodes['h1'].tag.count('cv') == 1
+
+    def test_add_tag_no_serial_bump(self, sp):
+        serial_before = sp.nodes['h1'].serial
+        sp.add_tag('h1', 'cv')
+        assert sp.nodes['h1'].serial == serial_before
+
+    def test_add_tag_invalidates_attrs_cache(self, sp):
+        sp.nodes['h1'].get_attrs(sp.grps)
+        sp.add_tag('h1', 'cv')
+        assert sp.nodes['h1'].attrs is None
+
+    def test_add_tag_node_not_found(self, sp):
+        with pytest.raises(ValueError):
+            sp.add_tag('no_exist', 'cv')
+
+    def test_remove_tag_basic(self, sp):
+        sp.add_tag('h1', 'cv', 'holdout')
+        sp.remove_tag('h1', 'cv')
+        assert 'cv' not in sp.nodes['h1'].tag
+        assert 'holdout' in sp.nodes['h1'].tag
+
+    def test_remove_multiple_tags(self, sp):
+        sp.add_tag('h1', 'cv', 'holdout')
+        sp.remove_tag('h1', 'cv', 'holdout')
+        assert sp.nodes['h1'].tag == []
+
+    def test_remove_tag_nonexistent_ignored(self, sp):
+        sp.remove_tag('h1', 'no_such_tag')
+        assert sp.nodes['h1'].tag == []
+
+    def test_remove_tag_no_serial_bump(self, sp):
+        sp.add_tag('h1', 'cv')
+        serial_before = sp.nodes['h1'].serial
+        sp.remove_tag('h1', 'cv')
+        assert sp.nodes['h1'].serial == serial_before
+
+    def test_remove_tag_node_not_found(self, sp):
+        with pytest.raises(ValueError):
+            sp.remove_tag('no_exist', 'cv')
+
+    def test_add_remove_tag_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p.add_tag('n1', 'cv', 'holdout')
+        p.remove_tag('n1', 'holdout')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].tag == ['cv']
+
 
 class TestGroupHierarchy:
     def test_edges_extend(self, p):
@@ -350,6 +447,21 @@ class TestNodeAttrs:
         p._bump_serials(['n1'])
         new_serial = p.get_node_attrs('n1')['serial']
         assert new_serial != old_serial
+
+    def test_attrs_includes_tag(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv'])
+        attrs = p.get_node_attrs('n1')
+        assert attrs['tag'] == ['cv']
+
+    def test_attrs_tag_is_copy(self, p):
+        p.set_grp('g1', role='stage', processor=DummyStage, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv'])
+        attrs = p.get_node_attrs('n1')
+        attrs['tag'].append('mutated')
+        assert p.nodes['n1'].tag == ['cv']
 
 
 class TestNameValidation:
@@ -1212,6 +1324,24 @@ class TestPipelineSQLite:
         p2 = Pipeline(path=tmp_path, name='test')
         assert p2.grps['g1'].params == {'with_std': False}
 
+    def test_node_tag_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1', tag=['cv', 'holdout'])
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].tag == ['cv', 'holdout']
+
+    def test_node_tag_default_empty_persists(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = Pipeline(path=tmp_path, name='test')
+        p.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                  edges={'X': [(None, None)]})
+        p.set_node('n1', grp='g1')
+        p2 = Pipeline(path=tmp_path, name='test')
+        assert p2.nodes['n1'].tag == []
+
     def test_set_grp_update_serial_persists(self, tmp_path):
         from sklearn.preprocessing import StandardScaler
         p = Pipeline(path=tmp_path, name='test')
@@ -1375,3 +1505,172 @@ class TestPipelineSync:
         # A syncs
         p.sync()
         assert 'n2' in p.grps['g1'].nodes
+
+    def test_sync_node_added_with_tag(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_node('n2', grp='g1', tag=['cv'])
+        p.sync()
+        assert p.nodes['n2'].tag == ['cv']
+
+    def test_sync_node_updated_tag_applied(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        p = self._make(tmp_path)
+        p2 = Pipeline(path=tmp_path, name='test')
+        p2.set_grp('g1', role='stage', processor=StandardScaler, method='transform',
+                   edges={'X': [(None, None)]}, params={'with_std': False}, exist='replace')
+        p2.nodes['n1'].tag = ['cv']
+        p2._db_write(lambda conn: conn.execute(
+            "UPDATE nodes SET tag = ? WHERE name = ?", ('["cv"]', 'n1')
+        ))
+        p.sync()
+        assert p.nodes['n1'].tag == ['cv']
+
+
+class TestAddExperiment:
+    @pytest.fixture
+    def sample_data(self):
+        import numpy as np
+        np.random.seed(0)
+        n = 60
+        return pd.DataFrame({
+            'f1': np.random.randn(n),
+            'f2': np.random.randn(n),
+            'target': np.random.randint(0, 2, n),
+        })
+
+    @pytest.fixture
+    def pipeline(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.tree import DecisionTreeClassifier
+        p = Pipeline(path=tmp_path / 'pipeline')
+        p.set_grp('scale', role='stage', processor=StandardScaler,
+                  method='transform', edges={'X': [(None, ['f1', 'f2'])]})
+        p.set_node('scaler', grp='scale')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                  method='predict',
+                  edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
+                  params={'max_depth': 3, 'random_state': 0})
+        p.set_node('dt', grp='model')
+        return p
+
+    def test_creates_experimenter(self, pipeline, sample_data):
+        from mllabs._experimenter import Experimenter
+        e = pipeline.add_experiment('exp1', sample_data)
+        assert isinstance(e, Experimenter)
+        assert pipeline.get_experiment('exp1') is e
+
+    def test_attach_sets_pipeline(self, pipeline, sample_data):
+        e = pipeline.add_experiment('exp1', sample_data)
+        assert e.pipeline is pipeline
+
+    def test_skip_returns_existing(self, pipeline, sample_data):
+        e1 = pipeline.add_experiment('exp1', sample_data)
+        e2 = pipeline.add_experiment('exp1', sample_data, exist='skip')
+        assert e1 is e2
+
+    def test_error_on_duplicate(self, pipeline, sample_data):
+        pipeline.add_experiment('exp1', sample_data)
+        with pytest.raises(ValueError):
+            pipeline.add_experiment('exp1', sample_data, exist='error')
+
+    def test_no_db_path_requires_explicit_path(self, sample_data):
+        p = Pipeline()
+        with pytest.raises(ValueError):
+            p.add_experiment('exp1', sample_data)
+
+    def test_explicit_path(self, sample_data, tmp_path):
+        p = Pipeline()
+        e = p.add_experiment('exp1', sample_data, path=tmp_path / 'exp1')
+        assert e is not None
+
+    def test_remove_experiment(self, pipeline, sample_data):
+        pipeline.add_experiment('exp1', sample_data)
+        pipeline.remove_experiment('exp1')
+        assert pipeline.get_experiment('exp1') is None
+
+    def test_datasource_compatibility_check(self, tmp_path, sample_data):
+        p = Pipeline(path=tmp_path / 'pipeline')
+        p.set_datasource({'f1': 'numerical', 'f2': 'numerical', 'missing_col': 'numerical'})
+        with pytest.raises(ValueError, match='missing_col'):
+            p.add_experiment('exp1', sample_data)
+
+    def test_datasource_no_schema_no_check(self, pipeline, sample_data):
+        partial = sample_data[['f1', 'target']]
+        e = pipeline.add_experiment('exp1', partial)
+        assert e is not None
+
+    def test_collectors_registered(self, pipeline, sample_data):
+        from mllabs import MetricCollector, Connector
+        mc = MetricCollector('acc', Connector(), output_var=None, metric_func=_dummy_metric)
+        e = pipeline.add_experiment('exp1', sample_data, collectors=[mc])
+        assert e.get_collector('acc') is not None
+
+    def test_tags_stored_on_experimenter(self, pipeline, sample_data):
+        e = pipeline.add_experiment('exp1', sample_data, tags=['cv'])
+        assert e.tags == ['cv']
+
+    def test_add_experiment_then_build_exp(self, pipeline, sample_data):
+        from sklearn.model_selection import ShuffleSplit
+        e = pipeline.add_experiment('exp1', sample_data,
+                                    sp=ShuffleSplit(n_splits=2, test_size=0.3, random_state=0))
+        e.build()
+        e.exp()
+        assert e.get_status('dt') == 'built'
+
+
+class TestAddTrainerTags:
+    @pytest.fixture
+    def sample_data(self):
+        import numpy as np
+        np.random.seed(0)
+        n = 60
+        return pd.DataFrame({
+            'f1': np.random.randn(n),
+            'f2': np.random.randn(n),
+            'target': np.random.randint(0, 2, n),
+        })
+
+    @pytest.fixture
+    def pipeline(self, tmp_path):
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.tree import DecisionTreeClassifier
+        from sklearn.model_selection import KFold
+        p = Pipeline(path=tmp_path / 'pipeline')
+        p.set_grp('scale', role='stage', processor=StandardScaler,
+                  method='transform', edges={'X': [(None, ['f1', 'f2'])]})
+        p.set_node('scaler', grp='scale')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
+                  method='predict',
+                  edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
+                  params={'max_depth': 3, 'random_state': 0})
+        p.set_node('dt', grp='model', tag=['cv', 'final'])
+        p.set_node('dt2', grp='model', tag=['final'])
+        return p
+
+    def test_tags_selects_matching_heads(self, pipeline, sample_data):
+        from sklearn.model_selection import KFold
+        trainer = pipeline.add_trainer('t1', sample_data, splitter=KFold(n_splits=3),
+                                       tags=['cv'])
+        assert 'dt' in trainer.selected_heads
+        assert 'dt2' not in trainer.selected_heads
+
+    def test_tags_no_match_empty_selection(self, pipeline, sample_data):
+        from sklearn.model_selection import KFold
+        trainer = pipeline.add_trainer('t1', sample_data, splitter=KFold(n_splits=3),
+                                       tags=['nonexistent'])
+        assert trainer.selected_heads == []
+
+    def test_tags_none_no_auto_select(self, pipeline, sample_data):
+        from sklearn.model_selection import KFold
+        trainer = pipeline.add_trainer('t1', sample_data, splitter=KFold(n_splits=3),
+                                       tags=None)
+        assert trainer.selected_heads == []
+
+    def test_tags_multiple_match(self, pipeline, sample_data):
+        from sklearn.model_selection import KFold
+        trainer = pipeline.add_trainer('t1', sample_data, splitter=KFold(n_splits=3),
+                                       tags=['final'])
+        assert 'dt' in trainer.selected_heads
+        assert 'dt2' in trainer.selected_heads
