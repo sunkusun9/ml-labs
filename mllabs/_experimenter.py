@@ -613,7 +613,6 @@ class Experimenter():
             self.logger.info(f"Exp complete: {n_ok}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
         else:
             self.logger.info(f"Exp complete: {len(target_nodes)} node(s)")
-        self._save()
 
     def collect(self, collector, nodes=None, exist='skip'):
         """Run a Collector ad-hoc over already-built Head nodes.
@@ -834,8 +833,3 @@ class Experimenter():
     def desc_spec(self):
         return desc_spec(self)
 
-    def desc_pipeline(self, max_depth=None, direction='TD'):
-        return self.pipeline.desc_pipeline(max_depth, direction)
-
-    def desc_node(self, node_name, direction='TD', show_params=False):
-        return self.pipeline.desc_node(node_name, direction, show_params)
