@@ -1,5 +1,5 @@
-import pickle
 import re
+import sqlite3
 
 import numpy as np
 import pandas as pd
@@ -59,14 +59,11 @@ class ProbToLabel:
 
 
 class MetricCollector(Collector):
-    _SAVE_EXCLUDE = {'_buf': dict, '_cache': dict}
-
     def __init__(self, name, connector, output_var, metric_func, include_train=False):
         super().__init__(name, connector)
         self.output_var = output_var
         self.metric_func = metric_func
         self.include_train = include_train
-        self._cache = {}  # {node: {(outer_idx, inner_idx): result}}
 
     def _on_attach(self, experimenter):
         if hasattr(self.metric_func, 'on_attach'):
@@ -91,47 +88,67 @@ class MetricCollector(Collector):
 
         return result
 
-    def _flush_outer(self, node, outer_idx, inner_list):
-        node_cache = self._cache.setdefault(node, {})
-        for inner_idx, r in enumerate(inner_list):
-            node_cache[(outer_idx, inner_idx)] = r
-        if self.path is not None and self._n_outer is not None and len(node_cache) == self._n_outer * self._n_inner:
-            self.path.mkdir(parents=True, exist_ok=True)
-            with open(self.path / f'{node}.pkl', 'wb') as f:
-                pickle.dump(node_cache, f)
+    @property
+    def _db_path(self):
+        return self.path / 'metrics.db'
+
+    def _get_conn(self):
+        self.path.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS metrics (
+                node TEXT, idx INTEGER, inner_idx INTEGER,
+                split TEXT, value REAL,
+                PRIMARY KEY (node, idx, inner_idx, split)
+            )
+        """)
+        return conn
+
+    def push(self, node, outer_idx, inner_idx, result):
+        if result is not None and self.path is not None:
+            rows = [(node, outer_idx, inner_idx, split, float(value))
+                    for split, value in result.items()]
+            with self._get_conn() as conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO metrics "
+                    "(node, idx, inner_idx, split, value) VALUES (?,?,?,?,?)",
+                    rows
+                )
 
     def _load_results(self, node):
-        if node in self._cache:
-            return self._cache[node]
-        if self.path is None:
+        if self.path is None or not self._db_path.exists():
             return None
-        p = self.path / f'{node}.pkl'
-        if not p.exists():
+        with sqlite3.connect(str(self._db_path)) as conn:
+            rows = conn.execute(
+                "SELECT idx, inner_idx, split, value FROM metrics WHERE node = ?", (node,)
+            ).fetchall()
+        if not rows:
             return None
-        with open(p, 'rb') as f:
-            result = pickle.load(f)
-        self._cache[node] = result
+        result = {}
+        for idx, inner_idx, split, value in rows:
+            result.setdefault((idx, inner_idx), {})[split] = value
         return result
 
     def has_node(self, node):
-        if node in self._cache:
-            return True
-        if self.path is None:
+        if self.path is None or not self._db_path.exists():
             return False
-        return (self.path / f'{node}.pkl').exists()
+        with sqlite3.connect(str(self._db_path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM metrics WHERE node = ? LIMIT 1", (node,)
+            ).fetchone()
+        return row is not None
 
     def has(self, node):
         return self.has_node(node)
 
     def reset_nodes(self, nodes):
-        node_set = set(nodes)
-        self._buf = {k: v for k, v in self._buf.items() if k not in node_set}
-        for node in nodes:
-            self._cache.pop(node, None)
-            if self.path is not None:
-                p = self.path / f'{node}.pkl'
-                if p.exists():
-                    p.unlink()
+        self._buf = {k: v for k, v in self._buf.items() if k not in set(nodes)}
+        if self.path is not None and self._db_path.exists():
+            with sqlite3.connect(str(self._db_path)) as conn:
+                conn.execute(
+                    f"DELETE FROM metrics WHERE node IN ({','.join('?' * len(nodes))})",
+                    list(nodes)
+                )
 
     def _get_nodes(self, nodes, available):
         if nodes is None:
@@ -141,9 +158,11 @@ class MetricCollector(Collector):
         return [n for n in available if re.search(nodes, n)]
 
     def _get_saved_nodes(self):
-        if self.path is None:
-            return list(self._cache.keys())
-        return [f.stem for f in self.path.glob('*.pkl') if f.name != '__config.pkl']
+        if self.path is None or not self._db_path.exists():
+            return []
+        with sqlite3.connect(str(self._db_path)) as conn:
+            rows = conn.execute("SELECT DISTINCT node FROM metrics").fetchall()
+        return [r[0] for r in rows]
 
     def get_metric(self, node):
         data = self._load_results(node)
