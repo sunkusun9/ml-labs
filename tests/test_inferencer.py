@@ -6,7 +6,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
-from mllabs._experimenter import Experimenter
+from mllabs._pipeline import Pipeline
 from mllabs._inferencer import Inferencer
 from mllabs._data_wrapper import unwrap
 
@@ -25,28 +25,27 @@ def sample_data():
 
 @pytest.fixture
 def exp(tmp_path, sample_data):
-    e = Experimenter(
-        data=sample_data,
-        path=tmp_path / 'exp',
-        sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
-    )
-    e.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
+    p = Pipeline(path=tmp_path / 'pipeline')
+    p.set_grp('scale', role='stage', processor=StandardScaler,
               method='transform', edges={'X': [(None, ['f1', 'f2', 'f3'])]})
-    e.pipeline.set_node('scaler', grp='scale')
-    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    p.set_node('scaler', grp='scale')
+    p.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.pipeline.set_node('dt', grp='model')
+    p.set_node('dt', grp='model')
+    e = p.add_experiment('main', data=sample_data,
+                         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
+                         sp_v=KFold(n_splits=3, shuffle=True, random_state=42))
     e.build()
     e.exp()
     return e
 
 
 @pytest.fixture
-def trained_trainer(exp):
-    trainer = exp.add_trainer('t1')
+def trained_trainer(tmp_path, exp, sample_data):
+    trainer = exp.pipeline.add_trainer('t1', data=sample_data, path=tmp_path / 'trainer_t1',
+                                       splitter=KFold(n_splits=2, shuffle=True, random_state=0))
     trainer.select_head(['dt'])
     trainer.train()
     return trainer
@@ -72,8 +71,9 @@ class TestToInferencer:
         assert 'scaler' in inf.pipeline.nodes
         assert 'dt' in inf.pipeline.nodes
 
-    def test_not_trained_raises(self, exp):
-        trainer = exp.add_trainer('t_no_train')
+    def test_not_trained_raises(self, tmp_path, exp, sample_data):
+        trainer = exp.pipeline.add_trainer('t_no_train', data=sample_data,
+                                           path=tmp_path / 'trainer_t_no_train')
         trainer.select_head(['dt'])
         with pytest.raises(RuntimeError, match="not built"):
             trainer.to_inferencer()
@@ -105,7 +105,7 @@ class TestProcess:
         assert isinstance(results, list)
         assert len(results) == inf.n_splits
 
-    def test_v_parameter(self, exp, sample_data):
+    def test_v_parameter(self, tmp_path, exp, sample_data):
         exp.pipeline.set_grp('model_proba', role='head', processor=DecisionTreeClassifier,
                     method='predict_proba',
                     edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
@@ -113,15 +113,18 @@ class TestProcess:
         exp.pipeline.set_node('dt_proba', grp='model_proba')
         exp.build()
         exp.exp()
-        trainer = exp.add_trainer('t_proba')
+        trainer = exp.pipeline.add_trainer('t_proba', data=sample_data,
+                                           path=tmp_path / 'trainer_t_proba')
         trainer.select_head(['dt_proba'])
         trainer.train()
         inf = trainer.to_inferencer(v=slice(-1, None))
         result = inf.process(sample_data)
         assert result.shape[1] == 1
 
-    def test_single_split(self, exp, sample_data):
-        trainer = exp.add_trainer('t_nosplit', splitter=None)
+    def test_single_split(self, tmp_path, exp, sample_data):
+        trainer = exp.pipeline.add_trainer('t_nosplit', data=sample_data,
+                                           path=tmp_path / 'trainer_nosplit',
+                                           splitter=None)
         trainer.select_head(['dt'])
         trainer.train()
         inf = trainer.to_inferencer()
@@ -166,7 +169,6 @@ class TestSaveLoad:
         assert (save_path / '__inferencer.pkl').exists()
 
     def test_save_load_with_v(self, trained_trainer, sample_data, tmp_path):
-        exp = trained_trainer
         inf = trained_trainer.to_inferencer(v=[0])
         save_path = tmp_path / 'inferencer_v'
         inf.save(save_path)

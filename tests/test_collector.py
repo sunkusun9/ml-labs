@@ -7,6 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import ShuffleSplit, KFold
 
+from mllabs._pipeline import Pipeline
 from mllabs._experimenter import Experimenter
 from mllabs import Connector, MetricCollector, StackingCollector, ModelAttrCollector, OutputCollector, ProcessCollector
 
@@ -40,19 +41,17 @@ def sample_data():
 
 @pytest.fixture
 def built_exp(tmp_path, sample_data):
-    e = Experimenter(
-        data=sample_data,
-        path=tmp_path / 'exp',
-        sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-    )
-    e.pipeline.set_grp('scale', role='stage', processor=StandardScaler,
+    p = Pipeline(path=tmp_path / 'pipeline_built')
+    p.set_grp('scale', role='stage', processor=StandardScaler,
               method='transform', edges={'X': [(None, ['f1', 'f2', 'f3'])]})
-    e.pipeline.set_node('scaler', grp='scale')
-    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    p.set_node('scaler', grp='scale')
+    p.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [('scaler', None)], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.pipeline.set_node('dt', grp='model')
+    p.set_node('dt', grp='model')
+    e = p.add_experiment('main', data=sample_data,
+                         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
     e.build()
     e.exp()
     return e
@@ -60,17 +59,15 @@ def built_exp(tmp_path, sample_data):
 
 @pytest.fixture
 def built_exp_inner(tmp_path, sample_data):
-    e = Experimenter(
-        data=sample_data,
-        path=tmp_path / 'exp_inner',
-        sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        sp_v=KFold(n_splits=3, shuffle=True, random_state=42),
-    )
-    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    p = Pipeline(path=tmp_path / 'pipeline_inner')
+    p.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.pipeline.set_node('dt', grp='model')
+    p.set_node('dt', grp='model')
+    e = p.add_experiment('main', data=sample_data,
+                         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
+                         sp_v=KFold(n_splits=3, shuffle=True, random_state=42))
     e.build()
     e.exp()
     return e
@@ -78,17 +75,15 @@ def built_exp_inner(tmp_path, sample_data):
 
 @pytest.fixture
 def multi_head_exp(tmp_path, sample_data):
-    e = Experimenter(
-        data=sample_data,
-        path=tmp_path / 'exp_multi',
-        sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-    )
-    e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+    p = Pipeline(path=tmp_path / 'pipeline_multi')
+    p.set_grp('model', role='head', processor=DecisionTreeClassifier,
               method='predict',
               edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
               params={'max_depth': 3, 'random_state': 42})
-    e.pipeline.set_node('dt1', grp='model')
-    e.pipeline.set_node('dt2', grp='model', params={'max_depth': 5})
+    p.set_node('dt1', grp='model')
+    p.set_node('dt2', grp='model', params={'max_depth': 5})
+    e = p.add_experiment('main', data=sample_data,
+                         sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
     e.build()
     e.exp()
     return e
@@ -675,16 +670,14 @@ class TestBaseCollector:
 class TestCollectorErrorHandling:
     @pytest.fixture
     def pre_exp(self, tmp_path, sample_data):
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_pre',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        p = Pipeline(path=tmp_path / 'pipeline_pre')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.pipeline.set_node('dt', grp='model')
+        p.set_node('dt', grp='model')
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         return e
 
@@ -833,16 +826,14 @@ class TestProcessCollector:
 
     @pytest.fixture
     def proba_exp(self, tmp_path, sample_data):
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_proba',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        p = Pipeline(path=tmp_path / 'pipeline_proba')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict_proba',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.pipeline.set_node('dt', grp='model')
+        p.set_node('dt', grp='model')
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         e.exp()
         return e
@@ -873,16 +864,14 @@ class TestFinalizedBeforeCollect:
 
     @pytest.fixture
     def finalized_exp(self, tmp_path, sample_data):
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_fin',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        p = Pipeline(path=tmp_path / 'pipeline_fin')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.pipeline.set_node('dt', grp='model')
+        p.set_node('dt', grp='model')
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         e.exp()
         e.finalize('dt')
@@ -943,31 +932,27 @@ class TestGetCollectStatus:
     @pytest.fixture
     def not_exp_exp(self, tmp_path, sample_data):
         """Stage built but head exp() not called."""
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_notexp',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        p = Pipeline(path=tmp_path / 'pipeline_notexp')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.pipeline.set_node('dt', grp='model')
+        p.set_node('dt', grp='model')
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         return e
 
     @pytest.fixture
     def finalized_exp(self, tmp_path, sample_data):
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_fin2',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        p = Pipeline(path=tmp_path / 'pipeline_fin2')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.pipeline.set_node('dt', grp='model')
+        p.set_node('dt', grp='model')
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         e.exp()
         e.finalize('dt')
@@ -975,15 +960,13 @@ class TestGetCollectStatus:
 
     @pytest.fixture
     def error_exp(self, tmp_path, sample_data):
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_err',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=FailPredictor,
+        p = Pipeline(path=tmp_path / 'pipeline_err')
+        p.set_grp('model', role='head', processor=FailPredictor,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]})
-        e.pipeline.set_node('dt', grp='model')
+        p.set_node('dt', grp='model')
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         e.exp()
         return e
@@ -1029,17 +1012,15 @@ class TestGetCollectStatus:
         assert 'dt2' not in status
 
     def test_mixed_status(self, tmp_path, sample_data):
-        e = Experimenter(
-            data=sample_data,
-            path=tmp_path / 'exp_mixed',
-            sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42),
-        )
-        e.pipeline.set_grp('model', role='head', processor=DecisionTreeClassifier,
+        p = Pipeline(path=tmp_path / 'pipeline_mixed')
+        p.set_grp('model', role='head', processor=DecisionTreeClassifier,
                   method='predict',
                   edges={'X': [(None, ['f1', 'f2', 'f3'])], 'y': [(None, 'target')]},
                   params={'max_depth': 3, 'random_state': 42})
-        e.pipeline.set_node('dt1', grp='model')
-        e.pipeline.set_node('dt2', grp='model', params={'max_depth': 5})
+        p.set_node('dt1', grp='model')
+        p.set_node('dt2', grp='model', params={'max_depth': 5})
+        e = p.add_experiment('main', data=sample_data,
+                             sp=ShuffleSplit(n_splits=2, test_size=0.2, random_state=42))
         e.build()
         e.exp('dt1')
         e.exp('dt2')
